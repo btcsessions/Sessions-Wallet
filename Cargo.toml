@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sessions-core",
+    "crates/rail-onchain",
+    "crates/rail-spark",
+    "crates/rail-liquid",
+    "crates/rail-ecash",
+    "apps/wallet/src-tauri",
+]
+default-members = [
+    "crates/sessions-core",
+    "crates/rail-onchain",
+    "crates/rail-spark",
+    "crates/rail-liquid",
+    "crates/rail-ecash",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/btcsessions/sessions-wallet"
+rust-version = "1.85"
+
+[workspace.dependencies]
+sessions-core = { path = "crates/sessions-core" }
+rail-onchain = { path = "crates/rail-onchain" }
+rail-spark = { path = "crates/rail-spark" }
+rail-liquid = { path = "crates/rail-liquid" }
+rail-ecash = { path = "crates/rail-ecash" }
+
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
+bip39 = { version = "2.2", features = ["rand"] }
+bitcoin = { version = "0.32", features = ["serde"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

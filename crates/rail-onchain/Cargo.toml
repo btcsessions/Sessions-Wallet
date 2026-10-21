@@ -1,0 +1,6 @@
+[package]
+name = "rail-onchain"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

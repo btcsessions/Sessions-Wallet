@@ -1,0 +1,22 @@
+[package]
+name = "sessions-core"
+description = "Core types, keystore and money-movement planner for Sessions Wallet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bip39.workspace = true
+bitcoin.workspace = true
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+tokio = { workspace = true }
+

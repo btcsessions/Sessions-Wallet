@@ -1,0 +1,6 @@
+[package]
+name = "rail-liquid"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

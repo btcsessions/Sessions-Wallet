@@ -1,0 +1,6 @@
+[package]
+name = "sessions-wallet-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
