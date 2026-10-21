@@ -21,8 +21,8 @@ use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Psbt};
 use bdk_wallet::chain::ChainPosition;
-use bdk_wallet::rusqlite::Connection;
-use bdk_wallet::{KeychainKind, PersistedWallet, SignOptions, Wallet};
+use bdk_wallet::file_store::Store;
+use bdk_wallet::{ChangeSet, KeychainKind, PersistedWallet, SignOptions, Wallet};
 use tokio::sync::Mutex;
 
 use sessions_core::types::*;
@@ -31,6 +31,10 @@ use sessions_core::{Error, Rail, Result};
 pub use descriptors::DescriptorPair;
 
 const RAIL: &str = "on-chain";
+/// File header for the wallet database. Never change once shipped.
+const DB_MAGIC: &[u8] = b"sessions-wallet-onchain-v1";
+
+type Db = Store<ChangeSet>;
 const STOP_GAP: usize = 25;
 const PARALLEL_REQUESTS: usize = 4;
 
@@ -57,8 +61,8 @@ pub struct OnchainConfig {
 }
 
 struct Inner {
-    wallet: PersistedWallet<Connection>,
-    conn: Connection,
+    wallet: PersistedWallet<Db>,
+    conn: Db,
     /// Set after the first successful full scan; later syncs are incremental.
     scanned: bool,
 }
@@ -87,7 +91,7 @@ impl OnchainAccount {
         if let Some(parent) = cfg.db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::Storage(e.to_string()))?;
         }
-        let mut conn = Connection::open(&cfg.db_path).map_err(|e| Error::Storage(e.to_string()))?;
+        let (mut conn, _) = Db::load_or_create(DB_MAGIC, &cfg.db_path).map_err(|e| Error::Storage(e.to_string()))?;
         let net = cfg.network.to_bitcoin();
         let ext = cfg.descriptors.external.clone();
         let int = cfg.descriptors.internal.clone();
@@ -143,6 +147,14 @@ impl OnchainAccount {
         let sat_vb = esplora_client::convert_fee_rate(target, estimates).unwrap_or(2.0).max(1.0);
         // Round up to the nearest 0.25 sat/vB expressed as sat/kwu.
         Ok(FeeRate::from_sat_per_kwu(((sat_vb as f64) * 250.0).ceil() as u64))
+    }
+
+    /// Current fee rates in sat/vB for (next block, ~1 hour, no rush), from
+    /// this account's chain server.
+    pub async fn fee_rates(&self) -> Result<(f32, f32, f32)> {
+        let est = self.client.get_fee_estimates().await.map_err(err)?;
+        let at = |t| esplora_client::convert_fee_rate(t, est.clone()).unwrap_or(1.0).max(1.0);
+        Ok((at(1), at(6), at(144)))
     }
 
     fn signatures_needed(&self) -> u8 {
@@ -415,7 +427,7 @@ mod tests {
             id: "savings".into(),
             name: "Savings".into(),
             network: Network::Bitcoin,
-            db_path: dir.join("savings.sqlite"),
+            db_path: dir.join("savings.db"),
             esplora_url: None,
             descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, 0).unwrap(),
             custody: Custody::Hot,
@@ -537,7 +549,7 @@ mod tests {
                 id: name.into(),
                 name: name.into(),
                 network: Network::Bitcoin,
-                db_path: dir.path().join(format!("{name}.sqlite")),
+                db_path: dir.path().join(format!("{name}.db")),
                 esplora_url: None,
                 descriptors: pair.clone(),
                 custody: Custody::Multisig { threshold: 2, total: 2, local_signers: 1 },

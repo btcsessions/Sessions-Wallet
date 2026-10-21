@@ -13,7 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-bdk_wallet = { version = "3.2", features = ["rusqlite"] }
+bdk_wallet = { version = "3.2", features = ["file_store"] }
 bdk_esplora = { version = "0.22", default-features = false, features = ["std", "async-https-rustls"] }
 # Pulled in directly only to enable its tokio sleeper (needed for build_async).
 esplora-client = { version = "0.12", default-features = false, features = ["async-https-rustls", "tokio"] }
