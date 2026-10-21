@@ -273,6 +273,50 @@ pub struct SendRequest {
     /// Ignored by accounts that aren't on-chain.
     #[serde(default)]
     pub style: SpendStyle,
+    /// Coin control (on-chain only): spend exactly these coins
+    /// (`"txid:vout"`), even frozen ones. `None` lets the wallet choose.
+    #[serde(default)]
+    pub coins: Option<Vec<String>>,
+}
+
+/// Advanced send options for the first leg of a plan.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SpendOptions {
+    /// Label for the transaction (on-chain) or note for the payment.
+    pub label: Option<String>,
+    /// Coin control: the exact coins (`"txid:vout"`) to spend.
+    pub coins: Option<Vec<String>>,
+}
+
+/// What a label is attached to (BIP329 record types).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LabelKind {
+    #[serde(alias = "addr")]
+    Address,
+    Tx,
+    Output,
+}
+
+/// One unspent on-chain coin, for coin control.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Utxo {
+    /// `"txid:vout"`.
+    pub outpoint: String,
+    pub txid: String,
+    pub vout: u32,
+    pub amount_sat: Sats,
+    pub address: String,
+    /// Its own label, else its transaction's, else its address's.
+    pub label: Option<String>,
+    /// 0 while unconfirmed.
+    pub confirmations: u32,
+    /// Never picked automatically; can still be chosen by hand.
+    pub frozen: bool,
+    /// Sits on one of our change addresses.
+    pub change: bool,
 }
 
 /// A priced, ready-to-confirm payment. Opaque `handle` is rail-specific.

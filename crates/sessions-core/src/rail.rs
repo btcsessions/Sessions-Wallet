@@ -54,6 +54,27 @@ pub trait Rail: Send + Sync {
             "speed up or cancel transactions".into(),
         ))
     }
+
+    /// Unspent coins, newest first. On-chain accounts only.
+    async fn list_utxos(&self) -> Result<Vec<Utxo>> {
+        Err(crate::Error::Unsupported("list coins".into()))
+    }
+
+    /// Set (or, with `None` / empty, remove) a label. On-chain accounts only.
+    async fn set_label(
+        &self,
+        _kind: LabelKind,
+        _reference: &str,
+        _label: Option<String>,
+    ) -> Result<()> {
+        Err(crate::Error::Unsupported("label coins".into()))
+    }
+
+    /// Freeze or unfreeze a coin (`"txid:vout"`). Frozen coins are never
+    /// picked automatically. On-chain accounts only.
+    async fn set_frozen(&self, _outpoint: &str, _frozen: bool) -> Result<()> {
+        Err(crate::Error::Unsupported("freeze coins".into()))
+    }
 }
 
 /// A conversion service that turns one method into another, e.g. Boltz turning

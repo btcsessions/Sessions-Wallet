@@ -233,15 +233,24 @@ impl OnchainAccount {
         let target = self.fee_rate(fee).await?;
 
         let mut inner = self.inner.lock().await;
-        let Inner { wallet, conn, .. } = &mut *inner;
+        let Inner {
+            wallet,
+            conn,
+            labels,
+            pending,
+            ..
+        } = &mut *inner;
         let a = analyse(wallet, txid)?;
+        let frozen: Vec<OutPoint> = labels.frozen().iter().copied().collect();
         if a.confirmed.is_some() {
             return Err(Error::Invalid(
                 "This transaction is already confirmed".into(),
             ));
         }
         let (psbt, notes) = match action {
-            BumpAction::SpeedUp if a.can_replace(true) => rbf_speed_up(wallet, txid, &a, target)?,
+            BumpAction::SpeedUp if a.can_replace(true) => {
+                rbf_speed_up(wallet, txid, &a, target, frozen)?
+            }
             BumpAction::SpeedUp if a.can_cpfp(true) => cpfp(wallet, &a, target)?,
             BumpAction::SpeedUp => {
                 return Err(Error::Invalid(
@@ -255,6 +264,11 @@ impl OnchainAccount {
                 ))
             }
         };
+        // A replacement (not a CPFP child) keeps the original's label.
+        let replaces = action == BumpAction::Cancel || a.can_replace(true);
+        if let Some(l) = labels.tx(&txid).filter(|_| replaces) {
+            pending.remember(psbt.unsigned_tx.compute_txid(), l.to_string());
+        }
         // Keep the change address we may have used from being handed out again.
         wallet
             .persist(conn)
@@ -275,6 +289,7 @@ fn rbf_speed_up(
     txid: Txid,
     a: &Analysis,
     target: FeeRate,
+    frozen: Vec<OutPoint>,
 ) -> Result<(Psbt, Vec<String>)> {
     let old_fee = a.fee.unwrap_or(Amount::ZERO).to_sat();
     let floor = replacement_floor(a);
@@ -295,6 +310,10 @@ fn rbf_speed_up(
     let mut fee: Option<u64> = None;
     for _ in 0..4 {
         let mut b = wallet.build_fee_bump(txid).map_err(err)?;
+        // Extra inputs, if needed, never come from frozen coins.
+        if !frozen.is_empty() {
+            b.unspendable(frozen.clone());
+        }
         if let Some(i) = change {
             // Keep every other output exactly; the fee comes out of this one.
             b.set_recipients(

@@ -11,6 +11,7 @@
 
 mod bump;
 pub mod descriptors;
+mod labels;
 pub mod payjoin;
 pub mod privacy;
 pub mod trezor;
@@ -22,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bdk_esplora::esplora_client::{self, AsyncClient};
 use bdk_esplora::EsploraAsyncExt;
-use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Psbt};
+use bdk_wallet::bitcoin::{Address, Amount, FeeRate, OutPoint, Psbt};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::file_store::Store;
 use bdk_wallet::{ChangeSet, KeychainKind, PersistedWallet, SignOptions, Wallet};
@@ -82,6 +83,10 @@ struct Inner {
     conn: Db,
     /// Set after the first successful full scan; later syncs are incremental.
     scanned: bool,
+    /// Labels and frozen coins, saved next to the wallet database.
+    labels: labels::Labels,
+    /// Labels waiting for their quoted transaction to be broadcast.
+    pending: labels::Pending,
 }
 
 pub struct OnchainAccount {
@@ -114,6 +119,7 @@ impl OnchainAccount {
         }
         let (mut conn, _) = Db::load_or_create(DB_MAGIC, &cfg.db_path)
             .map_err(|e| Error::Storage(e.to_string()))?;
+        let labels = labels::Labels::load(labels::path_for(&cfg.db_path))?;
         let net = cfg.network.to_bitcoin();
         let ext = cfg.descriptors.external.clone();
         let int = cfg.descriptors.internal.clone();
@@ -155,6 +161,8 @@ impl OnchainAccount {
                 wallet,
                 conn,
                 scanned,
+                labels,
+                pending: Default::default(),
             }),
         })
     }
@@ -350,6 +358,30 @@ fn record_tx(wallet: &mut Wallet, tx: bdk_wallet::bitcoin::Transaction) {
     wallet.apply_unconfirmed_txs([(tx, seen)]);
 }
 
+/// The coins picked by hand for coin control, checked to be ours and unspent.
+fn chosen_coins(wallet: &Wallet, coins: &[String]) -> Result<Vec<bdk_wallet::LocalOutput>> {
+    if coins.is_empty() {
+        return Err(Error::Invalid("Choose at least one coin to spend".into()));
+    }
+    let mut out: Vec<bdk_wallet::LocalOutput> = Vec::with_capacity(coins.len());
+    for c in coins {
+        let op = labels::parse_outpoint(c)?;
+        if out.iter().any(|u| u.outpoint == op) {
+            continue;
+        }
+        let utxo = wallet
+            .list_unspent()
+            .find(|u| u.outpoint == op)
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "Coin {op} isn't available in this account. It may already be spent"
+                ))
+            })?;
+        out.push(utxo);
+    }
+    Ok(out)
+}
+
 #[async_trait]
 impl Rail for OnchainAccount {
     fn id(&self) -> &AccountId {
@@ -444,12 +476,21 @@ impl Rail for OnchainAccount {
         }
         let info = {
             let mut inner = self.inner.lock().await;
-            let Inner { wallet, conn, .. } = &mut *inner;
+            let Inner {
+                wallet,
+                conn,
+                labels,
+                ..
+            } = &mut *inner;
             // Reuse the first unused address so repeated taps don't burn the gap limit.
             let info = wallet.next_unused_address(KeychainKind::External);
             wallet
                 .persist(conn)
                 .map_err(|e| Error::Storage(e.to_string()))?;
+            // The description becomes the address's label (not part of the URI).
+            if let Some(label) = labels::clean(req.description.clone()) {
+                labels.set(LabelKind::Address, &info.address.to_string(), Some(label))?;
+            }
             info
         };
 
@@ -508,10 +549,35 @@ impl Rail for OnchainAccount {
         let fee_rate = self.fee_rate(req.fee).await?;
 
         let mut inner = self.inner.lock().await;
-        let Inner { wallet, conn, .. } = &mut *inner;
-        // Unconfirmed incoming coins are spendable too (0-conf).
-        let bal = wallet.balance();
-        let available = (bal.trusted_spendable() + bal.untrusted_pending).to_sat();
+        let Inner {
+            wallet,
+            conn,
+            labels,
+            pending,
+            ..
+        } = &mut *inner;
+        // Coin control: exactly these coins, frozen or not.
+        let chosen = match &req.coins {
+            Some(coins) => Some(chosen_coins(wallet, coins)?),
+            None => None,
+        };
+        let frozen: Vec<OutPoint> = labels.frozen().iter().copied().collect();
+        // Unconfirmed incoming coins are spendable too (0-conf). Frozen ones
+        // aren't picked automatically.
+        let available = match &chosen {
+            Some(coins) => coins.iter().map(|u| u.txout.value.to_sat()).sum(),
+            None => {
+                let bal = wallet.balance();
+                let frozen_sat: u64 = wallet
+                    .list_unspent()
+                    .filter(|u| labels.is_frozen(&u.outpoint))
+                    .map(|u| u.txout.value.to_sat())
+                    .sum();
+                (bal.trusted_spendable() + bal.untrusted_pending)
+                    .to_sat()
+                    .saturating_sub(frozen_sat)
+            }
+        };
 
         let private = req.style == SpendStyle::Private;
         let mut notes = Vec::new();
@@ -523,7 +589,10 @@ impl Rail for OnchainAccount {
                 .amount_sat
                 .or(*req_amount)
                 .ok_or(Error::AmountRequired)?;
-            let utxos = privacy::spendable(wallet);
+            let utxos = match &chosen {
+                Some(coins) => coins.clone(),
+                None => privacy::spendable(wallet, labels.frozen()),
+            };
             let preferred = privacy::settled(&utxos);
             let input_weight = privacy::input_weight(wallet)?;
             let fresh = [
@@ -539,17 +608,20 @@ impl Rail for OnchainAccount {
             ];
             let dest = address.script_pubkey();
             // Confirmed coins and our own change first; fall back to also
-            // using unconfirmed incoming coins.
-            let plan = match privacy::plan(
-                &preferred,
-                input_weight,
-                &dest,
-                amount,
-                fee_rate,
-                fresh.clone(),
-            ) {
-                Ok(p) => p,
-                Err(_) => privacy::plan(&utxos, input_weight, &dest, amount, fee_rate, fresh)?,
+            // using unconfirmed incoming coins. Chosen coins are used as given.
+            let plan = match chosen {
+                Some(_) => privacy::plan(&utxos, input_weight, &dest, amount, fee_rate, fresh)?,
+                None => match privacy::plan(
+                    &preferred,
+                    input_weight,
+                    &dest,
+                    amount,
+                    fee_rate,
+                    fresh.clone(),
+                ) {
+                    Ok(p) => p,
+                    Err(_) => privacy::plan(&utxos, input_weight, &dest, amount, fee_rate, fresh)?,
+                },
             };
             notes.extend(plan.notes);
             let mut b = wallet.build_tx();
@@ -570,47 +642,89 @@ impl Rail for OnchainAccount {
                         .ok_or(Error::AmountRequired)?,
                 )
             };
-            // Unconfirmed incoming coins (not our own change) are held back
-            // on the first try, so they're only used when needed.
-            let unsettled: Vec<_> = wallet
-                .list_unspent()
-                .filter(|u| {
-                    !u.chain_position.is_confirmed() && u.keychain == KeychainKind::External
-                })
-                .map(|u| u.outpoint)
-                .collect();
-            let tiers: &[bool] = match (amount, unsettled.is_empty()) {
-                (Some(_), false) => &[true, false],
-                _ => &[false],
-            };
-            let mut result = None;
-            for &hold_back in tiers {
+            if let Some(coins) = &chosen {
+                let ops: Vec<OutPoint> = coins.iter().map(|u| u.outpoint).collect();
                 let mut b = wallet.build_tx();
                 b.fee_rate(fee_rate);
-                if hold_back {
-                    b.unspendable(unsettled.clone());
-                }
+                b.add_utxos(&ops).map_err(err)?;
+                b.manually_selected_only();
                 match amount {
+                    // Everything in the chosen coins, minus the fee.
                     None => {
-                        b.drain_wallet().drain_to(address.script_pubkey());
+                        b.drain_to(address.script_pubkey());
                     }
                     Some(sats) => {
                         b.add_recipient(address.script_pubkey(), Amount::from_sat(sats));
                     }
                 }
-                result = Some(b.finish());
-                if matches!(result, Some(Ok(_))) {
-                    break;
+                b.finish().map_err(|e| match e {
+                    bdk_wallet::error::CreateTxError::CoinSelection(_) => {
+                        Error::Invalid(match amount {
+                            Some(sats) => format!(
+                                "The chosen coins ({available} sats) don't cover {sats} sats plus the network fee. Choose more coins"
+                            ),
+                            None => format!(
+                                "The chosen coins ({available} sats) don't cover the network fee"
+                            ),
+                        })
+                    }
+                    other => err(other),
+                })?
+            } else {
+                // Unconfirmed incoming coins (not our own change) are held
+                // back on the first try, so they're only used when needed.
+                let unsettled: Vec<_> = wallet
+                    .list_unspent()
+                    .filter(|u| {
+                        !u.chain_position.is_confirmed()
+                            && u.keychain == KeychainKind::External
+                            && !labels.is_frozen(&u.outpoint)
+                    })
+                    .map(|u| u.outpoint)
+                    .collect();
+                let tiers: &[bool] = match (amount, unsettled.is_empty()) {
+                    (Some(_), false) => &[true, false],
+                    _ => &[false],
+                };
+                let mut result = None;
+                for &hold_back in tiers {
+                    let mut b = wallet.build_tx();
+                    b.fee_rate(fee_rate);
+                    let mut skip = frozen.clone();
+                    if hold_back {
+                        skip.extend(unsettled.iter().copied());
+                    }
+                    if !skip.is_empty() {
+                        b.unspendable(skip);
+                    }
+                    match amount {
+                        None => {
+                            b.drain_wallet().drain_to(address.script_pubkey());
+                        }
+                        Some(sats) => {
+                            b.add_recipient(address.script_pubkey(), Amount::from_sat(sats));
+                        }
+                    }
+                    result = Some(b.finish());
+                    if matches!(result, Some(Ok(_))) {
+                        break;
+                    }
                 }
+                result.expect("at least one attempt").map_err(|e| match e {
+                    bdk_wallet::error::CreateTxError::CoinSelection(_) => {
+                        Error::InsufficientFunds {
+                            needed: amount.unwrap_or(available),
+                            available,
+                        }
+                    }
+                    other => err(other),
+                })?
             }
-            result.expect("at least one attempt").map_err(|e| match e {
-                bdk_wallet::error::CreateTxError::CoinSelection(_) => Error::InsufficientFunds {
-                    needed: amount.unwrap_or(available),
-                    available,
-                },
-                other => err(other),
-            })?
         };
+        // Label the transaction once it's broadcast.
+        if let Some(note) = labels::clean(req.note.clone()) {
+            pending.remember(psbt.unsigned_tx.compute_txid(), note);
+        }
 
         // Payjoin (sender): hot wallets only, and not combined with private
         // mode, since the receiver rebuilds the transaction anyway.
@@ -648,6 +762,7 @@ impl Rail for OnchainAccount {
 
     async fn send(&self, quote: SendQuote, signed_psbt: Option<String>) -> Result<Payment> {
         let (psbt, payjoin_uri) = Self::decode_handle(&quote.handle)?;
+        let quoted_txid = psbt.unsigned_tx.compute_txid();
         let payjoin_uri =
             payjoin_uri.filter(|_| signed_psbt.is_none() && matches!(self.custody, Custody::Hot));
         let (psbt, unfinalized) = self.sign_and_finalize(psbt, signed_psbt).await?;
@@ -690,12 +805,7 @@ impl Rail for OnchainAccount {
             );
         }
 
-        let mut inner = self.inner.lock().await;
-        let Inner { wallet, conn, .. } = &mut *inner;
-        record_tx(wallet, tx.clone());
-        wallet
-            .persist(conn)
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        let label = self.record_broadcast(quoted_txid, &tx).await?;
 
         Ok(Payment {
             id: tx.compute_txid().to_string(),
@@ -706,11 +816,11 @@ impl Rail for OnchainAccount {
             status: PaymentStatus::Pending,
             method: Method::BitcoinAddress,
             timestamp: now(),
-            description: match (payjoin_uri.is_some(), used_payjoin) {
+            description: label.or(match (payjoin_uri.is_some(), used_payjoin) {
                 (_, true) => Some(payjoin::DESCRIPTION_PAYJOIN.into()),
                 (true, false) => Some(payjoin::DESCRIPTION_FALLBACK.into()),
                 _ => None,
-            },
+            }),
             token: None,
         })
     }
@@ -771,7 +881,7 @@ impl Rail for OnchainAccount {
                     status,
                     method: Method::BitcoinAddress,
                     timestamp,
-                    description: None,
+                    description: self.activity_label(&inner, tx, direction),
                     token: None,
                 }
             })
@@ -779,6 +889,138 @@ impl Rail for OnchainAccount {
         out.sort_by_key(|p| std::cmp::Reverse(p.timestamp));
         out.truncate(limit);
         Ok(out)
+    }
+
+    async fn list_utxos(&self) -> Result<Vec<Utxo>> {
+        let inner = self.inner.lock().await;
+        let w = &inner.wallet;
+        let tip = w.latest_checkpoint().height();
+        let net = self.network.to_bitcoin();
+        // (unconfirmed?, height or first seen): larger is newer.
+        let mut rows: Vec<((bool, u64), Utxo)> = w
+            .list_unspent()
+            .map(|u| {
+                let address = Address::from_script(&u.txout.script_pubkey, net)
+                    .map(|a| a.to_string())
+                    .unwrap_or_default();
+                let (confirmations, key) = match &u.chain_position {
+                    ChainPosition::Confirmed { anchor, .. } => (
+                        tip.saturating_sub(anchor.block_id.height).saturating_add(1),
+                        (false, anchor.block_id.height as u64),
+                    ),
+                    ChainPosition::Unconfirmed {
+                        first_seen,
+                        last_seen,
+                    } => (0, (true, first_seen.or(*last_seen).unwrap_or(u64::MAX))),
+                };
+                let utxo = Utxo {
+                    outpoint: u.outpoint.to_string(),
+                    txid: u.outpoint.txid.to_string(),
+                    vout: u.outpoint.vout,
+                    amount_sat: u.txout.value.to_sat(),
+                    label: inner
+                        .labels
+                        .effective_output(&u.outpoint, Some(address.as_str())),
+                    address,
+                    confirmations,
+                    frozen: inner.labels.is_frozen(&u.outpoint),
+                    change: u.keychain == KeychainKind::Internal,
+                };
+                (key, utxo)
+            })
+            .collect();
+        rows.sort_by(|(ka, a), (kb, b)| kb.cmp(ka).then_with(|| a.outpoint.cmp(&b.outpoint)));
+        Ok(rows.into_iter().map(|(_, u)| u).collect())
+    }
+
+    async fn set_label(
+        &self,
+        kind: LabelKind,
+        reference: &str,
+        label: Option<String>,
+    ) -> Result<()> {
+        let reference = match kind {
+            LabelKind::Address => Address::from_str(reference.trim())
+                .map_err(|_| Error::Invalid("That isn't a bitcoin address".into()))?
+                .require_network(self.network.to_bitcoin())
+                .map_err(|_| Error::Network("that address is for a different network".into()))?
+                .to_string(),
+            LabelKind::Tx | LabelKind::Output => reference.trim().to_string(),
+        };
+        self.inner.lock().await.labels.set(kind, &reference, label)
+    }
+
+    async fn set_frozen(&self, outpoint: &str, frozen: bool) -> Result<()> {
+        let op = labels::parse_outpoint(outpoint)?;
+        let mut inner = self.inner.lock().await;
+        if frozen && inner.wallet.get_utxo(op).is_none() {
+            return Err(Error::Invalid("This account doesn't have that coin".into()));
+        }
+        inner.labels.set_frozen(op, frozen)
+    }
+}
+
+impl OnchainAccount {
+    /// Record a transaction we just broadcast for the quote `quoted_txid`,
+    /// and label it with that quote's label. Returns the label.
+    async fn record_broadcast(
+        &self,
+        quoted_txid: bdk_wallet::bitcoin::Txid,
+        tx: &bdk_wallet::bitcoin::Transaction,
+    ) -> Result<Option<String>> {
+        let mut inner = self.inner.lock().await;
+        let Inner {
+            wallet,
+            conn,
+            labels,
+            pending,
+            ..
+        } = &mut *inner;
+        record_tx(wallet, tx.clone());
+        wallet
+            .persist(conn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        // The send's label goes on the transaction that actually went out
+        // (the payjoin one, when it was used); its change inherits it.
+        let label = pending.take(&quoted_txid);
+        if let Some(l) = &label {
+            if let Err(e) = labels.set(
+                LabelKind::Tx,
+                &tx.compute_txid().to_string(),
+                Some(l.clone()),
+            ) {
+                // Already broadcast: don't turn this into a failed send.
+                tracing::warn!("couldn't save the transaction label: {e}");
+            }
+        }
+        Ok(label)
+    }
+
+    /// What the activity list shows for a transaction: its label, or for an
+    /// incoming one, the label of the address it paid.
+    fn activity_label(
+        &self,
+        inner: &Inner,
+        tx: &bdk_wallet::bitcoin::Transaction,
+        direction: Direction,
+    ) -> Option<String> {
+        if let Some(l) = inner.labels.tx(&tx.compute_txid()) {
+            return Some(l.to_string());
+        }
+        if direction != Direction::Incoming {
+            return None;
+        }
+        let net = self.network.to_bitcoin();
+        tx.output.iter().find_map(|o| {
+            if !matches!(
+                inner.wallet.derivation_of_spk(o.script_pubkey.clone()),
+                Some((KeychainKind::External, _))
+            ) {
+                return None;
+            }
+            let a = Address::from_script(&o.script_pubkey, net).ok()?;
+            inner.labels.address(&a.to_string()).map(str::to_string)
+        })
     }
 }
 
@@ -867,6 +1109,7 @@ mod tests {
                 fee: FeePriority::Custom(2),
                 note: None,
                 style: Default::default(),
+                coins: None,
             })
             .await;
         assert!(matches!(q, Err(Error::Network(_))));
@@ -918,6 +1161,7 @@ mod tests {
             fee: FeePriority::Custom(3),
             note: None,
             style: Default::default(),
+            coins: None,
         }
     }
 
@@ -1272,9 +1516,10 @@ mod tests {
         signed: Option<String>,
     ) -> Transaction {
         let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        let quoted = psbt.unsigned_tx.compute_txid();
         let (psbt, _) = a.sign_and_finalize(psbt, signed).await.unwrap();
         let tx = psbt.extract_tx().unwrap();
-        record_tx(&mut a.inner.lock().await.wallet, tx.clone());
+        a.record_broadcast(quoted, &tx).await.unwrap();
         tx
     }
 
@@ -1727,5 +1972,265 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    // --- labels, freezing and coin control ---------------------------------
+
+    /// The outpoints a quote spends, sorted.
+    fn inputs_of(q: &SendQuote) -> Vec<String> {
+        let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        let mut v: Vec<String> = psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .map(|i| i.previous_output.to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// The outpoint of our only coin worth `sats`.
+    async fn coin(a: &OnchainAccount, sats: u64) -> String {
+        let all = a.list_utxos().await.unwrap();
+        let mut m = all.iter().filter(|u| u.amount_sat == sats);
+        let u = m.next().expect("coin");
+        assert!(m.next().is_none());
+        u.outpoint.clone()
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    #[tokio::test]
+    async fn labels_inherit_and_survive_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        let r = a
+            .receive(ReceiveRequest {
+                method: Method::BitcoinAddress,
+                amount_sat: Some(100_000),
+                description: Some(" From Alice ".into()),
+            })
+            .await
+            .unwrap();
+        // The description isn't put in the request itself.
+        assert_eq!(
+            r.request,
+            "bitcoin:BC1QCR8TE4KR609GCAWUTMRZA0J4XV80JY8Z306FYU?amount=0.001"
+        );
+        fund_at(&a, 0, 100_000, 61).await;
+
+        // Address label → coin, and → the incoming payment.
+        let coins = a.list_utxos().await.unwrap();
+        assert_eq!(coins.len(), 1);
+        let c = &coins[0];
+        assert_eq!(c.address, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+        assert_eq!(c.label.as_deref(), Some("From Alice"));
+        assert_eq!((c.amount_sat, c.confirmations), (100_000, 0));
+        assert!(!c.frozen && !c.change);
+        assert_eq!(c.outpoint, format!("{}:{}", c.txid, c.vout));
+        let incoming = a.payments(10).await.unwrap();
+        assert_eq!(incoming[0].description.as_deref(), Some("From Alice"));
+
+        // Send note → transaction label → its change.
+        let mut req = send_req(30_000);
+        req.note = Some("Rent".into());
+        let q = a.prepare_send(req).await.unwrap();
+        let tx = broadcast_offline(&a, &q, None).await;
+        let txid = tx.compute_txid().to_string();
+        let coins = a.list_utxos().await.unwrap();
+        assert_eq!(coins.len(), 1);
+        let change = coins[0].clone();
+        assert!(change.change);
+        assert_eq!(change.txid, txid);
+        assert_eq!(change.label.as_deref(), Some("Rent"));
+        let history = a.payments(10).await.unwrap();
+        let sent = history.iter().find(|p| p.id == txid).unwrap();
+        assert_eq!(sent.direction, Direction::Outgoing);
+        assert_eq!(sent.description.as_deref(), Some("Rent"));
+
+        // A coin's own label wins; removing it falls back to the tx's.
+        a.set_label(LabelKind::Output, &change.outpoint, Some("Mine".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            a.list_utxos().await.unwrap()[0].label.as_deref(),
+            Some("Mine")
+        );
+        a.set_label(LabelKind::Output, &change.outpoint, Some("".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            a.list_utxos().await.unwrap()[0].label.as_deref(),
+            Some("Rent")
+        );
+        // A tx label on the incoming payment replaces the address label there.
+        let funding = history.iter().find(|p| p.id != txid).unwrap().id.clone();
+        a.set_label(LabelKind::Tx, &funding, Some("Salary".into()))
+            .await
+            .unwrap();
+        a.set_frozen(&change.outpoint, true).await.unwrap();
+        assert!(a
+            .set_label(LabelKind::Address, "tb1qnope", None)
+            .await
+            .is_err());
+        assert!(a.set_frozen("nope", true).await.is_err());
+
+        // Everything is still there after reopening.
+        drop(a);
+        let a = hot(dir.path());
+        let coins = a.list_utxos().await.unwrap();
+        assert_eq!(coins.len(), 1);
+        assert_eq!(coins[0].label.as_deref(), Some("Rent"));
+        assert!(coins[0].frozen);
+        let history = a.payments(10).await.unwrap();
+        let desc = |id: &str| {
+            history
+                .iter()
+                .find(|p| p.id == id)
+                .unwrap()
+                .description
+                .clone()
+        };
+        assert_eq!(desc(&txid).as_deref(), Some("Rent"));
+        assert_eq!(desc(&funding).as_deref(), Some("Salary"));
+        assert!(dir.path().join("savings.labels.json").exists());
+    }
+
+    #[tokio::test]
+    async fn frozen_coins_are_skipped_unless_chosen() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        fund_at(&a, 0, 60_000, 71).await;
+        fund_at(&a, 1, 50_000, 72).await;
+        let big = coin(&a, 60_000).await;
+        let small = coin(&a, 50_000).await;
+        a.set_frozen(&big, true).await.unwrap();
+        // Still counts as owned.
+        assert_eq!(a.info().await.unwrap().balance.pending_in, 110_000);
+
+        // Normal send: only the unfrozen coin, even when the frozen one fits better.
+        let q = a.prepare_send(send_req(40_000)).await.unwrap();
+        assert_eq!(inputs_of(&q), vec![small.clone()]);
+        assert!(matches!(
+            a.prepare_send(send_req(55_000)).await,
+            Err(Error::InsufficientFunds {
+                available: 50_000,
+                ..
+            })
+        ));
+        // Send max leaves the frozen coin alone.
+        let mut max = send_req(0);
+        max.send_max = true;
+        max.amount_sat = None;
+        let q = a.prepare_send(max).await.unwrap();
+        assert_eq!(inputs_of(&q), vec![small.clone()]);
+        // Private needs two unfrozen addresses.
+        assert!(a.prepare_send(private_req(10_000, DEST)).await.is_err());
+
+        // Chosen by hand, a frozen coin is spent.
+        let mut req = send_req(55_000);
+        req.coins = Some(vec![big.clone()]);
+        let q = a.prepare_send(req).await.unwrap();
+        assert_eq!(inputs_of(&q), vec![big.clone()]);
+        assert!(finalizes(&a, &q.handle).await);
+
+        // Unfrozen, it's back in the pool.
+        a.set_frozen(&big, false).await.unwrap();
+        assert!(a.prepare_send(send_req(55_000)).await.is_ok());
+        assert!(!a.list_utxos().await.unwrap().iter().any(|u| u.frozen));
+    }
+
+    #[tokio::test]
+    async fn coin_control_spends_exactly_the_chosen_coins() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        fund_at(&a, 0, 40_000, 81).await;
+        fund_at(&a, 1, 30_000, 82).await;
+        fund_at(&a, 2, 20_000, 83).await;
+        let (c40, c30, c20) = (
+            coin(&a, 40_000).await,
+            coin(&a, 30_000).await,
+            coin(&a, 20_000).await,
+        );
+        // Every coin is listed, unconfirmed ones included.
+        assert_eq!(a.list_utxos().await.unwrap().len(), 3);
+
+        // Both chosen coins are spent, though one would do.
+        let mut req = send_req(10_000);
+        req.coins = Some(vec![c20.clone(), c30.clone()]);
+        let q = a.prepare_send(req).await.unwrap();
+        assert_eq!(inputs_of(&q), sorted(vec![c20.clone(), c30.clone()]));
+        assert_eq!(q.amount_sat, 10_000);
+        assert!(finalizes(&a, &q.handle).await);
+
+        // Not enough in the chosen coins: a clear error, no silent top-up.
+        let mut req = send_req(25_000);
+        req.coins = Some(vec![c20.clone()]);
+        let e = a.prepare_send(req).await.unwrap_err();
+        assert!(matches!(e, Error::Invalid(_)), "{e}");
+        assert!(e.to_string().contains("chosen coins"), "{e}");
+        // Unknown or malformed coins are refused.
+        for bad in [
+            vec!["nope".to_string()],
+            vec![format!("{}:0", "ab".repeat(32))],
+            vec![],
+        ] {
+            let mut req = send_req(1_000);
+            req.coins = Some(bad);
+            assert!(matches!(a.prepare_send(req).await, Err(Error::Invalid(_))));
+        }
+
+        // Send max drains exactly the chosen coins into one output.
+        let mut max = send_req(0);
+        max.send_max = true;
+        max.amount_sat = None;
+        max.coins = Some(vec![c40.clone(), c20.clone()]);
+        let q = a.prepare_send(max).await.unwrap();
+        assert_eq!(inputs_of(&q), sorted(vec![c40.clone(), c20.clone()]));
+        let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        assert_eq!(psbt.unsigned_tx.output.len(), 1);
+        assert_eq!(psbt.unsigned_tx.output[0].script_pubkey, dest_spk());
+        assert_eq!(q.amount_sat + q.fee_sat, 60_000);
+
+        // Private: planned only over the chosen coins.
+        let mut req = private_req(10_000, DEST);
+        req.coins = Some(vec![c40.clone(), c30.clone()]);
+        let q = a.prepare_send(req).await.unwrap();
+        assert!(q.private);
+        assert!(inputs_of(&q).iter().all(|i| *i == c40 || *i == c30));
+        let mut req = private_req(10_000, DEST);
+        req.coins = Some(vec![c40.clone()]);
+        assert!(a.prepare_send(req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn speed_up_keeps_the_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        fund(&a, 100_000).await;
+        let mut req = send_req(40_000);
+        req.note = Some("Laptop".into());
+        let q = a.prepare_send(req).await.unwrap();
+        let tx1 = broadcast_offline(&a, &q, None).await;
+        let q = a
+            .prepare_bump(
+                &tx1.compute_txid().to_string(),
+                BumpAction::SpeedUp,
+                FeePriority::Custom(10),
+            )
+            .await
+            .unwrap();
+        let tx2 = broadcast_offline(&a, &q, None).await;
+        let txid2 = tx2.compute_txid().to_string();
+        let p = a.payments(10).await.unwrap();
+        let p = p.iter().find(|p| p.id == txid2).unwrap();
+        assert_eq!(p.description.as_deref(), Some("Laptop"));
+        let change = a.list_utxos().await.unwrap();
+        assert_eq!(change.len(), 1);
+        assert_eq!(change[0].txid, txid2);
+        assert_eq!(change[0].label.as_deref(), Some("Laptop"));
     }
 }

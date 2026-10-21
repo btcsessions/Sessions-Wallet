@@ -14,6 +14,8 @@
 //! which inputs "belong" with which change. Coins that share an address always
 //! stay in the same group, so address reuse can't link the two sides.
 
+use std::collections::BTreeSet;
+
 use bdk_wallet::bitcoin::{FeeRate, OutPoint, ScriptBuf, Weight};
 use bdk_wallet::{KeychainKind, LocalOutput, Wallet};
 use sessions_core::{Error, Result};
@@ -209,9 +211,12 @@ fn script_kind(s: &ScriptBuf) -> Kind {
 }
 
 /// Spendable coins for a private send: every coin, including unconfirmed
-/// incoming ones (0-conf).
-pub fn spendable(wallet: &Wallet) -> Vec<LocalOutput> {
-    wallet.list_unspent().collect()
+/// incoming ones (0-conf), except frozen ones.
+pub fn spendable(wallet: &Wallet, frozen: &BTreeSet<OutPoint>) -> Vec<LocalOutput> {
+    wallet
+        .list_unspent()
+        .filter(|u| !frozen.contains(&u.outpoint))
+        .collect()
 }
 
 /// The coins to try first: confirmed, or our own unconfirmed change.

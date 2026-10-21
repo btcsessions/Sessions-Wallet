@@ -184,6 +184,7 @@ fn bolt11_send(invoice: String) -> SendRequest {
         fee: FeePriority::default(),
         note: None,
         style: Default::default(),
+        coins: None,
     }
 }
 
