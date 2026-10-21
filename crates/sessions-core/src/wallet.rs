@@ -105,7 +105,7 @@ impl Wallet {
         for r in rails {
             all.extend(r.payments(limit).await?);
         }
-        all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        all.sort_by_key(|p| std::cmp::Reverse(p.timestamp));
         all.truncate(limit);
         Ok(all)
     }
