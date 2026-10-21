@@ -37,6 +37,31 @@ function ActiveSheet() {
   }
 }
 
+/** Shown while the engine starts, and with the reason if it fails. */
+function Splash() {
+  const { bootError, boot } = useWallet();
+  return (
+    <main className="center-screen" style={{ textAlign: "center", alignItems: "center" }}>
+      <img className="welcome-mark" src="/icon.svg" alt="" />
+      {bootError ? (
+        <>
+          <h1 className="welcome-title" style={{ fontSize: 22 }}>
+            The wallet couldn't start
+          </h1>
+          <p className="request-text" style={{ maxWidth: 360 }}>
+            {bootError}
+          </p>
+          <button className="btn primary" onClick={() => void boot()}>
+            Try again
+          </button>
+        </>
+      ) : (
+        <p className="balance-sub">Starting…</p>
+      )}
+    </main>
+  );
+}
+
 export function App() {
   const { status, boot } = useWallet();
 
@@ -61,6 +86,7 @@ export function App() {
 
   return (
     <>
+      {status === "loading" && <Splash />}
       {status === "empty" && <Onboarding />}
       {status === "locked" && <Lock />}
       {status === "unlocked" && (

@@ -198,7 +198,7 @@ impl AppState {
                     .breez_api_key
                     .clone()
                     .or(BUILT_IN_BREEZ_KEY.map(str::to_string))
-                    .ok_or_else(|| Error::Unsupported("open Spending without a Breez API key (set it in Settings)".into()))?;
+                    .ok_or_else(|| Error::Invalid("It needs a Breez API key. Add one in Settings".into()))?;
                 let account = SparkAccount::connect(SparkConfig {
                     id: id.clone(),
                     name: name.clone(),

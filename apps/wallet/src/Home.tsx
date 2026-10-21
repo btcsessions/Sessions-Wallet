@@ -56,7 +56,7 @@ function Tile({ module, editing }: { module: InstalledModule; editing: boolean }
 }
 
 export function Home() {
-  const { layout, editing, setEditing, reorder, open, sync, syncing, isMock, unavailable } = useWallet();
+  const { layout, editing, setEditing, reorder, open, sync, syncing, isMock, unavailable, accounts } = useWallet();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 8 } }),
@@ -106,7 +106,7 @@ export function Home() {
       <h1 className="large-title">Wallet</h1>
       {unavailable.map((u) => (
         <p className="notice" key={u.id} role="status">
-          <strong>{u.id === "spending" ? "Spending" : u.id} is unavailable.</strong> {u.reason}. Lock and unlock to try again.
+          <strong>{accounts.find((a) => a.id === u.id)?.name ?? (u.id === "spending" ? "Spending" : u.id)} is unavailable.</strong> {u.reason}, then lock and unlock to try again.
         </p>
       ))}
 

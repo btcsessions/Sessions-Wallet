@@ -20,6 +20,8 @@ interface Toast {
 
 interface State {
   status: WalletStatus | "loading";
+  /** Set when startup fails, so the user sees why instead of a blank screen. */
+  bootError: string | null;
   accounts: AccountInfo[];
   activity: Payment[];
   layout: Layout | null;
@@ -81,6 +83,7 @@ export const useWallet = create<State>((set, get) => {
 
   return {
     status: "loading",
+    bootError: null,
     accounts: [],
     activity: [],
     layout: null,
@@ -95,9 +98,18 @@ export const useWallet = create<State>((set, get) => {
     unavailable: [],
 
     async boot() {
-      const a = await api();
-      set({ isMock: a.isMock, status: await a.status() });
-      if (get().status === "unlocked") await get().refresh();
+      set({ bootError: null });
+      try {
+        const a = await api();
+        const status = await Promise.race([
+          a.status(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("The wallet engine didn't respond within 15 seconds.")), 15_000)),
+        ]);
+        set({ isMock: a.isMock, status });
+        if (status === "unlocked") await get().refresh();
+      } catch (e) {
+        set({ bootError: errorText(e) });
+      }
     },
 
     async refresh() {

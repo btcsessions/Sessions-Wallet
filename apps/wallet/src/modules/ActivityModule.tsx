@@ -24,7 +24,10 @@ export function ActivityRow({ p }: { p: Payment }) {
           {p.status === "failed" && <span className="pending-chip" style={{ color: "var(--red)" }}>Failed</span>}
         </div>
       </span>
-      <span className={`row-amount num ${p.direction === "incoming" ? "in" : ""}`}>{signed(p.amountSat, p.direction)}</span>
+      {/* Sends show what left the wallet: amount plus fee. */}
+      <span className={`row-amount num ${p.direction === "incoming" ? "in" : ""}`}>
+        {signed(p.direction === "outgoing" ? p.amountSat + p.feeSat : p.amountSat, p.direction)}
+      </span>
     </li>
   );
 }
