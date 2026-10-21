@@ -6,6 +6,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub enum Error {
     #[error("wrong passcode")]
     WrongPasscode,
+    #[error("too many wrong passcodes. Try again in {wait_secs} seconds")]
+    TooManyAttempts { wait_secs: u64 },
     #[error("the wallet is locked")]
     Locked,
     #[error("invalid recovery phrase: {0}")]
@@ -14,6 +16,9 @@ pub enum Error {
     AccountNotFound(String),
     #[error("this account can't {0}")]
     Unsupported(String),
+    /// A plain, user-facing validation message.
+    #[error("{0}")]
+    Invalid(String),
     #[error("not enough funds: need {needed} sats, have {available} sats")]
     InsufficientFunds { needed: u64, available: u64 },
     #[error("couldn't recognise that payment request")]

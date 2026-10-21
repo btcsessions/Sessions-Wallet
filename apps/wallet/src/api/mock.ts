@@ -2,7 +2,7 @@
 // reviewed without a native build. Never ships in the Tauri app.
 
 import type { WalletApi } from "./index";
-import type { AccountInfo, Layout, Leg, Method, Payment, PaymentRequest, Plan } from "./types";
+import type { AccountInfo, Layout, Leg, Method, Payment, PaymentRequest, Plan, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const now = () => Math.floor(Date.now() / 1000);
@@ -59,6 +59,8 @@ function p(
 ): Payment {
   return { id, account, direction, amountSat, feeSat, method, timestamp, description, status };
 }
+
+let mockSettings: Settings = { esploraUrl: null, hasBreezKey: true };
 
 let layout: Layout = {
   version: 1,
@@ -225,7 +227,8 @@ export const mockApi: WalletApi = {
     accounts.push(a);
     return a;
   },
-  async cosignerKey(account) {
+  async cosignerKey() {
+    const account = 0;
     return `[73c5da0a/48'/0'/${account}'/2']xpub6DkFAXWQ2dHxq2vatrt9qyA3bXYU4ToWQwCHbf5XB2mSTexcHZCeKS1VZYcPoBd5X8yVcbXFHJR9R8UCVpt82VX1VhR28mCyxUFL4r6KFrf`;
   },
   async sync() {
@@ -347,6 +350,12 @@ export const mockApi: WalletApi = {
   },
   async saveLayout(l) {
     layout = structuredClone(l);
+  },
+  async settings() {
+    return { ...mockSettings };
+  },
+  async saveSettings(s) {
+    mockSettings = { esploraUrl: s.esploraUrl, hasBreezKey: mockSettings.hasBreezKey || !!s.breezApiKey };
   },
   async feeRates() {
     await sleep(300);

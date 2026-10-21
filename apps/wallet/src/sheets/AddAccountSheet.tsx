@@ -37,7 +37,7 @@ export function AddAccountSheet({ kind }: { kind: Kind }) {
   useEffect(() => {
     if (kind === "multisig") {
       api()
-        .then((a) => a.cosignerKey(0))
+        .then((a) => a.cosignerKey())
         .then(setOurKey)
         .catch(() => setOurKey(null));
     }

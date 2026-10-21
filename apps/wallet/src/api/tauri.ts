@@ -13,7 +13,7 @@ export const tauriApi: WalletApi = {
 
   accounts: () => invoke("accounts"),
   addAccount: (spec) => invoke("add_account", { spec }),
-  cosignerKey: (account) => invoke("cosigner_key", { account }),
+  cosignerKey: () => invoke("cosigner_key"),
   sync: () => invoke("sync"),
   activity: (limit) => invoke("activity", { limit }),
 
@@ -32,4 +32,6 @@ export const tauriApi: WalletApi = {
   saveLayout: (layout) => invoke("save_layout", { layout }),
   btcPrice: (currency) => invoke("btc_price", { currency }),
   feeRates: () => invoke("fee_rates"),
+  settings: () => invoke("settings"),
+  saveSettings: (settings) => invoke("save_settings", { settings }),
 };

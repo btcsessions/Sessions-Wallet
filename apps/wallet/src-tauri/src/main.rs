@@ -1,1 +1,6 @@
-fn main() {}
+// Hide the console window on Windows release builds.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+fn main() {
+    sessions_wallet_lib::run()
+}

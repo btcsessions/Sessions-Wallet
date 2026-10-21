@@ -13,7 +13,7 @@ use bdk_wallet::miniscript::ForEachKey;
 use sessions_core::{Error, Network, Result};
 
 /// External and internal (change) descriptor pair.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DescriptorPair {
     pub external: String,
     pub internal: String,

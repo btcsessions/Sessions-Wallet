@@ -11,6 +11,7 @@ import type {
   Plan,
   Prepared,
   ReceiveTarget,
+  Settings,
   WalletStatus,
 } from "./types";
 
@@ -31,7 +32,7 @@ export interface WalletApi {
   accounts(): Promise<AccountInfo[]>;
   addAccount(spec: NewAccount): Promise<AccountInfo>;
   /** Our own cosigner key to share when setting up a multisig. */
-  cosignerKey(account: number): Promise<string>;
+  cosignerKey(): Promise<string>;
   sync(): Promise<void>;
   activity(limit: number): Promise<Payment[]>;
 
@@ -51,6 +52,9 @@ export interface WalletApi {
   saveLayout(layout: Layout): Promise<void>;
   btcPrice(currency: string): Promise<number | null>;
   feeRates(): Promise<FeeRates>;
+  settings(): Promise<Settings>;
+  /** Applied the next time the wallet unlocks. */
+  saveSettings(s: Settings): Promise<void>;
 }
 
 function inTauri(): boolean {

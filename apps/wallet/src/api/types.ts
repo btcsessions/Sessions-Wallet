@@ -142,3 +142,10 @@ export interface FeeRates {
   normal: number;
   slow: number;
 }
+
+export interface Settings {
+  esploraUrl: string | null;
+  hasBreezKey: boolean;
+  /** Write-only. */
+  breezApiKey?: string | null;
+}

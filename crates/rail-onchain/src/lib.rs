@@ -28,6 +28,7 @@ use tokio::sync::Mutex;
 use sessions_core::types::*;
 use sessions_core::{Error, Rail, Result};
 
+pub use bdk_wallet::bitcoin::bip32::Xpriv;
 pub use descriptors::DescriptorPair;
 
 const RAIL: &str = "on-chain";
