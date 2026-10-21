@@ -27,17 +27,31 @@ pub fn method_rank(m: Method) -> u8 {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Leg {
     /// `from` pays `to`, which hands out a request of `method`.
-    ToAccount { from: AccountId, to: AccountId, method: Method },
+    ToAccount {
+        from: AccountId,
+        to: AccountId,
+        method: Method,
+    },
     /// `from` pays an outside request directly.
-    ToExternal { from: AccountId, request: PaymentRequest },
+    ToExternal {
+        from: AccountId,
+        request: PaymentRequest,
+    },
     /// `from` pays a swap provider with `pay_method`; the provider delivers `request`.
-    ViaSwap { from: AccountId, provider: String, pay_method: Method, request: PaymentRequest },
+    ViaSwap {
+        from: AccountId,
+        provider: String,
+        pay_method: Method,
+        request: PaymentRequest,
+    },
 }
 
 impl Leg {
     pub fn from(&self) -> &AccountId {
         match self {
-            Leg::ToAccount { from, .. } | Leg::ToExternal { from, .. } | Leg::ViaSwap { from, .. } => from,
+            Leg::ToAccount { from, .. }
+            | Leg::ToExternal { from, .. }
+            | Leg::ViaSwap { from, .. } => from,
         }
     }
 }
@@ -58,18 +72,29 @@ pub struct Bridges {
 }
 
 fn best_shared(a: &[Method], b: &[Method]) -> Option<Method> {
-    a.iter().copied().filter(|m| b.contains(m)).min_by_key(|m| method_rank(*m))
+    a.iter()
+        .copied()
+        .filter(|m| b.contains(m))
+        .min_by_key(|m| method_rank(*m))
 }
 
 fn find<'a>(accounts: &'a [AccountInfo], id: &AccountId) -> Result<&'a AccountInfo> {
-    accounts.iter().find(|a| &a.id == id).ok_or_else(|| Error::AccountNotFound(id.0.clone()))
+    accounts
+        .iter()
+        .find(|a| &a.id == id)
+        .ok_or_else(|| Error::AccountNotFound(id.0.clone()))
 }
 
 /// Plan moving `amount` from one of the user's accounts to another.
 ///
 /// Tries a direct transfer, then a single hop through a third account
 /// (Spark preferred as the hub because it speaks Lightning and on-chain).
-pub fn plan_move(accounts: &[AccountInfo], from: &AccountId, to: &AccountId, amount_sat: Sats) -> Result<Plan> {
+pub fn plan_move(
+    accounts: &[AccountInfo],
+    from: &AccountId,
+    to: &AccountId,
+    amount_sat: Sats,
+) -> Result<Plan> {
     if from == to {
         return Err(Error::NoRoute);
     }
@@ -78,12 +103,19 @@ pub fn plan_move(accounts: &[AccountInfo], from: &AccountId, to: &AccountId, amo
 
     if let Some(method) = best_shared(&a.pays, &b.receives) {
         return Ok(Plan {
-            legs: vec![Leg::ToAccount { from: from.clone(), to: to.clone(), method }],
+            legs: vec![Leg::ToAccount {
+                from: from.clone(),
+                to: to.clone(),
+                method,
+            }],
             amount_sat,
         });
     }
 
-    let mut hubs: Vec<&AccountInfo> = accounts.iter().filter(|h| h.id != *from && h.id != *to).collect();
+    let mut hubs: Vec<&AccountInfo> = accounts
+        .iter()
+        .filter(|h| h.id != *from && h.id != *to)
+        .collect();
     hubs.sort_by_key(|h| match h.rail {
         crate::RailKind::Spark => 0,
         crate::RailKind::Ecash => 1,
@@ -91,11 +123,22 @@ pub fn plan_move(accounts: &[AccountInfo], from: &AccountId, to: &AccountId, amo
     });
 
     for hub in hubs {
-        if let (Some(m1), Some(m2)) = (best_shared(&a.pays, &hub.receives), best_shared(&hub.pays, &b.receives)) {
+        if let (Some(m1), Some(m2)) = (
+            best_shared(&a.pays, &hub.receives),
+            best_shared(&hub.pays, &b.receives),
+        ) {
             return Ok(Plan {
                 legs: vec![
-                    Leg::ToAccount { from: from.clone(), to: hub.id.clone(), method: m1 },
-                    Leg::ToAccount { from: hub.id.clone(), to: to.clone(), method: m2 },
+                    Leg::ToAccount {
+                        from: from.clone(),
+                        to: hub.id.clone(),
+                        method: m1,
+                    },
+                    Leg::ToAccount {
+                        from: hub.id.clone(),
+                        to: to.clone(),
+                        method: m2,
+                    },
                 ],
                 amount_sat,
             });
@@ -120,7 +163,13 @@ pub fn plan_payment(
     for opt in &options {
         if let Some(m) = opt.method() {
             if a.pays.contains(&m) {
-                return Ok(Plan { legs: vec![Leg::ToExternal { from: from.clone(), request: opt.clone() }], amount_sat });
+                return Ok(Plan {
+                    legs: vec![Leg::ToExternal {
+                        from: from.clone(),
+                        request: opt.clone(),
+                    }],
+                    amount_sat,
+                });
             }
         }
     }
@@ -130,7 +179,12 @@ pub fn plan_payment(
         let Some(target) = opt.method() else { continue };
         let mut candidates: Vec<(&Bridges, Method)> = bridges
             .iter()
-            .flat_map(|b| b.pay.iter().filter(|(t, _)| *t == target).map(move |(_, p)| (b, *p)))
+            .flat_map(|b| {
+                b.pay
+                    .iter()
+                    .filter(|(t, _)| *t == target)
+                    .map(move |(_, p)| (b, *p))
+            })
             .filter(|(_, p)| a.pays.contains(p))
             .collect();
         candidates.sort_by_key(|(_, p)| method_rank(*p));
@@ -149,11 +203,21 @@ pub fn plan_payment(
 
     // 3. Hop through another account that can pay it.
     for hub in accounts.iter().filter(|h| h.id != *from) {
-        let Ok(inner) = plan_payment(std::slice::from_ref(hub), bridges, &hub.id, request, amount_sat) else {
+        let Ok(inner) = plan_payment(
+            std::slice::from_ref(hub),
+            bridges,
+            &hub.id,
+            request,
+            amount_sat,
+        ) else {
             continue;
         };
         if let Some(m) = best_shared(&a.pays, &hub.receives) {
-            let mut legs = vec![Leg::ToAccount { from: from.clone(), to: hub.id.clone(), method: m }];
+            let mut legs = vec![Leg::ToAccount {
+                from: from.clone(),
+                to: hub.id.clone(),
+                method: m,
+            }];
             legs.extend(inner.legs);
             return Ok(Plan { legs, amount_sat });
         }
@@ -190,13 +254,22 @@ mod tests {
     use super::*;
     use crate::types::*;
 
-    fn acct(id: &str, rail: RailKind, receives: &[Method], pays: &[Method], bal: Sats) -> AccountInfo {
+    fn acct(
+        id: &str,
+        rail: RailKind,
+        receives: &[Method],
+        pays: &[Method],
+        bal: Sats,
+    ) -> AccountInfo {
         AccountInfo {
             id: id.into(),
             name: id.into(),
             rail,
             custody: Custody::Hot,
-            balance: Balance { confirmed: bal, ..Default::default() },
+            balance: Balance {
+                confirmed: bal,
+                ..Default::default()
+            },
             receives: receives.to_vec(),
             pays: pays.to_vec(),
         }
@@ -205,12 +278,25 @@ mod tests {
     fn setup() -> Vec<AccountInfo> {
         use Method::*;
         vec![
-            acct("savings", RailKind::Onchain, &[BitcoinAddress], &[BitcoinAddress], 1_000_000),
+            acct(
+                "savings",
+                RailKind::Onchain,
+                &[BitcoinAddress],
+                &[BitcoinAddress],
+                1_000_000,
+            ),
             acct(
                 "spending",
                 RailKind::Spark,
                 &[SparkAddress, Bolt11, BitcoinAddress],
-                &[SparkAddress, Bolt11, Bolt12, LightningAddress, Lnurl, BitcoinAddress],
+                &[
+                    SparkAddress,
+                    Bolt11,
+                    Bolt12,
+                    LightningAddress,
+                    Lnurl,
+                    BitcoinAddress,
+                ],
                 50_000,
             ),
             acct("cashu", RailKind::Ecash, &[Bolt11], &[Bolt11], 2_000),
@@ -220,59 +306,128 @@ mod tests {
     fn boltz() -> Vec<Bridges> {
         vec![Bridges {
             provider: "boltz".into(),
-            pay: vec![(Method::LiquidAddress, Method::Bolt11), (Method::LiquidAddress, Method::BitcoinAddress)],
+            pay: vec![
+                (Method::LiquidAddress, Method::Bolt11),
+                (Method::LiquidAddress, Method::BitcoinAddress),
+            ],
         }]
     }
 
     #[test]
     fn onchain_to_spark_is_direct() {
         let p = plan_move(&setup(), &"savings".into(), &"spending".into(), 10_000).unwrap();
-        assert_eq!(p.legs, vec![Leg::ToAccount { from: "savings".into(), to: "spending".into(), method: Method::BitcoinAddress }]);
+        assert_eq!(
+            p.legs,
+            vec![Leg::ToAccount {
+                from: "savings".into(),
+                to: "spending".into(),
+                method: Method::BitcoinAddress
+            }]
+        );
     }
 
     #[test]
     fn spark_to_ecash_uses_lightning() {
         let p = plan_move(&setup(), &"spending".into(), &"cashu".into(), 1_000).unwrap();
-        assert_eq!(p.legs[0], Leg::ToAccount { from: "spending".into(), to: "cashu".into(), method: Method::Bolt11 });
+        assert_eq!(
+            p.legs[0],
+            Leg::ToAccount {
+                from: "spending".into(),
+                to: "cashu".into(),
+                method: Method::Bolt11
+            }
+        );
     }
 
     #[test]
     fn onchain_to_ecash_hops_through_spark() {
         let p = plan_move(&setup(), &"savings".into(), &"cashu".into(), 1_000).unwrap();
         assert_eq!(p.legs.len(), 2);
-        assert_eq!(p.legs[0], Leg::ToAccount { from: "savings".into(), to: "spending".into(), method: Method::BitcoinAddress });
-        assert_eq!(p.legs[1], Leg::ToAccount { from: "spending".into(), to: "cashu".into(), method: Method::Bolt11 });
+        assert_eq!(
+            p.legs[0],
+            Leg::ToAccount {
+                from: "savings".into(),
+                to: "spending".into(),
+                method: Method::BitcoinAddress
+            }
+        );
+        assert_eq!(
+            p.legs[1],
+            Leg::ToAccount {
+                from: "spending".into(),
+                to: "cashu".into(),
+                method: Method::Bolt11
+            }
+        );
     }
 
     #[test]
     fn liquid_from_spark_swaps_over_lightning() {
-        let req = PaymentRequest::LiquidAddress { address: "lq1qq…".into(), amount_sat: Some(20_000) };
+        let req = PaymentRequest::LiquidAddress {
+            address: "lq1qq…".into(),
+            amount_sat: Some(20_000),
+        };
         let p = plan_payment(&setup(), &boltz(), &"spending".into(), &req, 20_000).unwrap();
-        assert!(matches!(&p.legs[0], Leg::ViaSwap { pay_method: Method::Bolt11, .. }));
+        assert!(matches!(
+            &p.legs[0],
+            Leg::ViaSwap {
+                pay_method: Method::Bolt11,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn liquid_from_onchain_uses_chain_swap() {
-        let req = PaymentRequest::LiquidAddress { address: "lq1qq…".into(), amount_sat: None };
+        let req = PaymentRequest::LiquidAddress {
+            address: "lq1qq…".into(),
+            amount_sat: None,
+        };
         let p = plan_payment(&setup(), &boltz(), &"savings".into(), &req, 20_000).unwrap();
-        assert!(matches!(&p.legs[0], Leg::ViaSwap { pay_method: Method::BitcoinAddress, .. }));
+        assert!(matches!(
+            &p.legs[0],
+            Leg::ViaSwap {
+                pay_method: Method::BitcoinAddress,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn unified_qr_picks_lightning_when_spark_can_afford_it() {
         let req = PaymentRequest::Unified {
             options: vec![
-                PaymentRequest::BitcoinAddress { address: "bc1q…".into(), amount_sat: Some(5_000), label: None },
-                PaymentRequest::Bolt11 { invoice: "lnbc…".into() },
+                PaymentRequest::BitcoinAddress {
+                    address: "bc1q…".into(),
+                    amount_sat: Some(5_000),
+                    label: None,
+                    payjoin: None,
+                },
+                PaymentRequest::Bolt11 {
+                    invoice: "lnbc…".into(),
+                },
             ],
         };
         let p = choose_payer(&setup(), &boltz(), &req, 5_000).unwrap();
-        assert_eq!(p.legs, vec![Leg::ToExternal { from: "spending".into(), request: PaymentRequest::Bolt11 { invoice: "lnbc…".into() } }]);
+        assert_eq!(
+            p.legs,
+            vec![Leg::ToExternal {
+                from: "spending".into(),
+                request: PaymentRequest::Bolt11 {
+                    invoice: "lnbc…".into()
+                }
+            }]
+        );
     }
 
     #[test]
     fn big_payment_falls_back_to_savings() {
-        let req = PaymentRequest::BitcoinAddress { address: "bc1q…".into(), amount_sat: None, label: None };
+        let req = PaymentRequest::BitcoinAddress {
+            address: "bc1q…".into(),
+            amount_sat: None,
+            label: None,
+            payjoin: None,
+        };
         let p = choose_payer(&setup(), &boltz(), &req, 500_000).unwrap();
         assert_eq!(p.legs[0].from(), &AccountId::from("savings"));
     }

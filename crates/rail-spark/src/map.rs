@@ -4,8 +4,8 @@
 
 use breez_sdk_spark::{
     BitcoinNetwork, FeePolicy, Network as SdkNetwork, OnchainConfirmationSpeed,
-    Payment as SdkPayment, PaymentDetails, PaymentMethod as SdkMethod,
-    PaymentStatus as SdkStatus, PaymentType,
+    Payment as SdkPayment, PaymentDetails, PaymentMethod as SdkMethod, PaymentStatus as SdkStatus,
+    PaymentType,
 };
 use serde::{Deserialize, Serialize};
 use sessions_core::{
@@ -61,7 +61,10 @@ pub(crate) fn direction(t: PaymentType) -> Direction {
 /// The method a payment moved over, preferring the detailed record.
 pub(crate) fn method(p: &SdkPayment) -> Method {
     match &p.details {
-        Some(PaymentDetails::Lightning { lnurl_pay_info: Some(info), .. }) => {
+        Some(PaymentDetails::Lightning {
+            lnurl_pay_info: Some(info),
+            ..
+        }) => {
             if info.ln_address.is_some() {
                 Method::LightningAddress
             } else {
@@ -85,11 +88,19 @@ pub(crate) fn method(p: &SdkPayment) -> Method {
 
 pub(crate) fn description(p: &SdkPayment) -> Option<String> {
     match &p.details {
-        Some(PaymentDetails::Lightning { description, lnurl_pay_info, .. }) => description
-            .clone()
-            .filter(|d| !d.is_empty())
-            .or_else(|| lnurl_pay_info.as_ref().and_then(|i| i.extract_description())),
-        Some(PaymentDetails::Spark { invoice_details: Some(d), .. }) => d.description.clone(),
+        Some(PaymentDetails::Lightning {
+            description,
+            lnurl_pay_info,
+            ..
+        }) => description.clone().filter(|d| !d.is_empty()).or_else(|| {
+            lnurl_pay_info
+                .as_ref()
+                .and_then(|i| i.extract_description())
+        }),
+        Some(PaymentDetails::Spark {
+            invoice_details: Some(d),
+            ..
+        }) => d.description.clone(),
         _ => None,
     }
 }
@@ -135,7 +146,12 @@ pub(crate) fn split(amount: Sats, fee: Sats, policy: FeePolicy) -> Result<(Sats,
             .checked_sub(fee)
             .filter(|a| *a > 0)
             .map(|a| (a, fee))
-            .ok_or_else(|| Error::rail(RAIL, format!("{amount} sats does not cover the {fee} sat fee"))),
+            .ok_or_else(|| {
+                Error::rail(
+                    RAIL,
+                    format!("{amount} sats does not cover the {fee} sat fee"),
+                )
+            }),
     }
 }
 
@@ -154,10 +170,16 @@ pub(crate) fn destination(req: &PaymentRequest) -> Result<(Method, String)> {
         PaymentRequest::LightningAddress { address } => address.clone(),
         PaymentRequest::Lnurl { lnurl } => lnurl.clone(),
         PaymentRequest::Bolt12 { .. } => {
-            return Err(Error::Unsupported("pay BOLT12 offers (not supported by the Spark SDK yet)".into()))
+            return Err(Error::Unsupported(
+                "pay BOLT12 offers (not supported by the Spark SDK yet)".into(),
+            ))
         }
-        PaymentRequest::LiquidAddress { .. } => return Err(Error::Unsupported("pay Liquid addresses".into())),
-        PaymentRequest::CashuToken { .. } => return Err(Error::Unsupported("pay Cashu tokens".into())),
+        PaymentRequest::LiquidAddress { .. } => {
+            return Err(Error::Unsupported("pay Liquid addresses".into()))
+        }
+        PaymentRequest::CashuToken { .. } => {
+            return Err(Error::Unsupported("pay Cashu tokens".into()))
+        }
         PaymentRequest::Unified { .. } => unreachable!("handled above"),
     };
     let method = req.method().ok_or(Error::UnrecognisedRequest)?;
@@ -176,7 +198,11 @@ pub(crate) struct QuoteHandle {
 
 impl QuoteHandle {
     pub(crate) fn new(account: AccountId, id: String) -> Self {
-        Self { rail: RAIL.into(), account, id }
+        Self {
+            rail: RAIL.into(),
+            account,
+            id,
+        }
     }
 
     pub(crate) fn encode(&self) -> String {
@@ -187,7 +213,10 @@ impl QuoteHandle {
         let h: QuoteHandle = serde_json::from_str(handle)
             .map_err(|_| Error::rail(RAIL, "this quote was not made by a Spark account"))?;
         if h.rail != RAIL || &h.account != account {
-            return Err(Error::rail(RAIL, "this quote belongs to a different account"));
+            return Err(Error::rail(
+                RAIL,
+                "this quote belongs to a different account",
+            ));
         }
         Ok(h)
     }
@@ -236,8 +265,14 @@ mod tests {
     fn networks() {
         assert_eq!(sdk_network(Network::Bitcoin).unwrap(), SdkNetwork::Mainnet);
         assert_eq!(sdk_network(Network::Regtest).unwrap(), SdkNetwork::Regtest);
-        assert!(matches!(sdk_network(Network::Testnet), Err(Error::Network(_))));
-        assert!(matches!(sdk_network(Network::Signet), Err(Error::Network(_))));
+        assert!(matches!(
+            sdk_network(Network::Testnet),
+            Err(Error::Network(_))
+        ));
+        assert!(matches!(
+            sdk_network(Network::Signet),
+            Err(Error::Network(_))
+        ));
         assert_eq!(parsed_network(SdkNetwork::Mainnet), BitcoinNetwork::Bitcoin);
         assert_eq!(parsed_network(SdkNetwork::Regtest), BitcoinNetwork::Regtest);
     }
@@ -253,18 +288,37 @@ mod tests {
 
     #[test]
     fn methods_from_details() {
-        let ln_addr = LnurlPayInfo { ln_address: Some("a@b.c".into()), ..Default::default() };
+        let ln_addr = LnurlPayInfo {
+            ln_address: Some("a@b.c".into()),
+            ..Default::default()
+        };
         let lnurl = LnurlPayInfo::default();
         let cases = [
             (Some(lightning(None, None)), Method::Bolt11),
-            (Some(lightning(None, Some(ln_addr))), Method::LightningAddress),
+            (
+                Some(lightning(None, Some(ln_addr))),
+                Method::LightningAddress,
+            ),
             (Some(lightning(None, Some(lnurl))), Method::Lnurl),
             (
-                Some(PaymentDetails::Spark { invoice_details: None, htlc_details: None, conversion_info: None }),
+                Some(PaymentDetails::Spark {
+                    invoice_details: None,
+                    htlc_details: None,
+                    conversion_info: None,
+                }),
                 Method::SparkAddress,
             ),
-            (Some(PaymentDetails::Withdraw { tx_id: "t".into() }), Method::BitcoinAddress),
-            (Some(PaymentDetails::Deposit { tx_id: "t".into(), vout: 0 }), Method::BitcoinAddress),
+            (
+                Some(PaymentDetails::Withdraw { tx_id: "t".into() }),
+                Method::BitcoinAddress,
+            ),
+            (
+                Some(PaymentDetails::Deposit {
+                    tx_id: "t".into(),
+                    vout: 0,
+                }),
+                Method::BitcoinAddress,
+            ),
         ];
         for (details, want) in cases {
             assert_eq!(method(&sdk_payment(details, SdkMethod::Unknown)), want);
@@ -298,7 +352,10 @@ mod tests {
 
         let p = sdk_payment(
             Some(PaymentDetails::Spark {
-                invoice_details: Some(SparkInvoicePaymentDetails { description: Some("rent".into()), invoice: "x".into() }),
+                invoice_details: Some(SparkInvoicePaymentDetails {
+                    description: Some("rent".into()),
+                    invoice: "x".into(),
+                }),
                 htlc_details: None,
                 conversion_info: None,
             }),
@@ -315,7 +372,10 @@ mod tests {
         p.status = SdkStatus::Pending;
         let m = payment(&"spend".into(), &p).unwrap();
         assert_eq!(m.account, AccountId::from("spend"));
-        assert_eq!((m.amount_sat, m.fee_sat, m.timestamp), (1_000, 3, 1_760_000_000));
+        assert_eq!(
+            (m.amount_sat, m.fee_sat, m.timestamp),
+            (1_000, 3, 1_760_000_000)
+        );
         assert_eq!(m.direction, Direction::Incoming);
         assert_eq!(m.status, PaymentStatus::Pending);
         assert_eq!(m.method, Method::Bolt11);
@@ -326,37 +386,79 @@ mod tests {
 
     #[test]
     fn fee_priorities() {
-        assert!(matches!(confirmation_speed(FeePriority::Fast).unwrap(), OnchainConfirmationSpeed::Fast));
-        assert!(matches!(confirmation_speed(FeePriority::Normal).unwrap(), OnchainConfirmationSpeed::Medium));
-        assert!(matches!(confirmation_speed(FeePriority::Slow).unwrap(), OnchainConfirmationSpeed::Slow));
-        assert!(matches!(confirmation_speed(FeePriority::Custom(5)), Err(Error::Unsupported(_))));
+        assert!(matches!(
+            confirmation_speed(FeePriority::Fast).unwrap(),
+            OnchainConfirmationSpeed::Fast
+        ));
+        assert!(matches!(
+            confirmation_speed(FeePriority::Normal).unwrap(),
+            OnchainConfirmationSpeed::Medium
+        ));
+        assert!(matches!(
+            confirmation_speed(FeePriority::Slow).unwrap(),
+            OnchainConfirmationSpeed::Slow
+        ));
+        assert!(matches!(
+            confirmation_speed(FeePriority::Custom(5)),
+            Err(Error::Unsupported(_))
+        ));
     }
 
     #[test]
     fn fee_split() {
-        assert_eq!(split(1_000, 10, FeePolicy::FeesExcluded).unwrap(), (1_000, 10));
-        assert_eq!(split(1_000, 10, FeePolicy::FeesIncluded).unwrap(), (990, 10));
+        assert_eq!(
+            split(1_000, 10, FeePolicy::FeesExcluded).unwrap(),
+            (1_000, 10)
+        );
+        assert_eq!(
+            split(1_000, 10, FeePolicy::FeesIncluded).unwrap(),
+            (990, 10)
+        );
         assert!(split(10, 10, FeePolicy::FeesIncluded).is_err());
         assert!(split(5, 10, FeePolicy::FeesIncluded).is_err());
     }
 
     #[test]
     fn destinations() {
-        let (m, s) = destination(&PaymentRequest::LightningAddress { address: "a@b.c".into() }).unwrap();
+        let (m, s) = destination(&PaymentRequest::LightningAddress {
+            address: "a@b.c".into(),
+        })
+        .unwrap();
         assert_eq!((m, s.as_str()), (Method::LightningAddress, "a@b.c"));
-        assert!(matches!(destination(&PaymentRequest::Bolt12 { offer: "lno1".into() }), Err(Error::Unsupported(_))));
         assert!(matches!(
-            destination(&PaymentRequest::LiquidAddress { address: "lq1".into(), amount_sat: None }),
+            destination(&PaymentRequest::Bolt12 {
+                offer: "lno1".into()
+            }),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            destination(&PaymentRequest::LiquidAddress {
+                address: "lq1".into(),
+                amount_sat: None
+            }),
             Err(Error::Unsupported(_))
         ));
         let unified = PaymentRequest::Unified {
             options: vec![
-                PaymentRequest::LiquidAddress { address: "lq1".into(), amount_sat: None },
-                PaymentRequest::Bolt11 { invoice: "lnbc1x".into() },
-                PaymentRequest::BitcoinAddress { address: "bc1q".into(), amount_sat: None, label: None },
+                PaymentRequest::LiquidAddress {
+                    address: "lq1".into(),
+                    amount_sat: None,
+                },
+                PaymentRequest::Bolt11 {
+                    invoice: "lnbc1x".into(),
+                },
+                PaymentRequest::BitcoinAddress {
+                    address: "bc1q".into(),
+                    amount_sat: None,
+                    label: None,
+                    payjoin: None,
+                },
             ],
         };
-        assert_eq!(destination(&unified).unwrap(), (Method::Bolt11, "lnbc1x".into()));
+        assert_eq!(
+            destination(&unified).unwrap(),
+            (Method::Bolt11, "lnbc1x".into())
+        );
         assert!(destination(&PaymentRequest::Unified { options: vec![] }).is_err());
     }
 
@@ -375,7 +477,10 @@ mod tests {
 
         assert!(QuoteHandle::decode(&h.encode(), &"other".into()).is_err());
         assert!(QuoteHandle::decode("not json", &acct).is_err());
-        let foreign = QuoteHandle { rail: "onchain".into(), ..h };
+        let foreign = QuoteHandle {
+            rail: "onchain".into(),
+            ..h
+        };
         assert!(QuoteHandle::decode(&foreign.encode(), &acct).is_err());
     }
 }

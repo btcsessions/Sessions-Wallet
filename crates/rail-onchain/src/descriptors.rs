@@ -31,7 +31,9 @@ fn coin_type(network: Network) -> u32 {
 pub fn key_expression(master: &Xpriv, path: &str) -> Result<String> {
     let secp = Secp256k1::new();
     let path = DerivationPath::from_str(path).map_err(|e| Error::Crypto(e.to_string()))?;
-    let derived = master.derive_priv(&secp, &path).map_err(|e| Error::Crypto(e.to_string()))?;
+    let derived = master
+        .derive_priv(&secp, &path)
+        .map_err(|e| Error::Crypto(e.to_string()))?;
     let xpub = Xpub::from_priv(&secp, &derived);
     let fp = master.fingerprint(&secp);
     let origin = path.to_string();
@@ -42,19 +44,28 @@ pub fn key_expression(master: &Xpriv, path: &str) -> Result<String> {
 /// BIP84 native-segwit single-sig account from the app's own seed.
 pub fn hot_single_sig(master: &Xpriv, network: Network, account: u32) -> Result<DescriptorPair> {
     let key = key_expression(master, &format!("m/84'/{}'/{account}'", coin_type(network)))?;
-    Ok(DescriptorPair { external: format!("wpkh({key}/0/*)"), internal: format!("wpkh({key}/1/*)") })
+    Ok(DescriptorPair {
+        external: format!("wpkh({key}/0/*)"),
+        internal: format!("wpkh({key}/1/*)"),
+    })
 }
 
 /// Our cosigner key for a BIP48 P2WSH multisig (`m/48'/coin'/account'/2'`).
 /// Share this with the other cosigners / hardware wallets.
 pub fn multisig_cosigner_key(master: &Xpriv, network: Network, account: u32) -> Result<String> {
-    key_expression(master, &format!("m/48'/{}'/{account}'/2'", coin_type(network)))
+    key_expression(
+        master,
+        &format!("m/48'/{}'/{account}'/2'", coin_type(network)),
+    )
 }
 
 /// `wsh(sortedmulti(...))` from `[origin]xpub` key expressions.
 pub fn multisig(threshold: u8, keys: &[String]) -> Result<DescriptorPair> {
     if threshold == 0 || threshold as usize > keys.len() || keys.len() > 15 {
-        return Err(Error::Unsupported(format!("make a {threshold}-of-{} multisig", keys.len())));
+        return Err(Error::Unsupported(format!(
+            "make a {threshold}-of-{} multisig",
+            keys.len()
+        )));
     }
     let mut sorted = keys.to_vec();
     sorted.sort();
@@ -62,7 +73,13 @@ pub fn multisig(threshold: u8, keys: &[String]) -> Result<DescriptorPair> {
     if sorted.len() != keys.len() {
         return Err(Error::Unsupported("use the same cosigner key twice".into()));
     }
-    let list = |branch: u8| sorted.iter().map(|k| format!("{k}/{branch}/*")).collect::<Vec<_>>().join(",");
+    let list = |branch: u8| {
+        sorted
+            .iter()
+            .map(|k| format!("{k}/{branch}/*"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     let pair = DescriptorPair {
         external: format!("wsh(sortedmulti({threshold},{}))", list(0)),
         internal: format!("wsh(sortedmulti({threshold},{}))", list(1)),
@@ -86,14 +103,25 @@ pub fn import(input: &str, network: Network) -> Result<DescriptorPair> {
     };
 
     let pair = if s.contains("<0;1>") {
-        DescriptorPair { external: s.replace("<0;1>", "0"), internal: s.replace("<0;1>", "1") }
+        DescriptorPair {
+            external: s.replace("<0;1>", "0"),
+            internal: s.replace("<0;1>", "1"),
+        }
     } else if s.contains('(') {
         if !s.contains("/0/*") {
-            return Err(Error::Unsupported("import a descriptor without a /0/* receive branch".into()));
+            return Err(Error::Unsupported(
+                "import a descriptor without a /0/* receive branch".into(),
+            ));
         }
-        DescriptorPair { external: s.clone(), internal: s.replace("/0/*", "/1/*") }
+        DescriptorPair {
+            external: s.clone(),
+            internal: s.replace("/0/*", "/1/*"),
+        }
     } else if s.starts_with('[') {
-        DescriptorPair { external: format!("wpkh({s}/0/*)"), internal: format!("wpkh({s}/1/*)") }
+        DescriptorPair {
+            external: format!("wpkh({s}/0/*)"),
+            internal: format!("wpkh({s}/1/*)"),
+        }
     } else {
         return Err(Error::Unsupported(
             "import a bare xpub without its [fingerprint/path] origin – export the descriptor from your device instead".into(),
@@ -107,17 +135,25 @@ pub fn import(input: &str, network: Network) -> Result<DescriptorPair> {
 
 pub fn validate(pair: &DescriptorPair) -> Result<()> {
     for d in [&pair.external, &pair.internal] {
-        let parsed = Descriptor::<DescriptorPublicKey>::from_str(d).map_err(|e| Error::Crypto(format!("bad descriptor: {e}")))?;
+        let parsed = Descriptor::<DescriptorPublicKey>::from_str(d)
+            .map_err(|e| Error::Crypto(format!("bad descriptor: {e}")))?;
         if !parsed.has_wildcard() {
-            return Err(Error::Unsupported("use a descriptor without a /* wildcard".into()));
+            return Err(Error::Unsupported(
+                "use a descriptor without a /* wildcard".into(),
+            ));
         }
     }
     Ok(())
 }
 
 fn check_network(pair: &DescriptorPair, network: Network) -> Result<()> {
-    let want = if network == Network::Bitcoin { NetworkKind::Main } else { NetworkKind::Test };
-    let parsed = Descriptor::<DescriptorPublicKey>::from_str(&pair.external).map_err(|e| Error::Crypto(e.to_string()))?;
+    let want = if network == Network::Bitcoin {
+        NetworkKind::Main
+    } else {
+        NetworkKind::Test
+    };
+    let parsed = Descriptor::<DescriptorPublicKey>::from_str(&pair.external)
+        .map_err(|e| Error::Crypto(e.to_string()))?;
     let mut ok = true;
     parsed.for_each_key(|k| {
         if let DescriptorPublicKey::XPub(x) = k {
@@ -131,13 +167,16 @@ fn check_network(pair: &DescriptorPair, network: Network) -> Result<()> {
     if ok {
         Ok(())
     } else {
-        Err(Error::Network("these keys are for a different network".into()))
+        Err(Error::Network(
+            "these keys are for a different network".into(),
+        ))
     }
 }
 
 /// Fingerprints of every key in a descriptor, for matching signers.
 pub fn fingerprints(descriptor: &str) -> Result<Vec<String>> {
-    let parsed = Descriptor::<DescriptorPublicKey>::from_str(descriptor).map_err(|e| Error::Crypto(e.to_string()))?;
+    let parsed = Descriptor::<DescriptorPublicKey>::from_str(descriptor)
+        .map_err(|e| Error::Crypto(e.to_string()))?;
     let mut out = Vec::new();
     parsed.for_each_key(|k| {
         out.push(k.master_fingerprint().to_string());
@@ -154,7 +193,10 @@ mod tests {
     const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     fn master() -> Xpriv {
-        Seed::from_phrase(ABANDON).unwrap().master_xpriv(Network::Bitcoin).unwrap()
+        Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap()
     }
 
     /// Known BIP84 vector for the "abandon … about" phrase.
@@ -193,7 +235,10 @@ mod tests {
     #[test]
     fn import_rejects_wrong_network_and_naked_xpub() {
         let key = key_expression(&master(), "m/84'/0'/0'").unwrap();
-        assert!(matches!(import(&key, Network::Signet), Err(Error::Network(_))));
+        assert!(matches!(
+            import(&key, Network::Signet),
+            Err(Error::Network(_))
+        ));
         let naked = key.split(']').nth(1).unwrap();
         assert!(import(naked, Network::Bitcoin).is_err());
     }

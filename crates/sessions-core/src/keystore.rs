@@ -44,7 +44,11 @@ impl Seed {
     }
 
     pub fn from_phrase(phrase: &str) -> Result<Self> {
-        let normalised = phrase.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let normalised = phrase
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
         let mnemonic = Mnemonic::parse_in_normalized(Language::English, &normalised)
             .map_err(|e| Error::InvalidMnemonic(e.to_string()))?;
         Ok(Self { mnemonic })
@@ -79,7 +83,9 @@ fn bip85_from_master(master: &Xpriv, index: u32) -> Result<Seed> {
     let secp = Secp256k1::new();
     let path = DerivationPath::from_str(&format!("m/83696968'/39'/0'/{words}'/{index}'"))
         .map_err(|e| Error::Crypto(e.to_string()))?;
-    let derived = master.derive_priv(&secp, &path).map_err(|e| Error::Crypto(e.to_string()))?;
+    let derived = master
+        .derive_priv(&secp, &path)
+        .map_err(|e| Error::Crypto(e.to_string()))?;
 
     let mut engine = hmac::HmacEngine::<sha512::Hash>::new(b"bip-entropy-from-k");
     engine.input(&derived.private_key.secret_bytes());
@@ -88,7 +94,9 @@ fn bip85_from_master(master: &Xpriv, index: u32) -> Result<Seed> {
     let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy[..16])
         .map_err(|e| Error::Crypto(e.to_string()));
     entropy.zeroize();
-    Ok(Seed { mnemonic: mnemonic? })
+    Ok(Seed {
+        mnemonic: mnemonic?,
+    })
 }
 
 /// Encrypted phrase as stored on disk / in the OS keychain.
@@ -114,7 +122,11 @@ pub struct KdfParams {
 impl Default for KdfParams {
     /// 64 MiB / 3 passes: ~0.5s on a recent phone.
     fn default() -> Self {
-        Self { m_cost_kib: 64 * 1024, t_cost: 3, p_cost: 1 }
+        Self {
+            m_cost_kib: 64 * 1024,
+            t_cost: 3,
+            p_cost: 1,
+        }
     }
 }
 
@@ -126,18 +138,26 @@ impl Vault {
         rand::rngs::OsRng.fill_bytes(&mut nonce);
 
         let key = derive_key(passcode, &salt, kdf)?;
-        let cipher = XChaCha20Poly1305::new_from_slice(&key[..]).map_err(|e| Error::Crypto(e.to_string()))?;
+        let cipher = XChaCha20Poly1305::new_from_slice(&key[..])
+            .map_err(|e| Error::Crypto(e.to_string()))?;
         let phrase = seed.phrase();
         let ciphertext = cipher
             .encrypt(XNonce::from_slice(&nonce), phrase.as_bytes())
             .map_err(|e| Error::Crypto(e.to_string()))?;
 
-        Ok(Vault { version: 1, kdf, salt, nonce, ciphertext })
+        Ok(Vault {
+            version: 1,
+            kdf,
+            salt,
+            nonce,
+            ciphertext,
+        })
     }
 
     pub fn open(&self, passcode: &str) -> Result<Seed> {
         let key = derive_key(passcode, &self.salt, self.kdf)?;
-        let cipher = XChaCha20Poly1305::new_from_slice(&key[..]).map_err(|e| Error::Crypto(e.to_string()))?;
+        let cipher = XChaCha20Poly1305::new_from_slice(&key[..])
+            .map_err(|e| Error::Crypto(e.to_string()))?;
         let plain = Zeroizing::new(
             cipher
                 .decrypt(XNonce::from_slice(&self.nonce), self.ciphertext.as_ref())
@@ -184,7 +204,11 @@ mod tests {
     const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     fn fast() -> KdfParams {
-        KdfParams { m_cost_kib: 1024, t_cost: 1, p_cost: 1 }
+        KdfParams {
+            m_cost_kib: 1024,
+            t_cost: 1,
+            p_cost: 1,
+        }
     }
 
     #[test]
@@ -200,7 +224,10 @@ mod tests {
     #[test]
     fn phrase_is_normalised() {
         let messy = format!("  {}  ", ABANDON.to_uppercase().replace(' ', "   "));
-        assert_eq!(Seed::from_phrase(&messy).unwrap().phrase().as_str(), ABANDON);
+        assert_eq!(
+            Seed::from_phrase(&messy).unwrap().phrase().as_str(),
+            ABANDON
+        );
     }
 
     /// Official BIP85 test vector (BIP39, English, 12 words, index 0).

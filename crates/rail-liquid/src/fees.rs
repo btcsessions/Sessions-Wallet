@@ -35,14 +35,18 @@ pub fn percentage_fee(pct: f64, amount: Sats) -> Sats {
 
 /// What is left of `gross` after Boltz's percentage fee and a fixed fee.
 pub fn net_of(gross: Sats, pct: f64, fixed: Sats) -> Option<Sats> {
-    gross.checked_sub(percentage_fee(pct, gross))?.checked_sub(fixed)
+    gross
+        .checked_sub(percentage_fee(pct, gross))?
+        .checked_sub(fixed)
 }
 
 /// Smallest `gross` with `net_of(gross) >= net`. `net_of` never decreases as
 /// `gross` grows, so a closed-form start plus a short walk is exact.
 pub fn gross_for_net(net: Sats, pct: f64, fixed: Sats) -> Result<Sats> {
     check_pct(pct)?;
-    let need = net.checked_add(fixed).ok_or_else(|| rail("amount overflow"))?;
+    let need = net
+        .checked_add(fixed)
+        .ok_or_else(|| rail("amount overflow"))?;
     let mut g = ((need as f64) / (1.0 - pct / 100.0)).ceil() as Sats;
     let ok = |g: Sats| net_of(g, pct, fixed).is_some_and(|n| n >= net);
     for _ in 0..1_000 {
@@ -68,10 +72,14 @@ pub fn liquid_claim_fee(boltz_estimate: Sats) -> Sats {
 
 pub fn check_limits(amount: Sats, min: Sats, max: Sats, what: &str) -> Result<()> {
     if amount < min {
-        return Err(rail(format!("{what} needs at least {min} sats; this one is {amount} sats")));
+        return Err(rail(format!(
+            "{what} needs at least {min} sats; this one is {amount} sats"
+        )));
     }
     if amount > max {
-        return Err(rail(format!("{what} allows at most {max} sats; this one is {amount} sats")));
+        return Err(rail(format!(
+            "{what} allows at most {max} sats; this one is {amount} sats"
+        )));
     }
     Ok(())
 }
@@ -86,10 +94,21 @@ pub struct ReverseQuote {
     pub claim_fee_sat: Sats,
 }
 
-pub fn quote_reverse(target: Sats, pct: f64, lockup_fee: Sats, claim_fee: Sats) -> Result<ReverseQuote> {
-    let onchain_needed = target.checked_add(claim_fee).ok_or_else(|| rail("amount overflow"))?;
+pub fn quote_reverse(
+    target: Sats,
+    pct: f64,
+    lockup_fee: Sats,
+    claim_fee: Sats,
+) -> Result<ReverseQuote> {
+    let onchain_needed = target
+        .checked_add(claim_fee)
+        .ok_or_else(|| rail("amount overflow"))?;
     let invoice = gross_for_net(onchain_needed, pct, lockup_fee)?;
-    Ok(ReverseQuote { invoice_sat: invoice, onchain_needed_sat: onchain_needed, claim_fee_sat: claim_fee })
+    Ok(ReverseQuote {
+        invoice_sat: invoice,
+        onchain_needed_sat: onchain_needed,
+        claim_fee_sat: claim_fee,
+    })
 }
 
 /// Plan for paying a Liquid address from on-chain BTC (chain swap).
@@ -102,21 +121,38 @@ pub struct ChainQuote {
     pub claim_fee_sat: Sats,
 }
 
-pub fn quote_chain(target: Sats, pct: f64, server_fee: Sats, claim_fee: Sats) -> Result<ChainQuote> {
-    let server_lock = target.checked_add(claim_fee).ok_or_else(|| rail("amount overflow"))?;
+pub fn quote_chain(
+    target: Sats,
+    pct: f64,
+    server_fee: Sats,
+    claim_fee: Sats,
+) -> Result<ChainQuote> {
+    let server_lock = target
+        .checked_add(claim_fee)
+        .ok_or_else(|| rail("amount overflow"))?;
     let user_lock = gross_for_net(server_lock, pct, server_fee)?;
-    Ok(ChainQuote { server_lock_sat: server_lock, user_lock_sat: user_lock, claim_fee_sat: claim_fee })
+    Ok(ChainQuote {
+        server_lock_sat: server_lock,
+        user_lock_sat: user_lock,
+        claim_fee_sat: claim_fee,
+    })
 }
 
 /// Accept Boltz's `userLockAmount` only if it is what the advertised fees imply.
-pub fn check_chain_quote(q: &ChainQuote, boltz_server_lock: Sats, boltz_user_lock: Sats) -> Result<()> {
+pub fn check_chain_quote(
+    q: &ChainQuote,
+    boltz_server_lock: Sats,
+    boltz_user_lock: Sats,
+) -> Result<()> {
     if boltz_server_lock != q.server_lock_sat {
         return Err(rail(format!(
             "Boltz offered to lock {boltz_server_lock} sats of L-BTC, expected {}",
             q.server_lock_sat
         )));
     }
-    if boltz_user_lock > q.user_lock_sat + QUOTE_TOLERANCE_SAT || boltz_user_lock <= boltz_server_lock {
+    if boltz_user_lock > q.user_lock_sat + QUOTE_TOLERANCE_SAT
+        || boltz_user_lock <= boltz_server_lock
+    {
         return Err(rail(format!(
             "Boltz asked for {boltz_user_lock} sats, expected about {}",
             q.user_lock_sat
@@ -130,7 +166,13 @@ pub fn check_chain_quote(q: &ChainQuote, boltz_server_lock: Sats, boltz_user_loc
 /// either the invoice or the on-chain amount.
 pub fn submarine_max_fee(invoice: Sats, pct: f64, miner_fee: Sats) -> Result<Sats> {
     check_pct(pct)?;
-    let gross = gross_for_net(invoice.checked_add(miner_fee).ok_or_else(|| rail("amount overflow"))?, pct, 0)?;
+    let gross = gross_for_net(
+        invoice
+            .checked_add(miner_fee)
+            .ok_or_else(|| rail("amount overflow"))?,
+        pct,
+        0,
+    )?;
     Ok(gross - invoice + QUOTE_TOLERANCE_SAT)
 }
 
@@ -142,7 +184,10 @@ pub fn sats_to_btc(sats: Sats) -> String {
 }
 
 pub fn liquid_bip21(address: &str, amount: Sats, asset_id: &str) -> String {
-    format!("liquidnetwork:{address}?amount={}&assetid={asset_id}", sats_to_btc(amount))
+    format!(
+        "liquidnetwork:{address}?amount={}&assetid={asset_id}",
+        sats_to_btc(amount)
+    )
 }
 
 #[cfg(test)]
@@ -169,7 +214,10 @@ mod tests {
         ] {
             let g = gross_for_net(net, pct, fixed).unwrap();
             assert!(net_of(g, pct, fixed).unwrap() >= net, "{net} {pct} {fixed}");
-            assert!(net_of(g - 1, pct, fixed).is_none_or(|n| n < net), "not minimal: {net} {pct} {fixed}");
+            assert!(
+                net_of(g - 1, pct, fixed).is_none_or(|n| n < net),
+                "not minimal: {net} {pct} {fixed}"
+            );
         }
         assert!(gross_for_net(1, 75.0, 0).is_err());
         assert!(gross_for_net(1, f64::NAN, 0).is_err());
@@ -222,8 +270,14 @@ mod tests {
     #[test]
     fn limits() {
         assert!(check_limits(1_000, 1_000, 25_000_000, "x").is_ok());
-        assert!(check_limits(999, 1_000, 25_000_000, "x").unwrap_err().to_string().contains("at least 1000"));
-        assert!(check_limits(25_000_001, 1_000, 25_000_000, "x").unwrap_err().to_string().contains("at most"));
+        assert!(check_limits(999, 1_000, 25_000_000, "x")
+            .unwrap_err()
+            .to_string()
+            .contains("at least 1000"));
+        assert!(check_limits(25_000_001, 1_000, 25_000_000, "x")
+            .unwrap_err()
+            .to_string()
+            .contains("at most"));
     }
 
     #[test]
@@ -233,6 +287,9 @@ mod tests {
         assert_eq!(sats_to_btc(150_000_000), "1.5");
         assert_eq!(sats_to_btc(1), "0.00000001");
         assert_eq!(sats_to_btc(0), "0");
-        assert_eq!(liquid_bip21("lq1abc", 10_000, "6f02"), "liquidnetwork:lq1abc?amount=0.0001&assetid=6f02");
+        assert_eq!(
+            liquid_bip21("lq1abc", 10_000, "6f02"),
+            "liquidnetwork:lq1abc?amount=0.0001&assetid=6f02"
+        );
     }
 }

@@ -479,6 +479,9 @@ impl sessions_core::Rail for EcashAccount {
             fee_sat,
             handle: quote.id,
             needs_signature: None,
+            private: false,
+            payjoin: false,
+            notes: vec![],
         })
     }
 

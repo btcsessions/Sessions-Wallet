@@ -39,7 +39,10 @@ pub enum Error {
 
 impl Error {
     pub fn rail(rail: impl Into<String>, e: impl std::fmt::Display) -> Self {
-        Error::Rail { rail: rail.into(), message: e.to_string() }
+        Error::Rail {
+            rail: rail.into(),
+            message: e.to_string(),
+        }
     }
 }
 

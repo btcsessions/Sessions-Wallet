@@ -116,6 +116,7 @@ fn bolt11_destination_selection() {
                 address: "bc1q...".into(),
                 amount_sat: None,
                 label: None,
+                payjoin: None,
             },
             PaymentRequest::Bolt11 {
                 invoice: inv.clone(),
@@ -127,6 +128,7 @@ fn bolt11_destination_selection() {
         address: "bc1q...".into(),
         amount_sat: None,
         label: None,
+        payjoin: None,
     };
     assert!(matches!(bolt11_of(&addr), Err(Error::Unsupported(_))));
 }
@@ -181,6 +183,7 @@ fn bolt11_send(invoice: String) -> SendRequest {
         send_max: false,
         fee: FeePriority::default(),
         note: None,
+        style: Default::default(),
     }
 }
 
@@ -332,6 +335,7 @@ async fn mint_token_redeem_melt_end_to_end() {
             address: "bc1qxyz".into(),
             amount_sat: Some(5),
             label: None,
+            payjoin: None,
         },
         ..bolt11_send(String::new())
     };

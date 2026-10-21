@@ -157,7 +157,12 @@ pub struct Store {
 
 impl Store {
     pub fn new(network: Network) -> Self {
-        Store { version: STORE_VERSION, network, next_index: 0, swaps: Vec::new() }
+        Store {
+            version: STORE_VERSION,
+            network,
+            next_index: 0,
+            swaps: Vec::new(),
+        }
     }
 
     pub fn path(data_dir: &Path) -> PathBuf {
@@ -174,8 +179,8 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Store::new(network)),
             Err(e) => return Err(Error::Storage(format!("read {}: {e}", path.display()))),
         };
-        let store: Store =
-            serde_json::from_slice(&bytes).map_err(|e| Error::Storage(format!("parse {}: {e}", path.display())))?;
+        let store: Store = serde_json::from_slice(&bytes)
+            .map_err(|e| Error::Storage(format!("parse {}: {e}", path.display())))?;
         if store.version > STORE_VERSION {
             return Err(Error::Storage(format!(
                 "{} was written by a newer version (v{}) of this app",
@@ -207,8 +212,11 @@ impl Store {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
-        let mut f = opts.open(&tmp).map_err(|e| storage("open temp journal", e))?;
-        f.write_all(&json).map_err(|e| storage("write temp journal", e))?;
+        let mut f = opts
+            .open(&tmp)
+            .map_err(|e| storage("open temp journal", e))?;
+        f.write_all(&json)
+            .map_err(|e| storage("write temp journal", e))?;
         f.sync_all().map_err(|e| storage("sync temp journal", e))?;
         drop(f);
         fs::rename(&tmp, &path).map_err(|e| storage("replace journal", e))?;
@@ -271,7 +279,11 @@ mod tests {
         let mut s = Store::new(Network::Bitcoin);
         s.next_index = 6;
         s.swaps.push(record("a"));
-        s.swaps.push(SwapRecord { kind: SwapKind::Submarine, phase: Phase::Pending, ..record("b") });
+        s.swaps.push(SwapRecord {
+            kind: SwapKind::Submarine,
+            phase: Phase::Pending,
+            ..record("b")
+        });
         s.save(dir.path()).unwrap();
         // No temp file left behind.
         assert!(!dir.path().join(format!("{STORE_FILE}.tmp")).exists());
@@ -282,22 +294,38 @@ mod tests {
         let mut s2 = back.clone();
         s2.get_mut("a").unwrap().phase = Phase::Complete;
         s2.save(dir.path()).unwrap();
-        assert_eq!(Store::load(dir.path(), Network::Bitcoin).unwrap().get("a").unwrap().phase, Phase::Complete);
+        assert_eq!(
+            Store::load(dir.path(), Network::Bitcoin)
+                .unwrap()
+                .get("a")
+                .unwrap()
+                .phase,
+            Phase::Complete
+        );
     }
 
     #[test]
     fn missing_is_empty_but_corrupt_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(Store::load(dir.path(), Network::Regtest).unwrap(), Store::new(Network::Regtest));
+        assert_eq!(
+            Store::load(dir.path(), Network::Regtest).unwrap(),
+            Store::new(Network::Regtest)
+        );
         fs::write(Store::path(dir.path()), b"{ not json").unwrap();
-        assert!(matches!(Store::load(dir.path(), Network::Regtest), Err(Error::Storage(_))));
+        assert!(matches!(
+            Store::load(dir.path(), Network::Regtest),
+            Err(Error::Storage(_))
+        ));
     }
 
     #[test]
     fn network_mismatch_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         Store::new(Network::Regtest).save(dir.path()).unwrap();
-        assert!(matches!(Store::load(dir.path(), Network::Bitcoin), Err(Error::Network(_))));
+        assert!(matches!(
+            Store::load(dir.path(), Network::Bitcoin),
+            Err(Error::Network(_))
+        ));
     }
 
     #[cfg(unix)]
@@ -306,7 +334,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         Store::new(Network::Bitcoin).save(dir.path()).unwrap();
-        let mode = fs::metadata(Store::path(dir.path())).unwrap().permissions().mode();
+        let mode = fs::metadata(Store::path(dir.path()))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o077, 0);
     }
 }

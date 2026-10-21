@@ -51,7 +51,9 @@ pub fn plan(kind: SwapKind, status: &str, lockup_was_seen: bool) -> Action {
         // reporting `transaction.confirmed`.
         SwapKind::Reverse => match status {
             "transaction.mempool" | "transaction.confirmed" | "invoice.settled" => Action::Claim,
-            "swap.expired" | "invoice.expired" | "transaction.failed" | "transaction.refunded" => Action::Fail,
+            "swap.expired" | "invoice.expired" | "transaction.failed" | "transaction.refunded" => {
+                Action::Fail
+            }
             _ => Action::Wait,
         },
         // We lock BTC; Boltz locks L-BTC. Same confirmation rule as above.
@@ -60,9 +62,10 @@ pub fn plan(kind: SwapKind, status: &str, lockup_was_seen: bool) -> Action {
             | "transaction.server.confirmed"
             | "transaction.claim.pending"
             | "transaction.claimed" => Action::Claim,
-            "transaction.lockupFailed" | "swap.expired" | "transaction.failed" | "transaction.refunded" => {
-                Action::Refund
-            }
+            "transaction.lockupFailed"
+            | "swap.expired"
+            | "transaction.failed"
+            | "transaction.refunded" => Action::Refund,
             _ => Action::Wait,
         },
         // An outside sender locks L-BTC; Boltz pays our invoice and sweeps.
@@ -93,31 +96,60 @@ mod tests {
         assert_eq!(plan(Reverse, "transaction.mempool", true), Claim);
         assert_eq!(plan(Reverse, "transaction.confirmed", true), Claim);
         assert_eq!(plan(Reverse, "invoice.settled", true), Claim);
-        for s in ["swap.expired", "invoice.expired", "transaction.failed", "transaction.refunded"] {
+        for s in [
+            "swap.expired",
+            "invoice.expired",
+            "transaction.failed",
+            "transaction.refunded",
+        ] {
             assert_eq!(plan(Reverse, s, true), Fail, "{s}");
         }
     }
 
     #[test]
     fn chain() {
-        for s in ["swap.created", "transaction.mempool", "transaction.confirmed", "transaction.zeroconf.rejected"] {
+        for s in [
+            "swap.created",
+            "transaction.mempool",
+            "transaction.confirmed",
+            "transaction.zeroconf.rejected",
+        ] {
             assert_eq!(plan(ChainBtcToLbtc, s, false), Wait, "{s}");
         }
-        for s in ["transaction.server.mempool", "transaction.server.confirmed", "transaction.claim.pending", "transaction.claimed"] {
+        for s in [
+            "transaction.server.mempool",
+            "transaction.server.confirmed",
+            "transaction.claim.pending",
+            "transaction.claimed",
+        ] {
             assert_eq!(plan(ChainBtcToLbtc, s, true), Claim, "{s}");
         }
-        for s in ["transaction.lockupFailed", "swap.expired", "transaction.failed", "transaction.refunded"] {
+        for s in [
+            "transaction.lockupFailed",
+            "swap.expired",
+            "transaction.failed",
+            "transaction.refunded",
+        ] {
             assert_eq!(plan(ChainBtcToLbtc, s, true), Refund, "{s}");
         }
     }
 
     #[test]
     fn submarine() {
-        for s in ["swap.created", "invoice.set", "transaction.mempool", "transaction.confirmed", "invoice.pending"] {
+        for s in [
+            "swap.created",
+            "invoice.set",
+            "transaction.mempool",
+            "transaction.confirmed",
+            "invoice.pending",
+        ] {
             assert_eq!(plan(Submarine, s, false), Wait, "{s}");
         }
         assert_eq!(plan(Submarine, "invoice.paid", true), Paid);
-        assert_eq!(plan(Submarine, "transaction.claim.pending", true), Cooperate);
+        assert_eq!(
+            plan(Submarine, "transaction.claim.pending", true),
+            Cooperate
+        );
         assert_eq!(plan(Submarine, "transaction.claimed", true), Complete);
         assert_eq!(plan(Submarine, "invoice.failedToPay", true), Rescue);
         assert_eq!(plan(Submarine, "transaction.lockupFailed", true), Rescue);
@@ -139,7 +171,13 @@ mod tests {
         for p in [Phase::Complete, Phase::Refunded, Phase::Failed] {
             assert!(p.finished());
         }
-        for p in [Phase::Pending, Phase::Paid, Phase::Claiming, Phase::Refunding, Phase::NeedsRescue] {
+        for p in [
+            Phase::Pending,
+            Phase::Paid,
+            Phase::Claiming,
+            Phase::Refunding,
+            Phase::NeedsRescue,
+        ] {
             assert!(!p.finished(), "{p:?}");
         }
         assert_eq!(Phase::NeedsRescue.as_str(), "refund_required");

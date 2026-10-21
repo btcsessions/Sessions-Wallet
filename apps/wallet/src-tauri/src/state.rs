@@ -64,7 +64,12 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(root: PathBuf, notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
-        AppState { paths: Paths { root }, notify, inner: Mutex::new(None), failures: Mutex::new((0, None)) }
+        AppState {
+            paths: Paths { root },
+            notify,
+            inner: Mutex::new(None),
+            failures: Mutex::new((0, None)),
+        }
     }
 
     pub fn has_vault(&self) -> bool {
@@ -90,7 +95,9 @@ impl AppState {
         let vault = self.read_vault()?;
         // Argon2 is CPU-heavy; keep it off the async workers.
         let pass = zeroize::Zeroizing::new(passcode.to_string());
-        let res = tokio::task::spawn_blocking(move || vault.open(&pass)).await.map_err(|e| Error::Crypto(e.to_string()))?;
+        let res = tokio::task::spawn_blocking(move || vault.open(&pass))
+            .await
+            .map_err(|e| Error::Crypto(e.to_string()))?;
         let mut f = self.failures.lock().await;
         match res {
             Ok(seed) => {
@@ -111,16 +118,23 @@ impl AppState {
 
     pub async fn create(&self, seed: Seed, passcode: &str) -> Result<()> {
         if self.has_vault() {
-            return Err(Error::Invalid("A wallet already exists on this device".into()));
+            return Err(Error::Invalid(
+                "A wallet already exists on this device".into(),
+            ));
         }
         let pass = zeroize::Zeroizing::new(passcode.to_string());
         let phrase = seed.phrase();
-        let vault = tokio::task::spawn_blocking(move || Vault::seal(&Seed::from_phrase(&phrase)?, &pass, KdfParams::default()))
-            .await
-            .map_err(|e| Error::Crypto(e.to_string()))??;
+        let vault = tokio::task::spawn_blocking(move || {
+            Vault::seal(&Seed::from_phrase(&phrase)?, &pass, KdfParams::default())
+        })
+        .await
+        .map_err(|e| Error::Crypto(e.to_string()))??;
         let config = Config::load(&self.paths.config())?.unwrap_or_else(|| Config::new(NETWORK));
         config.save(&self.paths.config())?;
-        write_atomic(&self.paths.vault(), &serde_json::to_vec(&vault).map_err(|e| Error::Storage(e.to_string()))?)?;
+        write_atomic(
+            &self.paths.vault(),
+            &serde_json::to_vec(&vault).map_err(|e| Error::Storage(e.to_string()))?,
+        )?;
         self.unlock_with(seed).await
     }
 
@@ -161,52 +175,98 @@ impl AppState {
             Err(e) => tracing::warn!("Liquid swaps unavailable: {e}"),
         }
 
-        *self.inner.lock().await = Some(Unlocked { seed, wallet, config, onchain, spark, unavailable });
+        *self.inner.lock().await = Some(Unlocked {
+            seed,
+            wallet,
+            config,
+            onchain,
+            spark,
+            unavailable,
+        });
         Ok(())
     }
 
-    async fn open_account(&self, spec: &AccountSpec, seed: &Seed, master: &rail_onchain::Xpriv, cfg: &Config) -> Result<Opened> {
-        let onchain = |id: &AccountId, name: &str, descriptors, custody, signer| -> Result<Opened> {
-            Ok(Opened::Onchain(Arc::new(OnchainAccount::open(OnchainConfig {
-                id: id.clone(),
-                name: name.to_string(),
-                network: cfg.network,
-                db_path: self.paths.onchain(id),
-                esplora_url: cfg.esplora_url.clone(),
-                descriptors,
-                custody,
-                signer,
-            })?)))
-        };
+    async fn open_account(
+        &self,
+        spec: &AccountSpec,
+        seed: &Seed,
+        master: &rail_onchain::Xpriv,
+        cfg: &Config,
+    ) -> Result<Opened> {
+        let onchain =
+            |id: &AccountId, name: &str, descriptors, custody, signer| -> Result<Opened> {
+                Ok(Opened::Onchain(Arc::new(OnchainAccount::open(
+                    OnchainConfig {
+                        id: id.clone(),
+                        name: name.to_string(),
+                        network: cfg.network,
+                        db_path: self.paths.onchain(id),
+                        esplora_url: cfg.esplora_url.clone(),
+                        descriptors,
+                        custody,
+                        signer,
+                    },
+                )?)))
+            };
         match spec {
-            AccountSpec::Savings { id, name, account_index } => onchain(
+            AccountSpec::Savings {
+                id,
+                name,
+                account_index,
+            } => onchain(
                 id,
                 name,
                 descriptors::hot_single_sig(master, cfg.network, *account_index)?,
                 Custody::Hot,
                 Some(*master),
             ),
-            AccountSpec::Multisig { id, name, threshold, total, descriptors, .. } => onchain(
+            AccountSpec::Multisig {
+                id,
+                name,
+                threshold,
+                total,
+                descriptors,
+                ..
+            } => onchain(
                 id,
                 name,
                 descriptors.clone(),
-                Custody::Multisig { threshold: *threshold, total: *total, local_signers: 1 },
+                Custody::Multisig {
+                    threshold: *threshold,
+                    total: *total,
+                    local_signers: 1,
+                },
                 Some(*master),
             ),
-            AccountSpec::Hardware { id, name, device, fingerprint, descriptors } => onchain(
+            AccountSpec::Hardware {
+                id,
+                name,
+                device,
+                fingerprint,
+                descriptors,
+            } => onchain(
                 id,
                 name,
                 descriptors.clone(),
-                Custody::Hardware { device: device.clone(), fingerprint: fingerprint.clone() },
+                Custody::Hardware {
+                    device: device.clone(),
+                    fingerprint: fingerprint.clone(),
+                },
                 None,
             ),
-            AccountSpec::WatchOnly { id, name, descriptors } => onchain(id, name, descriptors.clone(), Custody::WatchOnly, None),
+            AccountSpec::WatchOnly {
+                id,
+                name,
+                descriptors,
+            } => onchain(id, name, descriptors.clone(), Custody::WatchOnly, None),
             AccountSpec::Spending { id, name } => {
                 let api_key = cfg
                     .breez_api_key
                     .clone()
                     .or(BUILT_IN_BREEZ_KEY.map(str::to_string))
-                    .ok_or_else(|| Error::Invalid("It needs a Breez API key. Add one in Settings".into()))?;
+                    .ok_or_else(|| {
+                        Error::Invalid("It needs a Breez API key. Add one in Settings".into())
+                    })?;
                 let account = SparkAccount::connect(SparkConfig {
                     id: id.clone(),
                     name: name.clone(),
@@ -240,7 +300,9 @@ impl AppState {
         let mut guard = self.inner.lock().await;
         let u = guard.as_mut().ok_or(Error::Locked)?;
         let master = u.seed.master_xpriv(u.config.network)?;
-        let opened = self.open_account(&spec, &u.seed, &master, &u.config).await?;
+        let opened = self
+            .open_account(&spec, &u.seed, &master, &u.config)
+            .await?;
         let id = spec.id().clone();
         match opened {
             Opened::Onchain(a) => {
@@ -283,10 +345,16 @@ mod tests {
         let state = AppState::new(dir.path().to_path_buf(), None);
         assert!(!state.has_vault());
 
-        state.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();
+        state
+            .create(Seed::from_phrase(ABANDON).unwrap(), "123456")
+            .await
+            .unwrap();
         assert!(state.has_vault());
         // A second wallet can't overwrite the first.
-        assert!(state.create(Seed::generate(12).unwrap(), "654321").await.is_err());
+        assert!(state
+            .create(Seed::generate(12).unwrap(), "654321")
+            .await
+            .is_err());
 
         {
             let guard = state.inner.lock().await;
@@ -307,9 +375,15 @@ mod tests {
 
         // Three wrong guesses trigger a lockout, even for the right passcode.
         for _ in 0..3 {
-            assert!(matches!(state.open_vault("000000").await, Err(Error::WrongPasscode)));
+            assert!(matches!(
+                state.open_vault("000000").await,
+                Err(Error::WrongPasscode)
+            ));
         }
-        assert!(matches!(state.open_vault("123456").await, Err(Error::TooManyAttempts { .. })));
+        assert!(matches!(
+            state.open_vault("123456").await,
+            Err(Error::TooManyAttempts { .. })
+        ));
 
         // After the lockout the right passcode works and resets the counter.
         tokio::time::sleep(Duration::from_millis(2100)).await;
@@ -320,12 +394,29 @@ mod tests {
 
         // Opting in to a hot on-chain account gives the BIP84 vector address, offline.
         let id = state
-            .add_account(AccountSpec::Savings { id: "savings".into(), name: "Savings".into(), account_index: 0 })
+            .add_account(AccountSpec::Savings {
+                id: "savings".into(),
+                name: "Savings".into(),
+                account_index: 0,
+            })
             .await
             .unwrap();
-        let savings = state.inner.lock().await.as_ref().unwrap().wallet.account(&id).await.unwrap();
+        let savings = state
+            .inner
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .wallet
+            .account(&id)
+            .await
+            .unwrap();
         let r = savings
-            .receive(ReceiveRequest { method: Method::BitcoinAddress, amount_sat: None, description: None })
+            .receive(ReceiveRequest {
+                method: Method::BitcoinAddress,
+                amount_sat: None,
+                description: None,
+            })
             .await
             .unwrap();
         assert_eq!(r.request, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");

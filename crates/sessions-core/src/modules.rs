@@ -30,11 +30,19 @@ pub struct Layout {
 impl Default for Layout {
     /// The "dead simple" starting point: balance, pay/receive, activity.
     fn default() -> Self {
-        let m = |id: &str, size: &str| InstalledModule { id: id.into(), size: size.into(), config: serde_json::Value::Null };
+        let m = |id: &str, size: &str| InstalledModule {
+            id: id.into(),
+            size: size.into(),
+            config: serde_json::Value::Null,
+        };
         Layout {
             version: 1,
             advanced: false,
-            modules: vec![m("balance", "large"), m("pay-receive", "medium"), m("activity", "large")],
+            modules: vec![
+                m("balance", "large"),
+                m("pay-receive", "medium"),
+                m("activity", "large"),
+            ],
         }
     }
 }

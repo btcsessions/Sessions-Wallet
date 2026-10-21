@@ -18,8 +18,8 @@ use breez_sdk_spark::{
     ListPaymentsRequest, ListUnclaimedDepositsRequest, LnurlPayRequest, OnchainConfirmationSpeed,
     PaymentStatus as SdkStatus, PaymentType, PrepareLnurlPayRequest, PrepareLnurlPayResponse,
     PrepareSendPaymentRequest, PrepareSendPaymentResponse, ReceivePaymentMethod,
-    ReceivePaymentRequest, SdkError, SendPaymentMethod, SendPaymentOptions, SendPaymentRequest,
-    Seed, SyncWalletRequest,
+    ReceivePaymentRequest, SdkError, Seed, SendPaymentMethod, SendPaymentOptions,
+    SendPaymentRequest, SyncWalletRequest,
 };
 use sessions_core::{
     AccountId, AccountInfo, Balance, Custody, Error, Method, Network, Payment, Rail, RailKind,
@@ -40,7 +40,11 @@ pub struct LightningAddress {
 
 impl From<breez_sdk_spark::LightningAddressInfo> for LightningAddress {
     fn from(i: breez_sdk_spark::LightningAddressInfo) -> Self {
-        LightningAddress { address: i.lightning_address, username: i.username, lnurl: i.lnurl.bech32 }
+        LightningAddress {
+            address: i.lightning_address,
+            username: i.username,
+            lnurl: i.lnurl.bech32,
+        }
     }
 }
 use map::{QuoteHandle, RAIL};
@@ -64,8 +68,13 @@ pub struct SparkConfig {
 
 #[derive(Clone)]
 enum Prepared {
-    Send { response: PrepareSendPaymentResponse, speed: Option<OnchainConfirmationSpeed> },
-    Lnurl { response: PrepareLnurlPayResponse },
+    Send {
+        response: PrepareSendPaymentResponse,
+        speed: Option<OnchainConfirmationSpeed>,
+    },
+    Lnurl {
+        response: PrepareLnurlPayResponse,
+    },
 }
 
 struct PendingQuote {
@@ -89,8 +98,13 @@ impl SparkAccount {
     pub async fn connect(config: SparkConfig) -> Result<Self> {
         let network = map::sdk_network(config.network)?;
 
-        let phrase = config.mnemonic.split_whitespace().collect::<Vec<_>>().join(" ");
-        bip39::Mnemonic::parse_normalized(&phrase).map_err(|e| Error::InvalidMnemonic(e.to_string()))?;
+        let phrase = config
+            .mnemonic
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        bip39::Mnemonic::parse_normalized(&phrase)
+            .map_err(|e| Error::InvalidMnemonic(e.to_string()))?;
 
         let api_key = config.api_key.trim().to_string();
         if api_key.is_empty() && network == breez_sdk_spark::Network::Mainnet {
@@ -109,18 +123,29 @@ impl SparkAccount {
         // The SDK's default only auto-claims deposits at <= 1 sat/vB, which would
         // leave Savings -> Spending moves stuck whenever fees are higher. Claim at
         // the network's recommended rate (+1 sat/vB) so moves complete on their own.
-        sdk_config.max_deposit_claim_fee = Some(breez_sdk_spark::MaxFee::NetworkRecommended { leeway_sat_per_vbyte: 1 });
+        sdk_config.max_deposit_claim_fee = Some(breez_sdk_spark::MaxFee::NetworkRecommended {
+            leeway_sat_per_vbyte: 1,
+        });
 
         let sdk = breez_sdk_spark::connect(ConnectRequest {
             config: sdk_config,
-            seed: Seed::Mnemonic { mnemonic: phrase, passphrase: None },
+            seed: Seed::Mnemonic {
+                mnemonic: phrase,
+                passphrase: None,
+            },
             storage_dir,
         })
         .await
         .map_err(rail_err)?;
 
         tracing::info!(account = %config.id, ?network, "spark account connected");
-        Ok(Self { id: config.id, name: config.name, network, sdk, quotes: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            id: config.id,
+            name: config.name,
+            network,
+            sdk,
+            quotes: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Stop the SDK's background tasks. Call before dropping the account.
@@ -137,13 +162,20 @@ impl SparkAccount {
     /// The account's Lightning address (e.g. `ben@breez.tips`), if claimed.
     /// Recovered from the server on a new device.
     pub async fn lightning_address(&self) -> Result<Option<LightningAddress>> {
-        Ok(self.sdk.get_lightning_address().await.map_err(rail_err)?.map(LightningAddress::from))
+        Ok(self
+            .sdk
+            .get_lightning_address()
+            .await
+            .map_err(rail_err)?
+            .map(LightningAddress::from))
     }
 
     /// Whether `username` is free on the Lightning address server.
     pub async fn lightning_address_available(&self, username: &str) -> Result<bool> {
         self.sdk
-            .check_lightning_address_available(breez_sdk_spark::CheckLightningAddressRequest { username: username.to_string() })
+            .check_lightning_address_available(breez_sdk_spark::CheckLightningAddressRequest {
+                username: username.to_string(),
+            })
             .await
             .map_err(rail_err)
     }
@@ -172,7 +204,11 @@ impl SparkAccount {
                 use breez_sdk_spark::SdkEvent::*;
                 if matches!(
                     event,
-                    Synced | PaymentSucceeded { .. } | PaymentPending { .. } | PaymentFailed { .. } | ClaimedDeposits { .. }
+                    Synced
+                        | PaymentSucceeded { .. }
+                        | PaymentPending { .. }
+                        | PaymentFailed { .. }
+                        | ClaimedDeposits { .. }
                 ) {
                     (self.0)();
                 }
@@ -184,7 +220,9 @@ impl SparkAccount {
     async fn balance_sat(&self, ensure_synced: bool) -> Result<Sats> {
         let info = self
             .sdk
-            .get_info(GetInfoRequest { ensure_synced: Some(ensure_synced) })
+            .get_info(GetInfoRequest {
+                ensure_synced: Some(ensure_synced),
+            })
             .await
             .map_err(rail_err)?;
         Ok(info.balance_sats)
@@ -204,7 +242,9 @@ impl SparkAccount {
     fn check_network(&self, found: breez_sdk_spark::BitcoinNetwork) -> Result<()> {
         let want = map::parsed_network(self.network);
         if found != want {
-            return Err(Error::Network(format!("this request is for {found:?}, the account is on {want:?}")));
+            return Err(Error::Network(format!(
+                "this request is for {found:?}, the account is on {want:?}"
+            )));
         }
         Ok(())
     }
@@ -213,16 +253,33 @@ impl SparkAccount {
         let id = uuid::Uuid::new_v4().to_string();
         let mut quotes = self.quotes.lock().expect("quote map poisoned");
         quotes.retain(|_, q| q.created.elapsed() < QUOTE_TTL);
-        quotes.insert(id.clone(), PendingQuote { prepared, created: Instant::now() });
+        quotes.insert(
+            id.clone(),
+            PendingQuote {
+                prepared,
+                created: Instant::now(),
+            },
+        );
         id
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn quote(&self, method: Method, amount: Sats, fee: Sats, policy: FeePolicy, balance: Sats, prepared: Prepared) -> Result<SendQuote> {
+    fn quote(
+        &self,
+        method: Method,
+        amount: Sats,
+        fee: Sats,
+        policy: FeePolicy,
+        balance: Sats,
+        prepared: Prepared,
+    ) -> Result<SendQuote> {
         let (amount_sat, fee_sat) = map::split(amount, fee, policy)?;
         let needed = amount_sat.saturating_add(fee_sat);
         if needed > balance {
-            return Err(Error::InsufficientFunds { needed, available: balance });
+            return Err(Error::InsufficientFunds {
+                needed,
+                available: balance,
+            });
         }
         let id = self.store_quote(prepared);
         Ok(SendQuote {
@@ -232,6 +289,9 @@ impl SparkAccount {
             fee_sat,
             handle: QuoteHandle::new(self.id.clone(), id).encode(),
             needs_signature: None,
+            private: false,
+            payjoin: false,
+            notes: vec![],
         })
     }
 }
@@ -264,7 +324,9 @@ impl Rail for SparkAccount {
             match p.payment_type {
                 PaymentType::Receive => pending_in = pending_in.saturating_add(amount),
                 PaymentType::Send => {
-                    pending_out = pending_out.saturating_add(amount).saturating_add(map::sats(p.fees)?)
+                    pending_out = pending_out
+                        .saturating_add(amount)
+                        .saturating_add(map::sats(p.fees)?)
                 }
             }
         }
@@ -274,7 +336,11 @@ impl Rail for SparkAccount {
             .list_unclaimed_deposits(ListUnclaimedDepositsRequest {})
             .await
             .map_err(rail_err)?;
-        for d in deposits.deposits.iter().filter(|d| d.refund_tx_id.is_none()) {
+        for d in deposits
+            .deposits
+            .iter()
+            .filter(|d| d.refund_tx_id.is_none())
+        {
             pending_in = pending_in.saturating_add(d.amount_sats);
         }
 
@@ -283,14 +349,21 @@ impl Rail for SparkAccount {
             name: self.name.clone(),
             rail: RailKind::Spark,
             custody: Custody::Hot,
-            balance: Balance { confirmed, pending_in, pending_out },
+            balance: Balance {
+                confirmed,
+                pending_in,
+                pending_out,
+            },
             receives: RECEIVES.to_vec(),
             pays: PAYS.to_vec(),
         })
     }
 
     async fn sync(&self) -> Result<()> {
-        self.sdk.sync_wallet(SyncWalletRequest {}).await.map_err(rail_err)?;
+        self.sdk
+            .sync_wallet(SyncWalletRequest {})
+            .await
+            .map_err(rail_err)?;
         Ok(())
     }
 
@@ -366,7 +439,11 @@ impl Rail for SparkAccount {
 
         let requested = req.amount_sat.or_else(|| req.destination.amount_sat());
         let balance = self.balance_sat(true).await?;
-        let policy = if req.send_max { FeePolicy::FeesIncluded } else { FeePolicy::FeesExcluded };
+        let policy = if req.send_max {
+            FeePolicy::FeesIncluded
+        } else {
+            FeePolicy::FeesExcluded
+        };
         // "Send everything" without an amount spends the whole balance.
         let amount = match (requested, req.send_max) {
             (None, true) => Some(balance),
@@ -375,41 +452,74 @@ impl Rail for SparkAccount {
 
         match (method, &parsed) {
             (Method::LightningAddress, InputType::LightningAddress(d)) => {
-                self.prepare_lnurl(method, d.pay_request.clone(), amount, policy, balance).await
+                self.prepare_lnurl(method, d.pay_request.clone(), amount, policy, balance)
+                    .await
             }
             (Method::Lnurl, InputType::LnurlPay(pay_request)) => {
-                self.prepare_lnurl(method, pay_request.clone(), amount, policy, balance).await
+                self.prepare_lnurl(method, pay_request.clone(), amount, policy, balance)
+                    .await
             }
             (Method::Lnurl, InputType::LightningAddress(d)) => {
-                self.prepare_lnurl(method, d.pay_request.clone(), amount, policy, balance).await
+                self.prepare_lnurl(method, d.pay_request.clone(), amount, policy, balance)
+                    .await
             }
             (Method::BitcoinAddress, InputType::BitcoinAddress(d)) => {
                 self.check_network(d.network)?;
-                self.prepare_generic(method, input, amount, policy, Some(map::confirmation_speed(req.fee)?), balance).await
+                self.prepare_generic(
+                    method,
+                    input,
+                    amount,
+                    policy,
+                    Some(map::confirmation_speed(req.fee)?),
+                    balance,
+                )
+                .await
             }
             (Method::Bolt11, InputType::Bolt11Invoice(d)) => {
                 self.check_network(d.network)?;
                 // A fixed-amount invoice can't absorb fees ("send max" doesn't apply).
-                let policy = if d.amount_msat.is_some() { FeePolicy::FeesExcluded } else { policy };
-                let amount = if d.amount_msat.is_some() { requested } else { amount };
-                self.prepare_generic(method, input, amount, policy, None, balance).await
+                let policy = if d.amount_msat.is_some() {
+                    FeePolicy::FeesExcluded
+                } else {
+                    policy
+                };
+                let amount = if d.amount_msat.is_some() {
+                    requested
+                } else {
+                    amount
+                };
+                self.prepare_generic(method, input, amount, policy, None, balance)
+                    .await
             }
             (Method::SparkAddress, InputType::SparkAddress(d)) => {
                 self.check_network(d.network)?;
-                self.prepare_generic(method, input, amount, policy, None, balance).await
+                self.prepare_generic(method, input, amount, policy, None, balance)
+                    .await
             }
             (Method::SparkAddress, InputType::SparkInvoice(d)) => {
                 self.check_network(d.network)?;
                 if d.token_identifier.is_some() {
                     return Err(Error::Unsupported("pay Spark token invoices".into()));
                 }
-                let policy = if d.amount.is_some() { FeePolicy::FeesExcluded } else { policy };
-                let amount = if d.amount.is_some() { requested } else { amount };
-                self.prepare_generic(method, input, amount, policy, None, balance).await
+                let policy = if d.amount.is_some() {
+                    FeePolicy::FeesExcluded
+                } else {
+                    policy
+                };
+                let amount = if d.amount.is_some() {
+                    requested
+                } else {
+                    amount
+                };
+                self.prepare_generic(method, input, amount, policy, None, balance)
+                    .await
             }
             (_, other) => Err(Error::rail(
                 RAIL,
-                format!("expected a {method:?} but the SDK read this as {}", input_kind(other)),
+                format!(
+                    "expected a {method:?} but the SDK read this as {}",
+                    input_kind(other)
+                ),
             )),
         }
     }
@@ -424,7 +534,12 @@ impl Rail for SparkAccount {
             quotes
                 .get(&handle.id)
                 .map(|q| q.prepared.clone())
-                .ok_or_else(|| Error::rail(RAIL, "this quote has expired or was already sent; prepare it again"))?
+                .ok_or_else(|| {
+                    Error::rail(
+                        RAIL,
+                        "this quote has expired or was already sent; prepare it again",
+                    )
+                })?
         };
         let needed = quote.amount_sat.saturating_add(quote.fee_sat);
 
@@ -433,18 +548,25 @@ impl Rail for SparkAccount {
         let result = match prepared {
             Prepared::Lnurl { response } => self
                 .sdk
-                .lnurl_pay(LnurlPayRequest { prepare_response: response, idempotency_key: Some(handle.id.clone()) })
+                .lnurl_pay(LnurlPayRequest {
+                    prepare_response: response,
+                    idempotency_key: Some(handle.id.clone()),
+                })
                 .await
                 .map(|r| r.payment),
             Prepared::Send { response, speed } => {
                 let options = match &response.payment_method {
-                    SendPaymentMethod::BitcoinAddress { .. } => Some(SendPaymentOptions::BitcoinAddress {
-                        confirmation_speed: speed.unwrap_or(OnchainConfirmationSpeed::Medium),
-                    }),
-                    SendPaymentMethod::Bolt11Invoice { .. } => Some(SendPaymentOptions::Bolt11Invoice {
-                        prefer_spark: false,
-                        completion_timeout_secs: Some(LIGHTNING_COMPLETION_TIMEOUT_SECS),
-                    }),
+                    SendPaymentMethod::BitcoinAddress { .. } => {
+                        Some(SendPaymentOptions::BitcoinAddress {
+                            confirmation_speed: speed.unwrap_or(OnchainConfirmationSpeed::Medium),
+                        })
+                    }
+                    SendPaymentMethod::Bolt11Invoice { .. } => {
+                        Some(SendPaymentOptions::Bolt11Invoice {
+                            prefer_spark: false,
+                            completion_timeout_secs: Some(LIGHTNING_COMPLETION_TIMEOUT_SECS),
+                        })
+                    }
                     _ => None,
                 };
                 self.sdk
@@ -462,7 +584,10 @@ impl Rail for SparkAccount {
             Ok(p) => p,
             Err(e) => return Err(self.spend_err(e, needed).await),
         };
-        self.quotes.lock().expect("quote map poisoned").remove(&handle.id);
+        self.quotes
+            .lock()
+            .expect("quote map poisoned")
+            .remove(&handle.id);
 
         let mut out = map::payment(&self.id, &payment)?;
         out.method = quote.method;
@@ -514,7 +639,14 @@ impl SparkAccount {
             .await
             .map_err(rail_err)?;
         let (total, fee, applied) = (response.amount_sats, response.fee_sats, response.fee_policy);
-        self.quote(method, total, fee, applied, balance, Prepared::Lnurl { response })
+        self.quote(
+            method,
+            total,
+            fee,
+            applied,
+            balance,
+            Prepared::Lnurl { response },
+        )
     }
 
     async fn prepare_generic(
@@ -539,7 +671,9 @@ impl SparkAccount {
             .map_err(rail_err)?;
 
         if response.token_identifier.is_some() || response.conversion_estimate.is_some() {
-            return Err(Error::Unsupported("send tokens or token conversions".into()));
+            return Err(Error::Unsupported(
+                "send tokens or token conversions".into(),
+            ));
         }
         let fee = match (&response.payment_method, &speed) {
             (SendPaymentMethod::BitcoinAddress { fee_quote, .. }, Some(speed)) => match speed {
@@ -548,18 +682,37 @@ impl SparkAccount {
                 OnchainConfirmationSpeed::Slow => fee_quote.speed_slow.total_fee_sat(),
             },
             // We always send with `prefer_spark: false`, so the Lightning fee applies.
-            (SendPaymentMethod::Bolt11Invoice { lightning_fee_sats, .. }, None) => *lightning_fee_sats,
-            (SendPaymentMethod::SparkAddress { fee, .. } | SendPaymentMethod::SparkInvoice { fee, .. }, None) => {
-                map::sats(*fee)?
-            }
+            (
+                SendPaymentMethod::Bolt11Invoice {
+                    lightning_fee_sats, ..
+                },
+                None,
+            ) => *lightning_fee_sats,
+            (
+                SendPaymentMethod::SparkAddress { fee, .. }
+                | SendPaymentMethod::SparkInvoice { fee, .. },
+                None,
+            ) => map::sats(*fee)?,
             (SendPaymentMethod::CrossChainAddress { .. }, _) => {
                 return Err(Error::Unsupported("send cross-chain".into()));
             }
-            _ => return Err(Error::rail(RAIL, "the SDK prepared a different payment type than requested")),
+            _ => {
+                return Err(Error::rail(
+                    RAIL,
+                    "the SDK prepared a different payment type than requested",
+                ))
+            }
         };
         let amount = map::sats(response.amount)?;
         let applied = response.fee_policy;
-        self.quote(method, amount, fee, applied, balance, Prepared::Send { response, speed })
+        self.quote(
+            method,
+            amount,
+            fee,
+            applied,
+            balance,
+            Prepared::Send { response, speed },
+        )
     }
 }
 
@@ -567,7 +720,9 @@ fn input_kind(i: &InputType) -> &'static str {
     match i {
         InputType::BitcoinAddress(_) => "a bitcoin address",
         InputType::Bolt11Invoice(_) => "a BOLT11 invoice",
-        InputType::Bolt12Invoice(_) | InputType::Bolt12Offer(_) | InputType::Bolt12InvoiceRequest(_) => "BOLT12",
+        InputType::Bolt12Invoice(_)
+        | InputType::Bolt12Offer(_)
+        | InputType::Bolt12InvoiceRequest(_) => "BOLT12",
         InputType::LightningAddress(_) => "a Lightning address",
         InputType::LnurlPay(_) => "an LNURL-pay link",
         InputType::LnurlWithdraw(_) => "an LNURL-withdraw link",
@@ -602,7 +757,10 @@ mod tests {
     #[tokio::test]
     async fn connect_rejects_unsupported_networks() {
         for n in [Network::Testnet, Network::Signet] {
-            assert!(matches!(SparkAccount::connect(config(n, PHRASE, "k")).await, Err(Error::Network(_))));
+            assert!(matches!(
+                SparkAccount::connect(config(n, PHRASE, "k")).await,
+                Err(Error::Network(_))
+            ));
         }
     }
 

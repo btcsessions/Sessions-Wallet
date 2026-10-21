@@ -11,7 +11,8 @@ use sessions_core::modules::Layout;
 use sessions_core::planner::Plan;
 use sessions_core::wallet::{Execution, Prepared};
 use sessions_core::{
-    parse, AccountId, AccountInfo, Error, FeePriority, Method, Payment, PaymentRequest, ReceiveTarget, Result, Sats, Wallet,
+    parse, AccountId, AccountInfo, Error, FeePriority, Method, Payment, PaymentRequest,
+    ReceiveTarget, Result, Sats, Wallet,
 };
 use tauri::State;
 
@@ -19,7 +20,14 @@ use crate::config::AccountSpec;
 use crate::state::AppState;
 
 async fn wallet(state: &AppState) -> Result<Arc<Wallet>> {
-    Ok(state.inner.lock().await.as_ref().ok_or(Error::Locked)?.wallet.clone())
+    Ok(state
+        .inner
+        .lock()
+        .await
+        .as_ref()
+        .ok_or(Error::Locked)?
+        .wallet
+        .clone())
 }
 
 #[tauri::command]
@@ -34,7 +42,11 @@ pub async fn status(state: State<'_, AppState>) -> Result<&'static str> {
 }
 
 #[tauri::command]
-pub async fn create_wallet(state: State<'_, AppState>, passcode: String, words: usize) -> Result<String> {
+pub async fn create_wallet(
+    state: State<'_, AppState>,
+    passcode: String,
+    words: usize,
+) -> Result<String> {
     check_passcode(&passcode)?;
     let seed = Seed::generate(if words == 24 { 24 } else { 12 })?;
     let phrase = seed.phrase().to_string();
@@ -44,7 +56,11 @@ pub async fn create_wallet(state: State<'_, AppState>, passcode: String, words: 
 }
 
 #[tauri::command]
-pub async fn restore_wallet(state: State<'_, AppState>, phrase: String, passcode: String) -> Result<()> {
+pub async fn restore_wallet(
+    state: State<'_, AppState>,
+    phrase: String,
+    passcode: String,
+) -> Result<()> {
     check_passcode(&passcode)?;
     let seed = Seed::from_phrase(&phrase)?;
     state.create(seed, &passcode).await
@@ -104,8 +120,17 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
             "multisig" => {
                 let local_account = u.config.next_multisig_account;
                 let master = u.seed.master_xpriv(network)?;
-                let mut keys = vec![descriptors::multisig_cosigner_key(&master, network, local_account)?];
-                keys.extend(spec.cosigners.unwrap_or_default().into_iter().map(|k| k.trim().to_string()));
+                let mut keys = vec![descriptors::multisig_cosigner_key(
+                    &master,
+                    network,
+                    local_account,
+                )?];
+                keys.extend(
+                    spec.cosigners
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|k| k.trim().to_string()),
+                );
                 let threshold = spec.threshold.unwrap_or(2);
                 let descriptors = descriptors::multisig(threshold, &keys)?;
                 u.config.next_multisig_account += 1;
@@ -120,7 +145,10 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
             }
             "hardware" | "watchOnly" => {
                 let d = descriptors::import(spec.descriptor.as_deref().unwrap_or(""), network)?;
-                let fingerprint = descriptors::fingerprints(&d.external)?.into_iter().next().unwrap_or_default();
+                let fingerprint = descriptors::fingerprints(&d.external)?
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
                 if spec.kind == "hardware" {
                     AccountSpec::Hardware {
                         id: u.config.fresh_id("hw"),
@@ -130,7 +158,11 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                         descriptors: d,
                     }
                 } else {
-                    AccountSpec::WatchOnly { id: u.config.fresh_id("watch"), name, descriptors: d }
+                    AccountSpec::WatchOnly {
+                        id: u.config.fresh_id("watch"),
+                        name,
+                        descriptors: d,
+                    }
                 }
             }
             "savings" => {
@@ -145,19 +177,31 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                     })
                     .collect();
                 let account_index = (0..).find(|i| !used.contains(i)).unwrap_or(0);
-                let id = if account_index == 0 && !u.config.accounts.iter().any(|a| a.id().0 == "savings") {
+                let id = if account_index == 0
+                    && !u.config.accounts.iter().any(|a| a.id().0 == "savings")
+                {
                     AccountId("savings".into())
                 } else {
                     u.config.fresh_id("savings")
                 };
-                AccountSpec::Savings { id, name, account_index }
+                AccountSpec::Savings {
+                    id,
+                    name,
+                    account_index,
+                }
             }
             "ecash" => {
                 let mint_url = spec.mint_url.unwrap_or_default();
                 if !mint_url.starts_with("https://") {
-                    return Err(Error::Invalid("Mint addresses must start with https://".into()));
+                    return Err(Error::Invalid(
+                        "Mint addresses must start with https://".into(),
+                    ));
                 }
-                AccountSpec::Ecash { id: u.config.fresh_id("ecash"), name, mint_url }
+                AccountSpec::Ecash {
+                    id: u.config.fresh_id("ecash"),
+                    name,
+                    mint_url,
+                }
             }
             other => return Err(Error::Unsupported(format!("add a {other} account"))),
         }
@@ -178,8 +222,14 @@ pub async fn cosigner_key(state: State<'_, AppState>) -> Result<String> {
 pub async fn sync(state: State<'_, AppState>) -> Result<()> {
     let results = wallet(&state).await?.sync_all().await;
     // Report the first failure but don't hide progress made on other accounts.
-    match results.into_iter().find_map(|(id, r)| r.err().map(|e| (id, e))) {
-        Some((id, e)) => Err(Error::Rail { rail: id.0, message: e.to_string() }),
+    match results
+        .into_iter()
+        .find_map(|(id, r)| r.err().map(|e| (id, e)))
+    {
+        Some((id, e)) => Err(Error::Rail {
+            rail: id.0,
+            message: e.to_string(),
+        }),
         None => Ok(()),
     }
 }
@@ -199,31 +249,67 @@ pub struct Parsed {
 #[tauri::command]
 pub async fn parse(input: String) -> Result<Parsed> {
     let request = parse::parse(&input)?;
-    Ok(Parsed { amount_sat: request.amount_sat(), request })
+    Ok(Parsed {
+        amount_sat: request.amount_sat(),
+        request,
+    })
 }
 
 #[tauri::command]
-pub async fn plan_payment(state: State<'_, AppState>, input: String, amount_sat: Option<Sats>, from: Option<AccountId>) -> Result<Plan> {
-    wallet(&state).await?.plan_payment(&input, amount_sat, from).await
+pub async fn plan_payment(
+    state: State<'_, AppState>,
+    input: String,
+    amount_sat: Option<Sats>,
+    from: Option<AccountId>,
+) -> Result<Plan> {
+    wallet(&state)
+        .await?
+        .plan_payment(&input, amount_sat, from)
+        .await
 }
 
 #[tauri::command]
-pub async fn plan_move(state: State<'_, AppState>, from: AccountId, to: AccountId, amount_sat: Sats) -> Result<Plan> {
-    wallet(&state).await?.plan_move(&from, &to, amount_sat).await
+pub async fn plan_move(
+    state: State<'_, AppState>,
+    from: AccountId,
+    to: AccountId,
+    amount_sat: Sats,
+) -> Result<Plan> {
+    wallet(&state)
+        .await?
+        .plan_move(&from, &to, amount_sat)
+        .await
 }
 
 #[tauri::command]
-pub async fn prepare(state: State<'_, AppState>, plan: Plan, fee: FeePriority) -> Result<Prepared> {
-    wallet(&state).await?.prepare(plan, fee).await
+pub async fn prepare(
+    state: State<'_, AppState>,
+    plan: Plan,
+    fee: FeePriority,
+    style: Option<sessions_core::SpendStyle>,
+) -> Result<Prepared> {
+    wallet(&state)
+        .await?
+        .prepare_styled(plan, fee, style.unwrap_or_default())
+        .await
 }
 
 #[tauri::command]
-pub async fn confirm(state: State<'_, AppState>, prepared: Prepared, fee: FeePriority) -> Result<Execution> {
+pub async fn confirm(
+    state: State<'_, AppState>,
+    prepared: Prepared,
+    fee: FeePriority,
+) -> Result<Execution> {
     wallet(&state).await?.confirm(prepared, fee).await
 }
 
 #[tauri::command]
-pub async fn resume(state: State<'_, AppState>, paused: Execution, signed_psbt: String, fee: FeePriority) -> Result<Execution> {
+pub async fn resume(
+    state: State<'_, AppState>,
+    paused: Execution,
+    signed_psbt: String,
+    fee: FeePriority,
+) -> Result<Execution> {
     wallet(&state).await?.resume(paused, signed_psbt, fee).await
 }
 
@@ -235,22 +321,45 @@ pub async fn receive(
     amount_sat: Option<Sats>,
     description: Option<String>,
 ) -> Result<ReceiveTarget> {
-    wallet(&state).await?.receive(&into, method, amount_sat, description).await
+    wallet(&state)
+        .await?
+        .receive(&into, method, amount_sat, description)
+        .await
 }
 
 #[tauri::command]
-pub async fn redeem(state: State<'_, AppState>, token: String, into: Option<AccountId>) -> Result<Payment> {
+pub async fn redeem(
+    state: State<'_, AppState>,
+    token: String,
+    into: Option<AccountId>,
+) -> Result<Payment> {
     wallet(&state).await?.redeem(&token, into).await
 }
 
 #[tauri::command]
-pub async fn create_token(state: State<'_, AppState>, from: AccountId, amount_sat: Sats, memo: Option<String>) -> Result<Payment> {
-    wallet(&state).await?.create_token(&from, amount_sat, memo).await
+pub async fn create_token(
+    state: State<'_, AppState>,
+    from: AccountId,
+    amount_sat: Sats,
+    memo: Option<String>,
+) -> Result<Payment> {
+    wallet(&state)
+        .await?
+        .create_token(&from, amount_sat, memo)
+        .await
 }
 
 #[tauri::command]
 pub async fn layout(state: State<'_, AppState>) -> Result<Layout> {
-    Ok(state.inner.lock().await.as_ref().ok_or(Error::Locked)?.config.layout.clone())
+    Ok(state
+        .inner
+        .lock()
+        .await
+        .as_ref()
+        .ok_or(Error::Locked)?
+        .config
+        .layout
+        .clone())
 }
 
 #[tauri::command]
@@ -273,7 +382,11 @@ pub async fn fee_rates(state: State<'_, AppState>) -> Result<FeeRates> {
     let (account, base) = {
         let guard = state.inner.lock().await;
         let u = guard.as_ref().ok_or(Error::Locked)?;
-        let base = u.config.esplora_url.clone().unwrap_or_else(|| rail_onchain::default_esplora(u.config.network).to_string());
+        let base = u
+            .config
+            .esplora_url
+            .clone()
+            .unwrap_or_else(|| rail_onchain::default_esplora(u.config.network).to_string());
         (u.onchain.values().next().cloned(), base)
     };
     if let Some(account) = account {
@@ -294,12 +407,21 @@ pub async fn fee_rates(state: State<'_, AppState>) -> Result<FeeRates> {
         .map_err(|e| Error::rail("fees", e))?;
     let at = |target: u32| {
         est.iter()
-            .filter_map(|(k, v)| k.parse::<u32>().ok().filter(|t| *t <= target).map(|t| (t, *v)))
+            .filter_map(|(k, v)| {
+                k.parse::<u32>()
+                    .ok()
+                    .filter(|t| *t <= target)
+                    .map(|t| (t, *v))
+            })
             .max_by_key(|(t, _)| *t)
             .map(|(_, v)| v.max(1.0))
             .unwrap_or(1.0)
     };
-    Ok(FeeRates { fast: at(1), normal: at(6), slow: at(144) })
+    Ok(FeeRates {
+        fast: at(1),
+        normal: at(6),
+        slow: at(144),
+    })
 }
 
 /// Spot price from mempool.space (or the user's own mempool instance).
@@ -308,7 +430,10 @@ pub async fn btc_price(state: State<'_, AppState>, currency: String) -> Result<O
     let base = {
         let guard = state.inner.lock().await;
         let u = guard.as_ref().ok_or(Error::Locked)?;
-        u.config.esplora_url.clone().unwrap_or_else(|| "https://mempool.space/api".into())
+        u.config
+            .esplora_url
+            .clone()
+            .unwrap_or_else(|| "https://mempool.space/api".into())
     };
     let url = format!("{}/v1/prices", base.trim_end_matches('/'));
     let res = reqwest::Client::new()
@@ -319,7 +444,10 @@ pub async fn btc_price(state: State<'_, AppState>, currency: String) -> Result<O
         .and_then(|r| r.error_for_status());
     let Ok(res) = res else { return Ok(None) };
     let json: serde_json::Value = res.json().await.unwrap_or_default();
-    Ok(json.get(currency.to_uppercase()).and_then(|v| v.as_f64()).filter(|p| *p > 0.0))
+    Ok(json
+        .get(currency.to_uppercase())
+        .and_then(|v| v.as_f64())
+        .filter(|p| *p > 0.0))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -337,7 +465,11 @@ pub struct Settings {
 pub async fn settings(state: State<'_, AppState>) -> Result<Settings> {
     let guard = state.inner.lock().await;
     let u = guard.as_ref().ok_or(Error::Locked)?;
-    Ok(Settings { esplora_url: u.config.esplora_url.clone(), breez_api_key: None, has_breez_key: u.config.breez_api_key.is_some() })
+    Ok(Settings {
+        esplora_url: u.config.esplora_url.clone(),
+        breez_api_key: None,
+        has_breez_key: u.config.breez_api_key.is_some(),
+    })
 }
 
 /// Saved now, applied the next time the wallet unlocks.
@@ -345,13 +477,24 @@ pub async fn settings(state: State<'_, AppState>) -> Result<Settings> {
 pub async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<()> {
     let mut guard = state.inner.lock().await;
     let u = guard.as_mut().ok_or(Error::Locked)?;
-    u.config.esplora_url = match settings.esplora_url.map(|s| s.trim().trim_end_matches('/').to_string()) {
+    u.config.esplora_url = match settings
+        .esplora_url
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+    {
         Some(url) if url.is_empty() => None,
         Some(url) if url.starts_with("https://") || url.starts_with("http://") => Some(url),
-        Some(_) => return Err(Error::Invalid("Server addresses start with https:// or http://".into())),
+        Some(_) => {
+            return Err(Error::Invalid(
+                "Server addresses start with https:// or http://".into(),
+            ))
+        }
         None => None,
     };
-    if let Some(key) = settings.breez_api_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
+    if let Some(key) = settings
+        .breez_api_key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+    {
         u.config.breez_api_key = Some(key);
     }
     u.config.save(&state.paths.config())
@@ -368,39 +511,73 @@ pub struct Unavailable {
 pub async fn unavailable_accounts(state: State<'_, AppState>) -> Result<Vec<Unavailable>> {
     let guard = state.inner.lock().await;
     let u = guard.as_ref().ok_or(Error::Locked)?;
-    Ok(u.unavailable.iter().map(|(id, reason)| Unavailable { id: id.clone(), reason: reason.clone() }).collect())
+    Ok(u.unavailable
+        .iter()
+        .map(|(id, reason)| Unavailable {
+            id: id.clone(),
+            reason: reason.clone(),
+        })
+        .collect())
 }
 
 async fn spark_account(state: &AppState, id: &AccountId) -> Result<Arc<rail_spark::SparkAccount>> {
     let guard = state.inner.lock().await;
     let u = guard.as_ref().ok_or(Error::Locked)?;
-    u.spark.get(id).cloned().ok_or_else(|| Error::Unsupported("have a Lightning address".into()))
+    u.spark
+        .get(id)
+        .cloned()
+        .ok_or_else(|| Error::Unsupported("have a Lightning address".into()))
 }
 
 #[tauri::command]
-pub async fn lightning_address(state: State<'_, AppState>, account: AccountId) -> Result<Option<rail_spark::LightningAddress>> {
-    spark_account(&state, &account).await?.lightning_address().await
+pub async fn lightning_address(
+    state: State<'_, AppState>,
+    account: AccountId,
+) -> Result<Option<rail_spark::LightningAddress>> {
+    spark_account(&state, &account)
+        .await?
+        .lightning_address()
+        .await
 }
 
 fn check_username(username: &str) -> Result<String> {
     let u = username.trim().to_lowercase();
-    let ok = (2..=32).contains(&u.len()) && u.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.');
+    let ok = (2..=32).contains(&u.len())
+        && u.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.'
+        });
     if !ok {
-        return Err(Error::Invalid("Use 2 to 32 letters, numbers, dots, dashes or underscores".into()));
+        return Err(Error::Invalid(
+            "Use 2 to 32 letters, numbers, dots, dashes or underscores".into(),
+        ));
     }
     Ok(u)
 }
 
 #[tauri::command]
-pub async fn lightning_address_available(state: State<'_, AppState>, account: AccountId, username: String) -> Result<bool> {
+pub async fn lightning_address_available(
+    state: State<'_, AppState>,
+    account: AccountId,
+    username: String,
+) -> Result<bool> {
     let username = check_username(&username)?;
-    spark_account(&state, &account).await?.lightning_address_available(&username).await
+    spark_account(&state, &account)
+        .await?
+        .lightning_address_available(&username)
+        .await
 }
 
 #[tauri::command]
-pub async fn register_lightning_address(state: State<'_, AppState>, account: AccountId, username: String) -> Result<rail_spark::LightningAddress> {
+pub async fn register_lightning_address(
+    state: State<'_, AppState>,
+    account: AccountId,
+    username: String,
+) -> Result<rail_spark::LightningAddress> {
     let username = check_username(&username)?;
-    spark_account(&state, &account).await?.register_lightning_address(&username).await
+    spark_account(&state, &account)
+        .await?
+        .register_lightning_address(&username)
+        .await
 }
 
 /// Remove an account that holds nothing. Spending can't be removed.
@@ -415,7 +592,9 @@ pub async fn remove_account(state: State<'_, AppState>, id: AccountId) -> Result
     let info = w.account(&id).await?.info().await?;
     let b = info.balance;
     if b.confirmed + b.pending_in + b.pending_out > 0 {
-        return Err(Error::Invalid("Move the funds out first. Only empty accounts can be removed".into()));
+        return Err(Error::Invalid(
+            "Move the funds out first. Only empty accounts can be removed".into(),
+        ));
     }
     w.remove_account(&id).await;
     let mut guard = state.inner.lock().await;
@@ -423,6 +602,9 @@ pub async fn remove_account(state: State<'_, AppState>, id: AccountId) -> Result
     u.config.accounts.retain(|a| a.id() != &id);
     u.onchain.remove(&id);
     u.spark.remove(&id);
-    u.config.layout.modules.retain(|m| !m.id.ends_with(&format!(":{}", id.0)));
+    u.config
+        .layout
+        .modules
+        .retain(|m| !m.id.ends_with(&format!(":{}", id.0)));
     u.config.save(&state.paths.config())
 }

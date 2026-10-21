@@ -60,7 +60,11 @@ pub enum Custody {
     /// Keys live on a hardware signer; we only hold the xpub/descriptor.
     Hardware { device: String, fingerprint: String },
     /// M-of-N multisig. `local_signers` is how many keys this device holds.
-    Multisig { threshold: u8, total: u8, local_signers: u8 },
+    Multisig {
+        threshold: u8,
+        total: u8,
+        local_signers: u8,
+    },
     /// Descriptor or xpub only, no signing at all.
     WatchOnly,
     /// Funds held by a third party under bearer tokens (ecash).
@@ -116,16 +120,40 @@ pub enum Method {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PaymentRequest {
-    BitcoinAddress { address: String, amount_sat: Option<Sats>, label: Option<String> },
-    Bolt11 { invoice: String },
-    Bolt12 { offer: String },
-    LightningAddress { address: String },
-    Lnurl { lnurl: String },
-    SparkAddress { address: String },
-    LiquidAddress { address: String, amount_sat: Option<Sats> },
-    CashuToken { token: String },
+    BitcoinAddress {
+        address: String,
+        amount_sat: Option<Sats>,
+        label: Option<String>,
+        /// The full BIP21 URI when it offers payjoin (`pj=`), for the sender.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payjoin: Option<String>,
+    },
+    Bolt11 {
+        invoice: String,
+    },
+    Bolt12 {
+        offer: String,
+    },
+    LightningAddress {
+        address: String,
+    },
+    Lnurl {
+        lnurl: String,
+    },
+    SparkAddress {
+        address: String,
+    },
+    LiquidAddress {
+        address: String,
+        amount_sat: Option<Sats>,
+    },
+    CashuToken {
+        token: String,
+    },
     /// BIP21 with several options; the planner picks the best one.
-    Unified { options: Vec<PaymentRequest> },
+    Unified {
+        options: Vec<PaymentRequest>,
+    },
 }
 
 impl PaymentRequest {
@@ -198,6 +226,18 @@ pub enum FeePriority {
     Custom(u64),
 }
 
+/// How an on-chain account builds a send.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpendStyle {
+    /// Fewest inputs and outputs, lowest fee.
+    #[default]
+    Efficient,
+    /// Looks like a two-person coinjoin (STONEWALL pattern): the payment and
+    /// one change output share the same amount. Costs more in fees.
+    Private,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendRequest {
@@ -209,6 +249,9 @@ pub struct SendRequest {
     #[serde(default)]
     pub fee: FeePriority,
     pub note: Option<String>,
+    /// Ignored by accounts that aren't on-chain.
+    #[serde(default)]
+    pub style: SpendStyle,
 }
 
 /// A priced, ready-to-confirm payment. Opaque `handle` is rail-specific.
@@ -222,6 +265,15 @@ pub struct SendQuote {
     pub handle: String,
     /// For hardware / multisig accounts: a PSBT that needs external signatures.
     pub needs_signature: Option<UnsignedPsbt>,
+    /// The quote uses the private (fake coinjoin) layout.
+    #[serde(default)]
+    pub private: bool,
+    /// The send will try payjoin first and fall back to this transaction.
+    #[serde(default)]
+    pub payjoin: bool,
+    /// Plain-language caveats to show before confirming.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

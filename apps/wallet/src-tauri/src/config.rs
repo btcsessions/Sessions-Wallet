@@ -12,7 +12,11 @@ use sessions_core::{AccountId, Error, Network, Result};
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AccountSpec {
     /// BIP84 single-sig from the app seed.
-    Savings { id: AccountId, name: String, account_index: u32 },
+    Savings {
+        id: AccountId,
+        name: String,
+        account_index: u32,
+    },
     /// Spark / Lightning, seeded from a BIP85 child.
     Spending { id: AccountId, name: String },
     Multisig {
@@ -24,9 +28,23 @@ pub enum AccountSpec {
         /// BIP48 account index of this device's key.
         local_account: u32,
     },
-    Hardware { id: AccountId, name: String, device: String, fingerprint: String, descriptors: DescriptorPair },
-    WatchOnly { id: AccountId, name: String, descriptors: DescriptorPair },
-    Ecash { id: AccountId, name: String, mint_url: String },
+    Hardware {
+        id: AccountId,
+        name: String,
+        device: String,
+        fingerprint: String,
+        descriptors: DescriptorPair,
+    },
+    WatchOnly {
+        id: AccountId,
+        name: String,
+        descriptors: DescriptorPair,
+    },
+    Ecash {
+        id: AccountId,
+        name: String,
+        mint_url: String,
+    },
 }
 
 impl AccountSpec {
@@ -68,7 +86,10 @@ impl Config {
             breez_api_key: None,
             // Spending only. On-chain is for hardware wallets and vaults; a hot
             // on-chain wallet is something the user turns on themselves.
-            accounts: vec![AccountSpec::Spending { id: "spending".into(), name: "Spending".into() }],
+            accounts: vec![AccountSpec::Spending {
+                id: "spending".into(),
+                name: "Spending".into(),
+            }],
             layout: Layout::default(),
             next_multisig_account: 0,
             next_id: 1,
@@ -83,14 +104,19 @@ impl Config {
 
     pub fn load(path: &Path) -> Result<Option<Config>> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| Error::Storage(format!("config.json: {e}"))),
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| Error::Storage(format!("config.json: {e}"))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(Error::Storage(e.to_string())),
         }
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        write_atomic(path, &serde_json::to_vec_pretty(self).map_err(|e| Error::Storage(e.to_string()))?)
+        write_atomic(
+            path,
+            &serde_json::to_vec_pretty(self).map_err(|e| Error::Storage(e.to_string()))?,
+        )
     }
 }
 

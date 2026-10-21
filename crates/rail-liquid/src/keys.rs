@@ -20,18 +20,27 @@ pub struct SwapKeys {
 
 impl SwapKeys {
     pub fn new(phrase: &str, network: BoltzNetwork) -> Result<Self> {
-        let normalised = phrase.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let normalised = phrase
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
         let master = SwapMasterKey::from_mnemonic(&normalised, None, network)
             .map_err(|e| Error::InvalidMnemonic(e.to_string()))?;
         Ok(Self { master })
     }
 
     pub fn keypair(&self, index: u64) -> Result<Keypair> {
-        self.master.derive_swapkey(index).map_err(|e| Error::Crypto(e.to_string()))
+        self.master
+            .derive_swapkey(index)
+            .map_err(|e| Error::Crypto(e.to_string()))
     }
 
     pub fn public_key(&self, index: u64) -> Result<PublicKey> {
-        Ok(PublicKey { compressed: true, inner: self.keypair(index)?.public_key() })
+        Ok(PublicKey {
+            compressed: true,
+            inner: self.keypair(index)?.public_key(),
+        })
     }
 
     /// `sha256(private key at index)`, the Boltz convention for restorable swaps.
@@ -50,7 +59,8 @@ mod tests {
     use super::*;
 
     /// BIP85 child of the "bacon ×24" phrase at Boltz's index; vectors from boltz-client.
-    const CHILD: &str = "velvet engage shaft effort clarify annual protect client only surround sock gain";
+    const CHILD: &str =
+        "velvet engage shaft effort clarify annual protect client only surround sock gain";
 
     #[test]
     fn matches_boltz_rescue_key_vectors() {
@@ -69,7 +79,11 @@ mod tests {
     fn deterministic_and_distinct() {
         let a = SwapKeys::new(CHILD, BoltzNetwork::Mainnet).unwrap();
         // Messy input normalises to the same phrase.
-        let b = SwapKeys::new(&format!("  {}  ", CHILD.to_uppercase().replace(' ', "   ")), BoltzNetwork::Mainnet).unwrap();
+        let b = SwapKeys::new(
+            &format!("  {}  ", CHILD.to_uppercase().replace(' ', "   ")),
+            BoltzNetwork::Mainnet,
+        )
+        .unwrap();
         for i in [0u64, 1, 7, 1_000] {
             assert_eq!(a.public_key(i).unwrap(), b.public_key(i).unwrap());
             assert_eq!(a.preimage(i).unwrap(), b.preimage(i).unwrap());
@@ -83,6 +97,9 @@ mod tests {
 
     #[test]
     fn rejects_bad_phrase() {
-        assert!(matches!(SwapKeys::new("not a phrase", BoltzNetwork::Mainnet), Err(Error::InvalidMnemonic(_))));
+        assert!(matches!(
+            SwapKeys::new("not a phrase", BoltzNetwork::Mainnet),
+            Err(Error::InvalidMnemonic(_))
+        ));
     }
 }

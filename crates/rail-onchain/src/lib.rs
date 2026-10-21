@@ -10,6 +10,7 @@
 //! | watch-only     | any imported descriptor     | nobody                             |
 
 pub mod descriptors;
+pub mod privacy;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -37,6 +38,13 @@ const DB_MAGIC: &[u8] = b"sessions-wallet-onchain-v1";
 type Db = Store<ChangeSet>;
 const STOP_GAP: usize = 25;
 const PARALLEL_REQUESTS: usize = 4;
+
+fn encode_handle(psbt: &Psbt, payjoin_uri: Option<&str>) -> String {
+    match payjoin_uri {
+        Some(uri) => format!("{psbt}\n{uri}"),
+        None => psbt.to_string(),
+    }
+}
 
 pub fn default_esplora(network: Network) -> &'static str {
     match network {
@@ -78,7 +86,10 @@ pub struct OnchainAccount {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn err(e: impl std::fmt::Display) -> Error {
@@ -91,7 +102,8 @@ impl OnchainAccount {
         if let Some(parent) = cfg.db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::Storage(e.to_string()))?;
         }
-        let (mut conn, _) = Db::load_or_create(DB_MAGIC, &cfg.db_path).map_err(|e| Error::Storage(e.to_string()))?;
+        let (mut conn, _) = Db::load_or_create(DB_MAGIC, &cfg.db_path)
+            .map_err(|e| Error::Storage(e.to_string()))?;
         let net = cfg.network.to_bitcoin();
         let ext = cfg.descriptors.external.clone();
         let int = cfg.descriptors.internal.clone();
@@ -105,13 +117,20 @@ impl OnchainAccount {
         let (wallet, scanned) = match loaded {
             Some(w) => (w, true),
             None => (
-                Wallet::create(ext, int).network(net).create_wallet(&mut conn).map_err(|e| Error::Storage(e.to_string()))?,
+                Wallet::create(ext, int)
+                    .network(net)
+                    .create_wallet(&mut conn)
+                    .map_err(|e| Error::Storage(e.to_string()))?,
                 false,
             ),
         };
 
-        let url = cfg.esplora_url.unwrap_or_else(|| default_esplora(cfg.network).to_string());
-        let client = esplora_client::Builder::new(&url).build_async().map_err(err)?;
+        let url = cfg
+            .esplora_url
+            .unwrap_or_else(|| default_esplora(cfg.network).to_string());
+        let client = esplora_client::Builder::new(&url)
+            .build_async()
+            .map_err(err)?;
 
         Ok(Self {
             id: cfg.id,
@@ -120,7 +139,11 @@ impl OnchainAccount {
             custody: cfg.custody,
             signer: cfg.signer,
             client,
-            inner: Mutex::new(Inner { wallet, conn, scanned }),
+            inner: Mutex::new(Inner {
+                wallet,
+                conn,
+                scanned,
+            }),
         })
     }
 
@@ -128,8 +151,14 @@ impl OnchainAccount {
     pub async fn descriptors(&self) -> DescriptorPair {
         let inner = self.inner.lock().await;
         DescriptorPair {
-            external: inner.wallet.public_descriptor(KeychainKind::External).to_string(),
-            internal: inner.wallet.public_descriptor(KeychainKind::Internal).to_string(),
+            external: inner
+                .wallet
+                .public_descriptor(KeychainKind::External)
+                .to_string(),
+            internal: inner
+                .wallet
+                .public_descriptor(KeychainKind::Internal)
+                .to_string(),
         }
     }
 
@@ -144,16 +173,24 @@ impl OnchainAccount {
             FeePriority::Custom(_) => unreachable!(),
         };
         let estimates = self.client.get_fee_estimates().await.map_err(err)?;
-        let sat_vb = esplora_client::convert_fee_rate(target, estimates).unwrap_or(2.0).max(1.0);
+        let sat_vb = esplora_client::convert_fee_rate(target, estimates)
+            .unwrap_or(2.0)
+            .max(1.0);
         // Round up to the nearest 0.25 sat/vB expressed as sat/kwu.
-        Ok(FeeRate::from_sat_per_kwu(((sat_vb as f64) * 250.0).ceil() as u64))
+        Ok(FeeRate::from_sat_per_kwu(
+            ((sat_vb as f64) * 250.0).ceil() as u64
+        ))
     }
 
     /// Current fee rates in sat/vB for (next block, ~1 hour, no rush), from
     /// this account's chain server.
     pub async fn fee_rates(&self) -> Result<(f32, f32, f32)> {
         let est = self.client.get_fee_estimates().await.map_err(err)?;
-        let at = |t| esplora_client::convert_fee_rate(t, est.clone()).unwrap_or(1.0).max(1.0);
+        let at = |t| {
+            esplora_client::convert_fee_rate(t, est.clone())
+                .unwrap_or(1.0)
+                .max(1.0)
+        };
         Ok((at(1), at(6), at(144)))
     }
 
@@ -161,7 +198,11 @@ impl OnchainAccount {
         match &self.custody {
             Custody::Hot => 0,
             Custody::Hardware { .. } | Custody::WatchOnly => 1,
-            Custody::Multisig { threshold, local_signers, .. } => threshold.saturating_sub(*local_signers),
+            Custody::Multisig {
+                threshold,
+                local_signers,
+                ..
+            } => threshold.saturating_sub(*local_signers),
             Custody::Mint { .. } => 1,
         }
     }
@@ -173,6 +214,14 @@ impl OnchainAccount {
             let _ = psbt.sign(xprv, &secp);
         }
         Ok(())
+    }
+
+    /// The quote handle: the PSBT, plus the payjoin URI when we'll try payjoin.
+    fn decode_handle(handle: &str) -> Result<(Psbt, Option<String>)> {
+        match handle.split_once('\n') {
+            Some((psbt, uri)) => Ok((Self::psbt_from_b64(psbt)?, Some(uri.to_string()))),
+            None => Ok((Self::psbt_from_b64(handle)?, None)),
+        }
     }
 
     fn psbt_from_b64(s: &str) -> Result<Psbt> {
@@ -214,7 +263,11 @@ impl Rail for OnchainAccount {
                 pending_out,
             },
             receives: vec![Method::BitcoinAddress],
-            pays: if matches!(self.custody, Custody::WatchOnly) { vec![] } else { vec![Method::BitcoinAddress] },
+            pays: if matches!(self.custody, Custody::WatchOnly) {
+                vec![]
+            } else {
+                vec![Method::BitcoinAddress]
+            },
         })
     }
 
@@ -222,39 +275,59 @@ impl Rail for OnchainAccount {
         let (request_full, request_sync) = {
             let inner = self.inner.lock().await;
             if inner.scanned {
-                (None, Some(inner.wallet.start_sync_with_revealed_spks().build()))
+                (
+                    None,
+                    Some(inner.wallet.start_sync_with_revealed_spks().build()),
+                )
             } else {
                 (Some(inner.wallet.start_full_scan().build()), None)
             }
         };
 
         if let Some(req) = request_full {
-            let update = self.client.full_scan(req, STOP_GAP, PARALLEL_REQUESTS).await.map_err(err)?;
+            let update = self
+                .client
+                .full_scan(req, STOP_GAP, PARALLEL_REQUESTS)
+                .await
+                .map_err(err)?;
             let mut inner = self.inner.lock().await;
             inner.wallet.apply_update(update).map_err(err)?;
             inner.scanned = true;
             let Inner { wallet, conn, .. } = &mut *inner;
-            wallet.persist(conn).map_err(|e| Error::Storage(e.to_string()))?;
+            wallet
+                .persist(conn)
+                .map_err(|e| Error::Storage(e.to_string()))?;
         }
         if let Some(req) = request_sync {
-            let update = self.client.sync(req, PARALLEL_REQUESTS).await.map_err(err)?;
+            let update = self
+                .client
+                .sync(req, PARALLEL_REQUESTS)
+                .await
+                .map_err(err)?;
             let mut inner = self.inner.lock().await;
             inner.wallet.apply_update(update).map_err(err)?;
             let Inner { wallet, conn, .. } = &mut *inner;
-            wallet.persist(conn).map_err(|e| Error::Storage(e.to_string()))?;
+            wallet
+                .persist(conn)
+                .map_err(|e| Error::Storage(e.to_string()))?;
         }
         Ok(())
     }
 
     async fn receive(&self, req: ReceiveRequest) -> Result<ReceiveTarget> {
         if req.method != Method::BitcoinAddress {
-            return Err(Error::Unsupported(format!("receive via {:?} on-chain", req.method)));
+            return Err(Error::Unsupported(format!(
+                "receive via {:?} on-chain",
+                req.method
+            )));
         }
         let mut inner = self.inner.lock().await;
         let Inner { wallet, conn, .. } = &mut *inner;
         // Reuse the first unused address so repeated taps don't burn the gap limit.
         let info = wallet.next_unused_address(KeychainKind::External);
-        wallet.persist(conn).map_err(|e| Error::Storage(e.to_string()))?;
+        wallet
+            .persist(conn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
 
         let mut uri = format!("bitcoin:{}", info.address.to_string().to_uppercase());
         if let Some(sats) = req.amount_sat {
@@ -262,7 +335,11 @@ impl Rail for OnchainAccount {
         }
         Ok(ReceiveTarget {
             method: Method::BitcoinAddress,
-            request: if req.amount_sat.is_some() { uri } else { info.address.to_string() },
+            request: if req.amount_sat.is_some() {
+                uri
+            } else {
+                info.address.to_string()
+            },
             amount_sat: req.amount_sat,
             fee_sat: None,
             expires_at: None,
@@ -271,8 +348,16 @@ impl Rail for OnchainAccount {
     }
 
     async fn prepare_send(&self, req: SendRequest) -> Result<SendQuote> {
-        let PaymentRequest::BitcoinAddress { address, amount_sat: req_amount, .. } = &req.destination else {
-            return Err(Error::Unsupported("pay that from an on-chain account".into()));
+        let PaymentRequest::BitcoinAddress {
+            address,
+            amount_sat: req_amount,
+            payjoin: payjoin_uri,
+            ..
+        } = &req.destination
+        else {
+            return Err(Error::Unsupported(
+                "pay that from an on-chain account".into(),
+            ));
         };
         if matches!(self.custody, Custody::WatchOnly) {
             return Err(Error::Unsupported("spend from a watch-only account".into()));
@@ -287,13 +372,56 @@ impl Rail for OnchainAccount {
         let Inner { wallet, conn, .. } = &mut *inner;
         let available = wallet.balance().trusted_spendable().to_sat();
 
-        let mut psbt = {
+        let private = req.style == SpendStyle::Private;
+        let mut notes = Vec::new();
+        let mut psbt = if private {
+            if req.send_max {
+                return Err(Error::Invalid("Private mode can't send the whole balance, since the decoy needs a matching amount. Use Efficient".into()));
+            }
+            let amount = req
+                .amount_sat
+                .or(*req_amount)
+                .ok_or(Error::AmountRequired)?;
+            let utxos = privacy::spendable(wallet);
+            let input_weight = privacy::input_weight(wallet)?;
+            let fresh = [
+                wallet
+                    .reveal_next_address(KeychainKind::Internal)
+                    .script_pubkey(),
+                wallet
+                    .reveal_next_address(KeychainKind::Internal)
+                    .script_pubkey(),
+                wallet
+                    .reveal_next_address(KeychainKind::Internal)
+                    .script_pubkey(),
+            ];
+            let plan = privacy::plan(
+                &utxos,
+                input_weight,
+                &address.script_pubkey(),
+                amount,
+                fee_rate,
+                fresh,
+            )?;
+            notes.extend(plan.notes);
+            let mut b = wallet.build_tx();
+            b.add_utxos(&plan.inputs).map_err(err)?;
+            b.manually_selected_only();
+            for (spk, value) in plan.outputs {
+                b.add_recipient(spk, Amount::from_sat(value));
+            }
+            b.fee_absolute(Amount::from_sat(plan.fee));
+            b.finish().map_err(err)?
+        } else {
             let mut b = wallet.build_tx();
             b.fee_rate(fee_rate);
             if req.send_max {
                 b.drain_wallet().drain_to(address.script_pubkey());
             } else {
-                let amount = req.amount_sat.or(*req_amount).ok_or(Error::AmountRequired)?;
+                let amount = req
+                    .amount_sat
+                    .or(*req_amount)
+                    .ok_or(Error::AmountRequired)?;
                 b.add_recipient(address.script_pubkey(), Amount::from_sat(amount));
             }
             b.finish().map_err(|e| match e {
@@ -304,20 +432,41 @@ impl Rail for OnchainAccount {
                 other => err(other),
             })?
         };
+
+        // Payjoin (sender): hot wallets only, and not combined with private
+        // mode, since the receiver rebuilds the transaction anyway.
+        let payjoin = payjoin_uri.is_some()
+            && matches!(self.custody, Custody::Hot)
+            && !private
+            && !req.send_max;
+        if payjoin {
+            notes.push("The recipient supports payjoin. The wallet will try it first and send this transaction if they don't respond.".into());
+        }
+
         // Persist so the change address we just used isn't handed out again.
-        wallet.persist(conn).map_err(|e| Error::Storage(e.to_string()))?;
+        wallet
+            .persist(conn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
 
         let fee_sat = psbt.fee().map_err(err)?.to_sat();
         let spk = address.script_pubkey();
-        let amount_sat: u64 =
-            psbt.unsigned_tx.output.iter().filter(|o| o.script_pubkey == spk).map(|o| o.value.to_sat()).sum();
+        let amount_sat: u64 = psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .filter(|o| o.script_pubkey == spk)
+            .map(|o| o.value.to_sat())
+            .sum();
 
         let needed = self.signatures_needed();
         let needs_signature = if needed > 0 {
             // Multisig: add our own signature first so the PSBT shown to the
             // user only needs the remaining cosigners.
             self.sign_locally(&mut psbt)?;
-            Some(UnsignedPsbt { psbt_base64: psbt.to_string(), signatures_needed: needed })
+            Some(UnsignedPsbt {
+                psbt_base64: psbt.to_string(),
+                signatures_needed: needed,
+            })
         } else {
             None
         };
@@ -327,13 +476,16 @@ impl Rail for OnchainAccount {
             method: Method::BitcoinAddress,
             amount_sat,
             fee_sat,
-            handle: psbt.to_string(),
+            handle: encode_handle(&psbt, payjoin_uri.as_deref().filter(|_| payjoin)),
             needs_signature,
+            private,
+            payjoin,
+            notes,
         })
     }
 
     async fn send(&self, quote: SendQuote, signed_psbt: Option<String>) -> Result<Payment> {
-        let mut psbt = Self::psbt_from_b64(&quote.handle)?;
+        let (mut psbt, _payjoin_uri) = Self::decode_handle(&quote.handle)?;
         if let Some(signed) = signed_psbt {
             let other = Self::psbt_from_b64(&signed)?;
             if other.unsigned_tx.compute_txid() != psbt.unsigned_tx.compute_txid() {
@@ -345,9 +497,14 @@ impl Rail for OnchainAccount {
 
         let tx = {
             let inner = self.inner.lock().await;
-            let finalized = inner.wallet.finalize_psbt(&mut psbt, SignOptions::default()).map_err(err)?;
+            let finalized = inner
+                .wallet
+                .finalize_psbt(&mut psbt, SignOptions::default())
+                .map_err(err)?;
             if !finalized {
-                return Err(Error::Unsupported("broadcast yet – signatures are still missing".into()));
+                return Err(Error::Unsupported(
+                    "broadcast yet – signatures are still missing".into(),
+                ));
             }
             psbt.extract_tx().map_err(err)?
         };
@@ -357,7 +514,9 @@ impl Rail for OnchainAccount {
         let mut inner = self.inner.lock().await;
         let Inner { wallet, conn, .. } = &mut *inner;
         wallet.apply_unconfirmed_txs([(tx.clone(), now())]);
-        wallet.persist(conn).map_err(|e| Error::Storage(e.to_string()))?;
+        wallet
+            .persist(conn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
 
         Ok(Payment {
             id: tx.compute_txid().to_string(),
@@ -384,22 +543,35 @@ impl Rail for OnchainAccount {
                 let fee = w.calculate_fee(tx).map(|a| a.to_sat()).unwrap_or(0);
                 let (sent, received) = (sent.to_sat(), received.to_sat());
                 let (direction, amount) = if sent > received {
-                    (Direction::Outgoing, sent - received - fee.min(sent - received))
+                    (
+                        Direction::Outgoing,
+                        sent - received - fee.min(sent - received),
+                    )
                 } else {
                     (Direction::Incoming, received - sent)
                 };
                 let (status, timestamp) = match &t.chain_position {
-                    ChainPosition::Confirmed { anchor, .. } => (PaymentStatus::Complete, anchor.confirmation_time),
-                    ChainPosition::Unconfirmed { first_seen, last_seen } => {
-                        (PaymentStatus::Pending, first_seen.or(*last_seen).unwrap_or_else(now))
+                    ChainPosition::Confirmed { anchor, .. } => {
+                        (PaymentStatus::Complete, anchor.confirmation_time)
                     }
+                    ChainPosition::Unconfirmed {
+                        first_seen,
+                        last_seen,
+                    } => (
+                        PaymentStatus::Pending,
+                        first_seen.or(*last_seen).unwrap_or_else(now),
+                    ),
                 };
                 Payment {
                     id: t.tx_node.txid.to_string(),
                     account: self.id.clone(),
                     direction,
                     amount_sat: amount,
-                    fee_sat: if direction == Direction::Outgoing { fee } else { 0 },
+                    fee_sat: if direction == Direction::Outgoing {
+                        fee
+                    } else {
+                        0
+                    },
                     status,
                     method: Method::BitcoinAddress,
                     timestamp,
@@ -422,7 +594,10 @@ mod tests {
     const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     fn hot(dir: &std::path::Path) -> OnchainAccount {
-        let master = Seed::from_phrase(ABANDON).unwrap().master_xpriv(Network::Bitcoin).unwrap();
+        let master = Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
         OnchainAccount::open(OnchainConfig {
             id: "savings".into(),
             name: "Savings".into(),
@@ -440,15 +615,32 @@ mod tests {
     async fn first_address_matches_bip84_vector_and_persists() {
         let dir = tempfile::tempdir().unwrap();
         let a = hot(dir.path());
-        let r = a.receive(ReceiveRequest { method: Method::BitcoinAddress, amount_sat: None, description: None }).await.unwrap();
+        let r = a
+            .receive(ReceiveRequest {
+                method: Method::BitcoinAddress,
+                amount_sat: None,
+                description: None,
+            })
+            .await
+            .unwrap();
         // BIP84 test vector: m/84'/0'/0'/0/0 for "abandon … about".
         assert_eq!(r.request, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
         drop(a);
 
         // Reopen from disk: same wallet, unused address is reused.
         let a = hot(dir.path());
-        let r2 = a.receive(ReceiveRequest { method: Method::BitcoinAddress, amount_sat: Some(12_345), description: None }).await.unwrap();
-        assert_eq!(r2.request, "bitcoin:BC1QCR8TE4KR609GCAWUTMRZA0J4XV80JY8Z306FYU?amount=0.00012345");
+        let r2 = a
+            .receive(ReceiveRequest {
+                method: Method::BitcoinAddress,
+                amount_sat: Some(12_345),
+                description: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            r2.request,
+            "bitcoin:BC1QCR8TE4KR609GCAWUTMRZA0J4XV80JY8Z306FYU?amount=0.00012345"
+        );
         assert_eq!(a.info().await.unwrap().balance, Balance::default());
     }
 
@@ -456,18 +648,27 @@ mod tests {
     async fn rejects_other_methods_and_networks() {
         let dir = tempfile::tempdir().unwrap();
         let a = hot(dir.path());
-        assert!(a.receive(ReceiveRequest { method: Method::Bolt11, amount_sat: None, description: None }).await.is_err());
+        assert!(a
+            .receive(ReceiveRequest {
+                method: Method::Bolt11,
+                amount_sat: None,
+                description: None
+            })
+            .await
+            .is_err());
         let q = a
             .prepare_send(SendRequest {
                 destination: PaymentRequest::BitcoinAddress {
                     address: "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".into(),
                     amount_sat: Some(1000),
                     label: None,
+                    payjoin: None,
                 },
                 amount_sat: None,
                 send_max: false,
                 fee: FeePriority::Custom(2),
                 note: None,
+                style: Default::default(),
             })
             .await;
         assert!(matches!(q, Err(Error::Network(_))));
@@ -476,20 +677,32 @@ mod tests {
     /// Give a wallet a fake unconfirmed coin paying its first receive address.
     async fn fund(a: &OnchainAccount, sats: u64) {
         use bdk_wallet::bitcoin::hashes::Hash;
-        use bdk_wallet::bitcoin::{absolute, transaction, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+        use bdk_wallet::bitcoin::{
+            absolute, transaction, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+            Witness,
+        };
         let mut inner = a.inner.lock().await;
-        let spk = inner.wallet.peek_address(KeychainKind::External, 0).script_pubkey();
+        let spk = inner
+            .wallet
+            .peek_address(KeychainKind::External, 0)
+            .script_pubkey();
         let tx = Transaction {
             version: transaction::Version::TWO,
             lock_time: absolute::LockTime::ZERO,
             input: vec![TxIn {
                 // Any non-null outpoint: a null one would make this a coinbase.
-                previous_output: OutPoint { txid: Txid::from_byte_array([7; 32]), vout: 0 },
+                previous_output: OutPoint {
+                    txid: Txid::from_byte_array([7; 32]),
+                    vout: 0,
+                },
                 script_sig: ScriptBuf::new(),
                 sequence: Sequence::MAX,
                 witness: Witness::new(),
             }],
-            output: vec![TxOut { value: Amount::from_sat(sats), script_pubkey: spk }],
+            output: vec![TxOut {
+                value: Amount::from_sat(sats),
+                script_pubkey: spk,
+            }],
         };
         inner.wallet.apply_unconfirmed_txs([(tx, now())]);
     }
@@ -500,18 +713,25 @@ mod tests {
                 address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".into(),
                 amount_sat: None,
                 label: None,
+                payjoin: None,
             },
             amount_sat: Some(sats),
             send_max: false,
             fee: FeePriority::Custom(3),
             note: None,
+            style: Default::default(),
         }
     }
 
     async fn finalizes(a: &OnchainAccount, psbt_b64: &str) -> bool {
         let mut psbt = OnchainAccount::psbt_from_b64(psbt_b64).unwrap();
         a.sign_locally(&mut psbt).unwrap();
-        a.inner.lock().await.wallet.finalize_psbt(&mut psbt, SignOptions::default()).unwrap()
+        a.inner
+            .lock()
+            .await
+            .wallet
+            .finalize_psbt(&mut psbt, SignOptions::default())
+            .unwrap()
     }
 
     #[tokio::test]
@@ -531,14 +751,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = hot(dir.path());
         fund(&a, 10_000).await;
-        assert!(matches!(a.prepare_send(send_req(50_000)).await, Err(Error::InsufficientFunds { .. })));
+        assert!(matches!(
+            a.prepare_send(send_req(50_000)).await,
+            Err(Error::InsufficientFunds { .. })
+        ));
     }
 
     #[tokio::test]
     async fn two_of_two_multisig_needs_and_accepts_cosigner() {
         let dir = tempfile::tempdir().unwrap();
-        let ours = Seed::from_phrase(ABANDON).unwrap().master_xpriv(Network::Bitcoin).unwrap();
-        let theirs = Seed::generate(12).unwrap().master_xpriv(Network::Bitcoin).unwrap();
+        let ours = Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
+        let theirs = Seed::generate(12)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
         let keys = [
             descriptors::multisig_cosigner_key(&ours, Network::Bitcoin, 0).unwrap(),
             descriptors::multisig_cosigner_key(&theirs, Network::Bitcoin, 0).unwrap(),
@@ -552,7 +781,11 @@ mod tests {
                 db_path: dir.path().join(format!("{name}.db")),
                 esplora_url: None,
                 descriptors: pair.clone(),
-                custody: Custody::Multisig { threshold: 2, total: 2, local_signers: 1 },
+                custody: Custody::Multisig {
+                    threshold: 2,
+                    total: 2,
+                    local_signers: 1,
+                },
                 signer: Some(signer),
             })
             .unwrap()
@@ -576,14 +809,196 @@ mod tests {
         assert!(finalizes(&a, &combined.to_string()).await);
     }
 
+    /// Fund receive address `index` with one coin of `sats`.
+    async fn fund_at(a: &OnchainAccount, index: u32, sats: u64, salt: u8) {
+        use bdk_wallet::bitcoin::hashes::Hash;
+        use bdk_wallet::bitcoin::{
+            absolute, transaction, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+            Witness,
+        };
+        let mut inner = a.inner.lock().await;
+        let spk = inner
+            .wallet
+            .peek_address(KeychainKind::External, index)
+            .script_pubkey();
+        let tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::from_byte_array([salt; 32]),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(sats),
+                script_pubkey: spk,
+            }],
+        };
+        inner.wallet.apply_unconfirmed_txs([(tx, now())]);
+    }
+
+    fn private_req(sats: u64, to: &str) -> SendRequest {
+        let mut r = send_req(sats);
+        r.style = SpendStyle::Private;
+        if let PaymentRequest::BitcoinAddress { address, .. } = &mut r.destination {
+            *address = to.into();
+        }
+        r
+    }
+
+    const DEST: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+
+    #[tokio::test]
+    async fn private_send_skips_unconfirmed_incoming_coins() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        for i in 0..4 {
+            fund_at(&a, i, 40_000, 10 + i as u8).await;
+        }
+        // Incoming coins that haven't confirmed yet aren't used for private sends.
+        let q = a.prepare_send(private_req(30_000, DEST)).await;
+        assert!(matches!(q, Err(Error::Invalid(_))), "{q:?}");
+    }
+
+    #[tokio::test]
+    async fn private_plan_shape() {
+        use bdk_wallet::bitcoin::{Address, FeeRate};
+        // Plan directly over synthetic coins: four coins at four addresses.
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        for i in 0..4 {
+            fund_at(&a, i, 40_000, 20 + i as u8).await;
+        }
+        let mut inner = a.inner.lock().await;
+        let utxos: Vec<_> = inner.wallet.list_unspent().collect();
+        assert_eq!(utxos.len(), 4);
+        let weight = privacy::input_weight(&inner.wallet).unwrap();
+        let fresh = [
+            inner
+                .wallet
+                .reveal_next_address(KeychainKind::Internal)
+                .script_pubkey(),
+            inner
+                .wallet
+                .reveal_next_address(KeychainKind::Internal)
+                .script_pubkey(),
+            inner
+                .wallet
+                .reveal_next_address(KeychainKind::Internal)
+                .script_pubkey(),
+        ];
+        let dest = Address::from_str(DEST)
+            .unwrap()
+            .assume_checked()
+            .script_pubkey();
+        let rate = FeeRate::from_sat_per_vb(3).unwrap();
+        let plan = privacy::plan(&utxos, weight, &dest, 30_000, rate, fresh.clone()).unwrap();
+
+        // Exactly two outputs of the payment amount: the payment and the decoy.
+        let equal: Vec<_> = plan.outputs.iter().filter(|(_, v)| *v == 30_000).collect();
+        assert_eq!(equal.len(), 2);
+        assert!(equal.iter().any(|(s, _)| *s == dest) && equal.iter().any(|(s, _)| *s == fresh[0]));
+        // Two coins per side are needed (40k each side covers 30k + fee share).
+        assert_eq!(plan.inputs.len(), 2);
+        // Value is conserved.
+        let out: u64 = plan.outputs.iter().map(|(_, v)| v).sum();
+        assert_eq!(out + plan.fee, 80_000);
+        // Fee is close to 3 sat/vB for 2 P2WPKH inputs + 4 outputs (~273 vB).
+        assert!((700..=900).contains(&plan.fee), "fee {}", plan.fee);
+        assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+
+        // A taproot recipient gets a "weaker cover" note.
+        let tr =
+            Address::from_str("bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297")
+                .unwrap()
+                .assume_checked()
+                .script_pubkey();
+        let plan = privacy::plan(&utxos, weight, &tr, 30_000, rate, fresh.clone()).unwrap();
+        assert!(plan
+            .notes
+            .iter()
+            .any(|n| n.contains("different address type")));
+
+        // Too big for two separate sides.
+        // 80k per side plus fees is more than four 40k coins can cover.
+        assert!(privacy::plan(&utxos, weight, &dest, 80_000, rate, fresh).is_err());
+    }
+
+    #[tokio::test]
+    async fn private_send_builds_and_signs() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        // Coins on our own change keychain count as spendable before confirming.
+        {
+            use bdk_wallet::bitcoin::hashes::Hash;
+            use bdk_wallet::bitcoin::{
+                absolute, transaction, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
+                Txid, Witness,
+            };
+            let mut inner = a.inner.lock().await;
+            for i in 0..3u8 {
+                let spk = inner
+                    .wallet
+                    .reveal_next_address(KeychainKind::Internal)
+                    .script_pubkey();
+                let tx = Transaction {
+                    version: transaction::Version::TWO,
+                    lock_time: absolute::LockTime::ZERO,
+                    input: vec![TxIn {
+                        previous_output: OutPoint {
+                            txid: Txid::from_byte_array([40 + i; 32]),
+                            vout: 0,
+                        },
+                        script_sig: ScriptBuf::new(),
+                        sequence: Sequence::MAX,
+                        witness: Witness::new(),
+                    }],
+                    output: vec![TxOut {
+                        value: Amount::from_sat(50_000),
+                        script_pubkey: spk,
+                    }],
+                };
+                inner.wallet.apply_unconfirmed_txs([(tx, now())]);
+            }
+        }
+        let q = a.prepare_send(private_req(20_000, DEST)).await.unwrap();
+        assert!(q.private);
+        let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        let equal = psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .filter(|o| o.value.to_sat() == 20_000)
+            .count();
+        assert_eq!(equal, 2);
+        assert!(psbt.unsigned_tx.input.len() >= 2);
+        assert!(finalizes(&a, &q.handle).await);
+
+        // Sending everything privately isn't possible.
+        let mut all = private_req(0, DEST);
+        all.send_max = true;
+        assert!(a.prepare_send(all).await.is_err());
+    }
+
     #[test]
     fn signatures_needed_by_custody() {
         let dir = tempfile::tempdir().unwrap();
         let mut a = hot(dir.path());
         assert_eq!(a.signatures_needed(), 0);
-        a.custody = Custody::Multisig { threshold: 2, total: 3, local_signers: 1 };
+        a.custody = Custody::Multisig {
+            threshold: 2,
+            total: 3,
+            local_signers: 1,
+        };
         assert_eq!(a.signatures_needed(), 1);
-        a.custody = Custody::Hardware { device: "Coldcard Q".into(), fingerprint: "73c5da0a".into() };
+        a.custody = Custody::Hardware {
+            device: "Coldcard Q".into(),
+            fingerprint: "73c5da0a".into(),
+        };
         assert_eq!(a.signatures_needed(), 1);
     }
 }
