@@ -36,7 +36,7 @@ crates/rail-ecash       Cashu ecash accounts (CDK)
 
 ## Develop
 
-Prerequisites: Rust 1.85+, Node 22+, and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.
+Prerequisites: Rust 1.89+, Node 22+, `protoc` (Protocol Buffers compiler, used by the Spark SDK), and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.
 
 ```sh
 cd apps/wallet
@@ -60,9 +60,11 @@ Tests:
 cargo test --workspace
 ```
 
+Dependency note: the Boltz client depends on a yanked `secp256k1` beta that is pinned in `Cargo.lock`. Update crates one at a time with `cargo update -p <crate>`; a bare `cargo update` will fail.
+
 ## Privacy
 
-By default chain data and fee estimates come from mempool.space. Point the wallet at your own node (Umbrel, Start9, mempool) in Settings and nothing else is contacted for on-chain data.
+By default, on-chain data, fee estimates and prices come from mempool.space. Point the wallet at your own node (Umbrel, Start9, mempool) in Settings and your on-chain accounts talk only to it. Other modules necessarily talk to their own services: Spending to Spark operators and Breez, Liquid swaps to Boltz and a Liquid explorer, ecash to your chosen mint.
 
 ## License
 
