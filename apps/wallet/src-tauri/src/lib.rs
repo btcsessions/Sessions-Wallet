@@ -23,12 +23,22 @@ pub fn run() {
             // settle after we claim, so this can't wait for a manual refresh.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let mut round: u64 = 0;
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    round += 1;
                     let state = handle.state::<state::AppState>();
                     let wallet = state.inner.lock().await.as_ref().map(|u| u.wallet.clone());
                     if let Some(w) = wallet {
                         w.tick_swaps().await;
+                    }
+                    // Incoming payjoins: every 30 s, for accounts that opted in.
+                    if round.is_multiple_of(3) {
+                        for account in state.payjoin_receivers().await {
+                            if let Err(e) = account.payjoin_tick().await {
+                                tracing::warn!("payjoin: {e}");
+                            }
+                        }
                     }
                 }
             });
@@ -66,6 +76,8 @@ pub fn run() {
             commands::lightning_address_available,
             commands::register_lightning_address,
             commands::remove_account,
+            commands::payjoin_receive,
+            commands::set_payjoin_receive,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

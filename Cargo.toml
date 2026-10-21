@@ -43,3 +43,10 @@ bitcoin = { version = "0.32", features = ["serde"] }
 lto = true
 codegen-units = 1
 strip = true
+
+# Keep debug builds small: dependencies (BDK, Breez, CDK, Tauri) are huge.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

@@ -61,6 +61,7 @@ function p(
 }
 
 let mockLnAddress: LightningAddress | null = null;
+const mockPayjoin = new Set<string>();
 
 let mockSettings: Settings = { esploraUrl: null, hasBreezKey: true };
 
@@ -230,6 +231,13 @@ export const mockApi: WalletApi = {
     }
     accounts.push(a);
     return a;
+  },
+  async payjoinReceive(account) {
+    return mockPayjoin.has(account);
+  },
+  async setPayjoinReceive(account, enabled) {
+    if (enabled) mockPayjoin.add(account);
+    else mockPayjoin.delete(account);
   },
   async removeAccount(id) {
     accounts = accounts.filter((a) => a.id !== id);

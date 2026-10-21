@@ -16,6 +16,9 @@ pub enum AccountSpec {
         id: AccountId,
         name: String,
         account_index: u32,
+        /// Offer payjoin when receiving (BIP77). Off by default.
+        #[serde(default)]
+        payjoin_receive: bool,
     },
     /// Spark / Lightning, seeded from a BIP85 child.
     Spending { id: AccountId, name: String },

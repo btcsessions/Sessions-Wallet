@@ -35,6 +35,9 @@ export interface WalletApi {
   addAccount(spec: NewAccount): Promise<AccountInfo>;
   /** Only empty accounts can be removed. */
   removeAccount(id: string): Promise<void>;
+  /** Hot on-chain accounts only. */
+  payjoinReceive(account: string): Promise<boolean>;
+  setPayjoinReceive(account: string, enabled: boolean): Promise<void>;
   /** Our own cosigner key to share when setting up a multisig. */
   cosignerKey(): Promise<string>;
   sync(): Promise<void>;

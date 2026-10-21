@@ -17,6 +17,10 @@ bdk_wallet = { version = "3.2", features = ["file_store"] }
 bdk_esplora = { version = "0.22", default-features = false, features = ["std", "async-https-rustls"] }
 # Pulled in directly only to enable its tokio sleeper (needed for build_async).
 esplora-client = { version = "0.12", default-features = false, features = ["async-https-rustls", "tokio"] }
+# Payjoin: BIP78 (v1) and BIP77 (v2, async via directory + OHTTP relays).
+# Uses the same `bitcoin` 0.32 as bdk_wallet, so types interoperate directly.
+payjoin = { version = "1.2", default-features = false, features = ["v1", "v2", "io"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -188,6 +188,7 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                     id,
                     name,
                     account_index,
+                    payjoin_receive: false,
                 }
             }
             "ecash" => {
@@ -607,4 +608,23 @@ pub async fn remove_account(state: State<'_, AppState>, id: AccountId) -> Result
         .modules
         .retain(|m| !m.id.ends_with(&format!(":{}", id.0)));
     u.config.save(&state.paths.config())
+}
+
+/// Whether a hot on-chain account offers payjoin when receiving.
+#[tauri::command]
+pub async fn payjoin_receive(state: State<'_, AppState>, account: AccountId) -> Result<bool> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    Ok(u.config.accounts.iter().any(
+        |a| matches!(a, AccountSpec::Savings { id, payjoin_receive: true, .. } if *id == account),
+    ))
+}
+
+#[tauri::command]
+pub async fn set_payjoin_receive(
+    state: State<'_, AppState>,
+    account: AccountId,
+    enabled: bool,
+) -> Result<()> {
+    state.set_payjoin_receive(&account, enabled).await
 }

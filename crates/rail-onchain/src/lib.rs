@@ -10,6 +10,7 @@
 //! | watch-only     | any imported descriptor     | nobody                             |
 
 pub mod descriptors;
+pub mod payjoin;
 pub mod privacy;
 
 use std::path::PathBuf;
@@ -30,6 +31,7 @@ use sessions_core::{Error, Rail, Result};
 
 pub use bdk_wallet::bitcoin::bip32::Xpriv;
 pub use descriptors::DescriptorPair;
+pub use payjoin::{PayjoinEndpoints, PjVersion, DEFAULT_DIRECTORY, DEFAULT_RELAYS};
 
 const RAIL: &str = "on-chain";
 /// File header for the wallet database. Never change once shipped.
@@ -66,6 +68,11 @@ pub struct OnchainConfig {
     pub custody: Custody,
     /// Master key from the app seed, when this device is one of the signers.
     pub signer: Option<Xpriv>,
+    /// Offer payjoin (BIP77) when receiving. Off by default; only honoured
+    /// for `Custody::Hot` and when `payjoin_dir` is set.
+    pub payjoin_receive: bool,
+    /// Where payjoin receive sessions are stored.
+    pub payjoin_dir: Option<PathBuf>,
 }
 
 struct Inner {
@@ -83,6 +90,7 @@ pub struct OnchainAccount {
     signer: Option<Xpriv>,
     client: AsyncClient,
     inner: Mutex<Inner>,
+    pj: payjoin::PayjoinState,
 }
 
 fn now() -> u64 {
@@ -132,7 +140,9 @@ impl OnchainAccount {
             .build_async()
             .map_err(err)?;
 
+        let pj = payjoin::PayjoinState::new(&cfg.custody, cfg.payjoin_receive, cfg.payjoin_dir);
         Ok(Self {
+            pj,
             id: cfg.id,
             name: cfg.name,
             network: cfg.network,
@@ -145,6 +155,17 @@ impl OnchainAccount {
                 scanned,
             }),
         })
+    }
+
+    /// Turn payjoin receiving on or off without reopening the account.
+    /// Sessions already in progress are still finished by `payjoin_tick`.
+    /// Returns whether it's now on (always off for non-hot accounts).
+    pub fn set_payjoin_receive(&self, on: bool) -> bool {
+        let on = on && self.pj.receive_dir.is_some();
+        self.pj
+            .receive_on
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+        on
     }
 
     /// Public descriptors, for backup / exporting to a coordinator.
@@ -321,13 +342,31 @@ impl Rail for OnchainAccount {
                 req.method
             )));
         }
-        let mut inner = self.inner.lock().await;
-        let Inner { wallet, conn, .. } = &mut *inner;
-        // Reuse the first unused address so repeated taps don't burn the gap limit.
-        let info = wallet.next_unused_address(KeychainKind::External);
-        wallet
-            .persist(conn)
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        let info = {
+            let mut inner = self.inner.lock().await;
+            let Inner { wallet, conn, .. } = &mut *inner;
+            // Reuse the first unused address so repeated taps don't burn the gap limit.
+            let info = wallet.next_unused_address(KeychainKind::External);
+            wallet
+                .persist(conn)
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            info
+        };
+
+        // Payjoin receive (opt-in, hot only). Falls back to a plain request.
+        if let Some(pj_uri) = self
+            .payjoin_receive_uri(&info.address, req.amount_sat)
+            .await
+        {
+            return Ok(ReceiveTarget {
+                method: Method::BitcoinAddress,
+                request: pj_uri,
+                amount_sat: req.amount_sat,
+                fee_sat: None,
+                expires_at: None,
+                watch_id: Some(info.address.to_string()),
+            });
+        }
 
         let mut uri = format!("bitcoin:{}", info.address.to_string().to_uppercase());
         if let Some(sats) = req.amount_sat {
@@ -485,7 +524,9 @@ impl Rail for OnchainAccount {
     }
 
     async fn send(&self, quote: SendQuote, signed_psbt: Option<String>) -> Result<Payment> {
-        let (mut psbt, _payjoin_uri) = Self::decode_handle(&quote.handle)?;
+        let (mut psbt, payjoin_uri) = Self::decode_handle(&quote.handle)?;
+        let payjoin_uri =
+            payjoin_uri.filter(|_| signed_psbt.is_none() && matches!(self.custody, Custody::Hot));
         if let Some(signed) = signed_psbt {
             let other = Self::psbt_from_b64(&signed)?;
             if other.unsigned_tx.compute_txid() != psbt.unsigned_tx.compute_txid() {
@@ -494,8 +535,9 @@ impl Rail for OnchainAccount {
             psbt.combine(other).map_err(err)?;
         }
         self.sign_locally(&mut psbt)?;
+        let unfinalized = psbt.clone();
 
-        let tx = {
+        let original = {
             let inner = self.inner.lock().await;
             let finalized = inner
                 .wallet
@@ -506,10 +548,45 @@ impl Rail for OnchainAccount {
                     "broadcast yet – signatures are still missing".into(),
                 ));
             }
-            psbt.extract_tx().map_err(err)?
+            psbt.clone().extract_tx().map_err(err)?
         };
 
-        self.client.broadcast(&tx).await.map_err(err)?;
+        // Payjoin first; any problem means the Original goes out instead.
+        let (tx, used_payjoin, extra_fee) = match &payjoin_uri {
+            Some(uri) => {
+                let choice = self
+                    .payjoin_or_original(&psbt, &unfinalized, uri, self.pj.http.as_ref())
+                    .await;
+                if choice.payjoin {
+                    match self.broadcast_idempotent(&choice.tx).await {
+                        Ok(()) => (choice.tx, true, choice.extra_fee_sat),
+                        Err(e) => {
+                            tracing::info!("payjoin broadcast failed ({e}); sending the original");
+                            self.broadcast_idempotent(&original).await?;
+                            (original, false, 0)
+                        }
+                    }
+                } else {
+                    self.broadcast_idempotent(&original).await?;
+                    (original, false, 0)
+                }
+            }
+            None => {
+                self.client.broadcast(&original).await.map_err(err)?;
+                (original, false, 0)
+            }
+        };
+        if payjoin_uri.is_some() {
+            tracing::info!(
+                "on-chain send {} {}",
+                tx.compute_txid(),
+                if used_payjoin {
+                    "used payjoin"
+                } else {
+                    "fell back to a normal transaction"
+                }
+            );
+        }
 
         let mut inner = self.inner.lock().await;
         let Inner { wallet, conn, .. } = &mut *inner;
@@ -523,11 +600,15 @@ impl Rail for OnchainAccount {
             account: self.id.clone(),
             direction: Direction::Outgoing,
             amount_sat: quote.amount_sat,
-            fee_sat: quote.fee_sat,
+            fee_sat: quote.fee_sat + extra_fee,
             status: PaymentStatus::Pending,
             method: Method::BitcoinAddress,
             timestamp: now(),
-            description: None,
+            description: match (payjoin_uri.is_some(), used_payjoin) {
+                (_, true) => Some(payjoin::DESCRIPTION_PAYJOIN.into()),
+                (true, false) => Some(payjoin::DESCRIPTION_FALLBACK.into()),
+                _ => None,
+            },
             token: None,
         })
     }
@@ -607,6 +688,8 @@ mod tests {
             descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, 0).unwrap(),
             custody: Custody::Hot,
             signer: Some(master),
+            payjoin_receive: false,
+            payjoin_dir: None,
         })
         .unwrap()
     }
@@ -787,6 +870,8 @@ mod tests {
                     local_signers: 1,
                 },
                 signer: Some(signer),
+                payjoin_receive: false,
+                payjoin_dir: None,
             })
             .unwrap()
         };

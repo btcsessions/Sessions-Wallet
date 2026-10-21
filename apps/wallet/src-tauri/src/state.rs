@@ -193,32 +193,41 @@ impl AppState {
         master: &rail_onchain::Xpriv,
         cfg: &Config,
     ) -> Result<Opened> {
-        let onchain =
-            |id: &AccountId, name: &str, descriptors, custody, signer| -> Result<Opened> {
-                Ok(Opened::Onchain(Arc::new(OnchainAccount::open(
-                    OnchainConfig {
-                        id: id.clone(),
-                        name: name.to_string(),
-                        network: cfg.network,
-                        db_path: self.paths.onchain(id),
-                        esplora_url: cfg.esplora_url.clone(),
-                        descriptors,
-                        custody,
-                        signer,
-                    },
-                )?)))
-            };
+        let onchain = |id: &AccountId,
+                       name: &str,
+                       descriptors,
+                       custody,
+                       signer,
+                       payjoin_receive: bool|
+         -> Result<Opened> {
+            Ok(Opened::Onchain(Arc::new(OnchainAccount::open(
+                OnchainConfig {
+                    id: id.clone(),
+                    name: name.to_string(),
+                    network: cfg.network,
+                    db_path: self.paths.onchain(id),
+                    esplora_url: cfg.esplora_url.clone(),
+                    descriptors,
+                    custody,
+                    signer,
+                    payjoin_receive,
+                    payjoin_dir: Some(self.paths.root.join("payjoin").join(&id.0)),
+                },
+            )?)))
+        };
         match spec {
             AccountSpec::Savings {
                 id,
                 name,
                 account_index,
+                payjoin_receive,
             } => onchain(
                 id,
                 name,
                 descriptors::hot_single_sig(master, cfg.network, *account_index)?,
                 Custody::Hot,
                 Some(*master),
+                *payjoin_receive,
             ),
             AccountSpec::Multisig {
                 id,
@@ -237,6 +246,7 @@ impl AppState {
                     local_signers: 1,
                 },
                 Some(*master),
+                false,
             ),
             AccountSpec::Hardware {
                 id,
@@ -253,12 +263,20 @@ impl AppState {
                     fingerprint: fingerprint.clone(),
                 },
                 None,
+                false,
             ),
             AccountSpec::WatchOnly {
                 id,
                 name,
                 descriptors,
-            } => onchain(id, name, descriptors.clone(), Custody::WatchOnly, None),
+            } => onchain(
+                id,
+                name,
+                descriptors.clone(),
+                Custody::WatchOnly,
+                None,
+                false,
+            ),
             AccountSpec::Spending { id, name } => {
                 let api_key = cfg
                     .breez_api_key
@@ -318,6 +336,50 @@ impl AppState {
         u.config.accounts.push(spec);
         u.config.save(&self.paths.config())?;
         Ok(id)
+    }
+
+    /// Turn payjoin receiving on or off for a hot on-chain account.
+    pub async fn set_payjoin_receive(&self, id: &AccountId, enabled: bool) -> Result<()> {
+        let mut guard = self.inner.lock().await;
+        let u = guard.as_mut().ok_or(Error::Locked)?;
+        let spec = u
+            .config
+            .accounts
+            .iter_mut()
+            .find(|a| a.id() == id)
+            .ok_or_else(|| Error::AccountNotFound(id.0.clone()))?;
+        let AccountSpec::Savings {
+            payjoin_receive, ..
+        } = spec
+        else {
+            return Err(Error::Invalid(
+                "Payjoin receiving is only for hot on-chain wallets".into(),
+            ));
+        };
+        let account = u
+            .onchain
+            .get(id)
+            .cloned()
+            .ok_or_else(|| Error::AccountNotFound(id.0.clone()))?;
+        *payjoin_receive = account.set_payjoin_receive(enabled);
+        u.config.save(&self.paths.config())
+    }
+
+    /// Hot on-chain accounts. Their payjoin sessions are driven even after
+    /// receiving is switched off, so in-flight payjoins still finish.
+    pub async fn payjoin_receivers(&self) -> Vec<Arc<OnchainAccount>> {
+        let guard = self.inner.lock().await;
+        let Some(u) = guard.as_ref() else {
+            return vec![];
+        };
+        u.config
+            .accounts
+            .iter()
+            .filter_map(|a| match a {
+                AccountSpec::Savings { id, .. } => u.onchain.get(id).cloned(),
+                _ => None,
+            })
+            .collect()
     }
 
     pub async fn lock(&self) {
@@ -398,6 +460,7 @@ mod tests {
                 id: "savings".into(),
                 name: "Savings".into(),
                 account_index: 0,
+                payjoin_receive: false,
             })
             .await
             .unwrap();

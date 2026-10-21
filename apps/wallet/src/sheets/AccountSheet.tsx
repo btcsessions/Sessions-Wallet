@@ -1,9 +1,10 @@
 import { ActivityRow } from "../modules/ActivityModule";
 import { LightningAddressCard } from "./LightningAddressCard";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
 import { Sheet, useBusy } from "../components/ui";
-import { accountColor, accountKind, amountParts, formatSats } from "../format";
+import { accountColor, accountKind, amountParts, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 
 export function AccountSheet({ id }: { id: string }) {
@@ -63,6 +64,8 @@ export function AccountSheet({ id }: { id: string }) {
         </>
       )}
 
+      {a.rail === "onchain" && a.custody.type === "hot" && <PayjoinSwitch account={a.id} />}
+
       {a.custody.type === "mint" && (
         <p className="notice">
           Held by the mint at {a.custody.url}. Keep amounts small and move larger ones to Spending or a vault.
@@ -107,5 +110,46 @@ export function AccountSheet({ id }: { id: string }) {
         <p className="empty">Nothing here yet.</p>
       )}
     </Sheet>
+  );
+}
+
+function PayjoinSwitch({ account }: { account: string }) {
+  const notify = useWallet((s) => s.notify);
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    api()
+      .then((a) => a.payjoinReceive(account))
+      .then(setOn)
+      .catch(() => setOn(false));
+  }, [account]);
+  const toggle = async (v: boolean) => {
+    setOn(v);
+    try {
+      await (await api()).setPayjoinReceive(account, v);
+    } catch (e) {
+      setOn(!v);
+      notify("error", errorText(e));
+    }
+  };
+  return (
+    <>
+      <div className="group">
+        <label className="cell">
+          <span className="grow">
+            <div>Offer payjoin when receiving</div>
+            <div className="row-sub">Payjoin-capable senders mix one of your coins into their payment, which breaks common chain analysis.</div>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            disabled={on === null}
+            checked={!!on}
+            onChange={(e) => void toggle(e.target.checked)}
+            style={{ flex: "none", width: 22, height: 22, accentColor: "var(--accent)" }}
+          />
+        </label>
+      </div>
+      <p className="group-note">Makes your receive QR longer. Needs at least one confirmed coin in this wallet; otherwise a normal address is shown.</p>
+    </>
   );
 }
