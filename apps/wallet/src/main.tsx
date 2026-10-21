@@ -1,9 +1,13 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/inter";
+import "@fontsource/bebas-neue/latin.css";
+import "@fontsource-variable/nunito-sans/wght.css";
+import "@fontsource-variable/jetbrains-mono/wght.css";
 import "./styles/app.css";
 import { App } from "./App";
 import { useWallet } from "./state/store";
+import { applyTheme } from "./theme";
 
 // Last-resort error display: if anything throws before or outside React,
 // show it instead of leaving a blank screen.
@@ -20,6 +24,12 @@ function showFatal(message: string) {
 }
 window.addEventListener("error", (e) => showFatal(`${e.message}\n${e.filename}:${e.lineno}`));
 window.addEventListener("unhandledrejection", (e) => showFatal(String((e.reason as Error)?.stack ?? e.reason)));
+
+// Theme before first paint, so there's no flash of the wrong colours.
+{
+  const { theme, appearance } = useWallet.getState();
+  applyTheme(theme, appearance);
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

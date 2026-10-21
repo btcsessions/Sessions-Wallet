@@ -1,3 +1,4 @@
+import { applyTheme, THEMES, type Appearance, type ThemeId } from "../theme";
 import { create } from "zustand";
 import { api } from "../api";
 import type { AccountInfo, InstalledModule, Layout, Payment, SpendStyle, WalletStatus } from "../api/types";
@@ -27,6 +28,10 @@ interface State {
   layout: Layout | null;
   unit: Unit;
   currency: string;
+  theme: ThemeId;
+  appearance: Appearance;
+  setTheme(t: ThemeId): void;
+  setAppearance(a: Appearance): void;
   price: number | null;
   editing: boolean;
   sheet: SheetName | null;
@@ -91,6 +96,21 @@ export const useWallet = create<State>((set, get) => {
     layout: null,
     unit: loadPref<Unit>("unit", "sats"),
     currency: loadPref("currency", "CAD"),
+    theme: loadPref<ThemeId>("theme", "classic"),
+    appearance: loadPref<Appearance>("appearance", "auto"),
+    setTheme(theme) {
+      const def = THEMES.find((t) => t.id === theme) ?? THEMES[0];
+      const appearance = def.preferred;
+      savePref("theme", theme);
+      savePref("appearance", appearance);
+      applyTheme(theme, appearance);
+      set({ theme, appearance });
+    },
+    setAppearance(appearance) {
+      savePref("appearance", appearance);
+      applyTheme(get().theme, appearance);
+      set({ appearance });
+    },
     price: null,
     editing: false,
     sheet: null,

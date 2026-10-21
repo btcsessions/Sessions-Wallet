@@ -3,6 +3,7 @@ import { api } from "../api";
 import type { Settings } from "../api/types";
 import { Sheet, useBusy } from "../components/ui";
 import { useWallet } from "../state/store";
+import { THEMES, type Appearance } from "../theme";
 
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
 
@@ -42,6 +43,8 @@ export function SettingsSheet() {
 
   return (
     <Sheet title="Settings">
+      <ThemePicker />
+
       <p className="group-label">Currency</p>
       <div className="chips" style={{ flexWrap: "wrap" }}>
         {CURRENCIES.map((c) => (
@@ -165,5 +168,51 @@ export function SettingsSheet() {
         Lock wallet
       </button>
     </Sheet>
+  );
+}
+
+const APPEARANCES: { id: Appearance; label: string }[] = [
+  { id: "auto", label: "Automatic" },
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
+];
+
+function ThemePicker() {
+  const { theme, appearance, setTheme, setAppearance } = useWallet();
+  return (
+    <>
+      <p className="group-label">Theme</p>
+      <div className="theme-grid" role="radiogroup" aria-label="Theme">
+        {THEMES.map((t) => {
+          const [ground, card, accent, second] = t.swatch.dark;
+          const [lg, lc] = t.swatch.light;
+          return (
+            <button key={t.id} role="radio" aria-checked={t.id === theme} className="theme-card" data-theme-preview={t.id} onClick={() => setTheme(t.id)}>
+              <span className="theme-preview" aria-hidden>
+                <span style={{ background: lg }}>
+                  <i style={{ background: lc }} />
+                  <b style={{ background: accent }} />
+                </span>
+                <span style={{ background: ground }}>
+                  <i style={{ background: card }} />
+                  <b style={{ background: accent }} />
+                  <u style={{ background: second }} />
+                </span>
+              </span>
+              <span className="theme-name">{t.name}</span>
+              <span className="theme-blurb">{t.blurb}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="group-label">Appearance</p>
+      <div className="segmented" role="radiogroup" aria-label="Appearance">
+        {APPEARANCES.map((a) => (
+          <button key={a.id} role="radio" aria-checked={a.id === appearance} aria-pressed={a.id === appearance} onClick={() => setAppearance(a.id)}>
+            {a.label}
+          </button>
+        ))}
+      </div>
+    </>
   );
 }

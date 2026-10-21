@@ -35,8 +35,15 @@
   --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter Variable", system-ui, sans-serif;
   --font-rounded: ui-rounded, "SF Pro Rounded", "Inter Variable", system-ui, sans-serif;
 
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  /* Big money numbers and the large page title. */
+  --font-number: var(--font-rounded);
+  --font-title: var(--font-display);
+  --on-accent: #ffffff;
+
   --r-tile: 22px;
   --r-control: 12px;
+  --r-button: 14px;
   --r-pill: 999px;
   --gutter: 16px;
   --safe-top: env(safe-area-inset-top, 0px);
@@ -45,32 +52,31 @@
   color-scheme: light dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #000000;
-    --card: #1c1c1e;
-    --card-2: #2c2c2e;
-    --fill: rgba(118, 118, 128, 0.24);
-    --fill-strong: rgba(118, 118, 128, 0.36);
-    --label: #ffffff;
-    --label-2: rgba(235, 235, 245, 0.7);
-    --label-3: rgba(235, 235, 245, 0.42);
-    --separator: rgba(84, 84, 88, 0.6);
-    --accent: #ff9f0a;
-    --accent-ink: #ff9f0a;
-    --green: #30d158;
-    --green-fill: rgba(48, 209, 88, 0.18);
-    --red: #ff453a;
-    --blue: #0a84ff;
-    --material: rgba(28, 28, 30, 0.78);
-    --scrim: rgba(0, 0, 0, 0.55);
-    --shadow-tile: none;
-    --shadow-sheet: 0 -8px 40px rgba(0, 0, 0, 0.6);
-    --rail-onchain: #5e5ce6;
-    --rail-vault: #40c8e0;
-    --rail-ecash: #30d158;
-    --rail-hardware: #ac8e68;
-  }
+/* Dark mode: set by src/theme from the Appearance setting. */
+:root[data-mode="dark"] {
+  --bg: #000000;
+  --card: #1c1c1e;
+  --card-2: #2c2c2e;
+  --fill: rgba(118, 118, 128, 0.24);
+  --fill-strong: rgba(118, 118, 128, 0.36);
+  --label: #ffffff;
+  --label-2: rgba(235, 235, 245, 0.7);
+  --label-3: rgba(235, 235, 245, 0.42);
+  --separator: rgba(84, 84, 88, 0.6);
+  --accent: #ff9f0a;
+  --accent-ink: #ff9f0a;
+  --green: #30d158;
+  --green-fill: rgba(48, 209, 88, 0.18);
+  --red: #ff453a;
+  --blue: #0a84ff;
+  --material: rgba(28, 28, 30, 0.78);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --shadow-tile: none;
+  --shadow-sheet: 0 -8px 40px rgba(0, 0, 0, 0.6);
+  --rail-onchain: #5e5ce6;
+  --rail-vault: #40c8e0;
+  --rail-ecash: #30d158;
+  --rail-hardware: #ac8e68;
 }
 
 * {
@@ -177,7 +183,7 @@ button {
 }
 
 .large-title {
-  font-family: var(--font-display);
+  font-family: var(--font-title);
   font-size: 34px;
   line-height: 41px;
   font-weight: 700;
@@ -358,7 +364,7 @@ button {
 /* ───────── Balance hero ───────── */
 
 .balance-amount {
-  font-family: var(--font-rounded);
+  font-family: var(--font-number);
   font-weight: 700;
   font-size: clamp(40px, 11vw, 56px);
   line-height: 1.05;
@@ -441,7 +447,7 @@ button {
   gap: 8px;
   min-height: 50px;
   padding: 0 20px;
-  border-radius: 14px;
+  border-radius: var(--r-button);
   font-weight: 600;
   font-size: 17px;
   background: var(--fill);
@@ -460,7 +466,7 @@ button {
 
 .btn.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .btn.block {
@@ -490,7 +496,7 @@ button {
 }
 
 .pay-receive .btn.primary svg {
-  color: #fff;
+  color: var(--on-accent);
 }
 
 /* ───────── Lists ───────── */
@@ -702,7 +708,7 @@ button {
   display: flex;
   flex-direction: column;
   background: var(--card);
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--r-sheet, 14px) var(--r-sheet, 14px) 0 0;
   box-shadow: var(--shadow-sheet);
   animation: rise 0.36s cubic-bezier(0.2, 0.9, 0.25, 1);
 }
@@ -863,7 +869,7 @@ button {
   outline: 0;
   background: transparent;
   text-align: center;
-  font-family: var(--font-rounded);
+  font-family: var(--font-number);
   font-size: 52px;
   font-weight: 700;
   letter-spacing: -0.03em;
@@ -1179,7 +1185,7 @@ button {
 /* Small module bits */
 
 .big-stat {
-  font-family: var(--font-rounded);
+  font-family: var(--font-number);
   font-weight: 700;
   font-size: 30px;
   font-size: clamp(20px, 15cqi, 30px);
@@ -1389,7 +1395,7 @@ button {
 }
 
 .mono {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-variant-ligatures: none;
 }
 
@@ -1478,4 +1484,319 @@ button {
 
 .hw-badge-sep {
   opacity: 0.6;
+}
+
+/* ═════════════════ Theme: Sessions ═════════════════
+   From the BTC Sessions / BTC Mentor brand guide (v1, Oct 2026).
+   Locked: sky, orange, electro, danger, and the three typefaces.
+   Orange is a fill (text on it is Midnight, never white); orange text uses
+   orange-ink. Electro is for lines and data. Danger means funds at risk. */
+
+:root[data-skin="sessions"] {
+  /* Paper */
+  --bg: #f3f4f6;
+  --card: #ffffff;
+  --card-2: #f8f9fa;
+  --fill: rgba(107, 111, 128, 0.12);
+  --fill-strong: rgba(107, 111, 128, 0.2);
+  --label: #1a1d26;
+  --label-2: #4a4a5a;
+  --label-3: #6b6f80;
+  --separator: #e2e4e8;
+  --control-border: #6b6f80;
+  --accent: #f7931a;
+  --accent-ink: #a65a00;
+  --on-accent: #0d101c;
+  --accent-soft: #fff5e6;
+  --electro: #7ed3f2;
+  --electro-ink: #1c6f95;
+  --green: #1a7045;
+  --green-fill: #e8f5e9;
+  --red: #d0271d;
+  --blue: #1c6f95;
+  --material: rgba(255, 255, 255, 0.82);
+  --scrim: rgba(13, 16, 28, 0.4);
+  --shadow-tile: none;
+  --shadow-sheet: 0 -24px 60px -20px rgba(0, 0, 0, 0.45);
+  --tile-border: 1px solid #e2e4e8;
+
+  /* Diagram rule: orange is in your hands, electro is out on the network. */
+  --rail-spark: #3fa8d4;
+  --rail-ecash: #1c6f95;
+  --rail-onchain: #f7931a;
+  --rail-hardware: #c46f0a;
+  --rail-vault: #7a4405;
+  --rail-watch: #8a90a3;
+
+  --font: "Nunito Sans Variable", "Nunito Sans", Arial, sans-serif;
+  --font-display: var(--font);
+  --font-rounded: var(--font);
+  --font-number: "Bebas Neue", Impact, "Arial Narrow", sans-serif;
+  --font-title: "Bebas Neue", Impact, "Arial Narrow", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --r-tile: 10px;
+  --r-control: 10px;
+  --r-button: 4px;
+  --r-sheet: 12px;
+}
+
+:root[data-skin="sessions"][data-mode="dark"] {
+  /* Midnight */
+  --bg: #0d101c;
+  --card: #161a2a;
+  --card-2: #1e2336;
+  --fill: rgba(138, 144, 163, 0.16);
+  --fill-strong: rgba(138, 144, 163, 0.26);
+  --label: #ffffff;
+  --label-2: #b8bdcc;
+  --label-3: #8a90a3;
+  --separator: #262b3d;
+  --control-border: #8a90a3;
+  --accent: #f7931a;
+  --accent-ink: #f7931a;
+  --on-accent: #0d101c;
+  --accent-soft: #2a1e0c;
+  --electro: #7ed3f2;
+  --electro-ink: #7ed3f2;
+  --green: #7ef2a8;
+  --green-fill: #10291d;
+  --red: #ff6b5e;
+  --blue: #7ed3f2;
+  --material: rgba(13, 16, 28, 0.82);
+  --scrim: rgba(0, 0, 0, 0.6);
+  --shadow-tile: none;
+  --shadow-sheet: 0 -24px 60px -20px rgba(0, 0, 0, 0.8);
+  --tile-border: 1px solid #262b3d;
+
+  --rail-spark: #7ed3f2;
+  --rail-ecash: #3fa8d4;
+  --rail-onchain: #f7931a;
+  --rail-hardware: #ffb35c;
+  --rail-vault: #c46f0a;
+  --rail-watch: #8a90a3;
+}
+
+[data-skin="sessions"] body {
+  letter-spacing: 0;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+[data-skin="sessions"] :focus-visible {
+  outline: 2px solid var(--electro-ink);
+  outline-offset: 2px;
+}
+
+[data-skin="sessions"] .large-title {
+  font-weight: 400;
+  font-size: 52px;
+  line-height: 0.95;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  margin: 6px 0 16px;
+}
+
+[data-skin="sessions"] .tile,
+[data-skin="sessions"] .group {
+  border: var(--tile-border);
+}
+
+[data-skin="sessions"] .group {
+  border-radius: var(--r-control);
+}
+
+/* Eyebrow labels. */
+[data-skin="sessions"] .tile-title,
+[data-skin="sessions"] .group-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--label-2);
+}
+
+/* Big numbers in Bebas: it's narrow, so it runs larger. */
+[data-skin="sessions"] .balance-amount {
+  font-weight: 400;
+  font-size: clamp(56px, 17vw, 84px);
+  line-height: 0.95;
+  letter-spacing: 0.01em;
+}
+
+[data-skin="sessions"] .big-stat {
+  font-weight: 400;
+  font-size: clamp(28px, 22cqi, 44px);
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+[data-skin="sessions"] .amount-entry input {
+  font-weight: 400;
+  font-size: 72px;
+  letter-spacing: 0.01em;
+}
+
+[data-skin="sessions"] .balance-unit {
+  font-family: var(--font);
+  letter-spacing: 0;
+}
+
+/* Buttons: one orange fill per view, everything else is an outline. */
+[data-skin="sessions"] .btn {
+  font-weight: 700;
+  font-size: 15px;
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--control-border);
+}
+
+[data-skin="sessions"] .btn.primary {
+  background: var(--accent);
+  box-shadow: none;
+}
+
+[data-skin="sessions"] .btn.block {
+  min-height: 56px;
+}
+
+[data-skin="sessions"] .chip {
+  font-weight: 700;
+  font-size: 14px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--control-border);
+}
+
+[data-skin="sessions"] .chip[aria-pressed="true"] {
+  background: var(--label);
+  color: var(--bg);
+  box-shadow: none;
+}
+
+[data-skin="sessions"] .segmented {
+  border-radius: var(--r-button);
+}
+
+[data-skin="sessions"] .segmented button {
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+/* Callouts: caution is orange-soft with an orange rule. */
+[data-skin="sessions"] .notice {
+  background: var(--accent-soft);
+  border-left: 4px solid var(--accent);
+  border-radius: 4px;
+}
+
+[data-skin="sessions"] .sheet {
+  border-top: 1px solid var(--separator);
+}
+
+/* ───────── Theme picker ───────── */
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 10px 12px;
+  border-radius: 14px;
+  background: var(--card);
+  text-align: left;
+  box-shadow: inset 0 0 0 1px var(--separator);
+}
+
+.theme-card[aria-checked="true"] {
+  box-shadow: inset 0 0 0 2.5px var(--accent);
+}
+
+.theme-preview {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  height: 64px;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 6px;
+  box-shadow: inset 0 0 0 1px var(--separator);
+}
+
+.theme-preview > span {
+  position: relative;
+}
+
+.theme-preview i,
+.theme-preview b,
+.theme-preview u {
+  position: absolute;
+  display: block;
+}
+
+.theme-preview i {
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  height: 22px;
+  border-radius: 4px;
+}
+
+.theme-preview b {
+  left: 8px;
+  bottom: 9px;
+  width: 26px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.theme-preview u {
+  right: 8px;
+  bottom: 13px;
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.theme-name {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+[data-theme-preview="sessions"] .theme-name {
+  font-family: "Bebas Neue", Impact, sans-serif;
+  font-weight: 400;
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.theme-blurb {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--label-2);
+}
+
+[data-skin="sessions"] .segmented button[aria-pressed="true"] {
+  background: var(--label);
+  color: var(--bg);
+  box-shadow: none;
+}
+
+/* Text on electro or orange fills is Midnight. */
+[data-skin="sessions"] .route .node {
+  color: var(--on-accent);
+}
+
+[data-skin="sessions"] .welcome-title {
+  font-family: var(--font-title);
+  font-weight: 400;
+  font-size: 64px;
+  line-height: 0.92;
+  letter-spacing: 0.005em;
+  text-transform: uppercase;
 }
