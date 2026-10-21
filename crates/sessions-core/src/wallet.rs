@@ -17,6 +17,20 @@ pub struct Wallet {
     swaps: RwLock<Vec<Arc<dyn SwapProvider>>>,
 }
 
+/// The first leg of a plan, priced and ready to confirm.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prepared {
+    pub quote: SendQuote,
+    pub leg: Leg,
+    pub remaining: Vec<Leg>,
+    /// Extra hops after this one (each may add a small fee).
+    pub hops_after: usize,
+    pub amount_sat: Sats,
+    /// Swap service fee already included in `quote.amount_sat`.
+    pub swap_fee_sat: Sats,
+}
+
 /// Result of running a plan. Hardware and multisig accounts pause the plan
 /// until the user signs on their device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,9 +145,40 @@ impl Wallet {
         planner::plan_move(&self.accounts().await?, from, to, amount_sat)
     }
 
-    /// Run a plan leg by leg.
+    /// Price the first leg of a plan so the user sees the real fee before
+    /// confirming. Nothing moves until [`Wallet::confirm`].
+    pub async fn prepare(&self, plan: Plan, fee: FeePriority) -> Result<Prepared> {
+        let mut legs = plan.legs.into_iter();
+        let leg = legs.next().ok_or(Error::NoRoute)?;
+        let (quote, swap_fee_sat) = self.prepare_leg(&leg, plan.amount_sat, fee).await?;
+        let remaining: Vec<Leg> = legs.collect();
+        Ok(Prepared { quote, leg, hops_after: remaining.len(), remaining, amount_sat: plan.amount_sat, swap_fee_sat })
+    }
+
+    /// Send a prepared plan. Pauses (returns `awaiting_signature`) when a
+    /// hardware wallet or cosigner has to sign.
+    pub async fn confirm(&self, prepared: Prepared, fee: FeePriority) -> Result<Execution> {
+        if prepared.quote.needs_signature.is_some() {
+            // The paused leg is resumed from its quote; only later legs remain.
+            return Ok(Execution {
+                payments: vec![],
+                awaiting_signature: Some(prepared.quote),
+                remaining: prepared.remaining,
+                amount_sat: prepared.amount_sat,
+            });
+        }
+        let from = self.account(prepared.leg.from()).await?;
+        let mut p = from.send(prepared.quote, None).await?;
+        if matches!(prepared.leg, Leg::ToAccount { .. }) {
+            p.direction = Direction::Internal;
+        }
+        self.run_legs(prepared.remaining, prepared.amount_sat, fee, vec![p]).await
+    }
+
+    /// Prepare and confirm in one go (no fee preview). Used by automations.
     pub async fn execute(&self, plan: Plan, fee: FeePriority) -> Result<Execution> {
-        self.run_legs(plan.legs, plan.amount_sat, fee, Vec::new()).await
+        let prepared = self.prepare(plan, fee).await?;
+        self.confirm(prepared, fee).await
     }
 
     /// Continue a paused plan with a PSBT signed on a hardware wallet / co-signers.
@@ -145,39 +190,44 @@ impl Wallet {
         self.run_legs(paused.remaining, paused.amount_sat, fee, payments).await
     }
 
+    /// Returns the quote for one leg plus any swap fee on top of it.
+    async fn prepare_leg(&self, leg: &Leg, amount: Sats, fee: FeePriority) -> Result<(SendQuote, Sats)> {
+        let from = self.account(leg.from()).await?;
+        let (request, pay_amount, swap_fee) = match leg {
+            Leg::ToExternal { request, .. } => (request.clone(), amount, 0),
+            Leg::ToAccount { to, method, .. } => {
+                let target = self
+                    .account(to)
+                    .await?
+                    .receive(ReceiveRequest { method: *method, amount_sat: Some(amount), description: Some("Sessions Wallet transfer".into()) })
+                    .await?;
+                (parse::parse(&target.request)?, amount, 0)
+            }
+            Leg::ViaSwap { provider, pay_method, request, .. } => {
+                let refund = if *pay_method == Method::BitcoinAddress {
+                    Some(from.receive(ReceiveRequest { method: Method::BitcoinAddress, amount_sat: None, description: None }).await?.request)
+                } else {
+                    None
+                };
+                let bridged = self.swap(provider).await?.bridge_payment(request.clone(), amount, *pay_method, refund).await?;
+                // The account pays the swap's amount (target + swap fees), not the target amount.
+                (bridged.pay, bridged.amount_sat, bridged.swap_fee_sat)
+            }
+        };
+        let quote = from
+            .prepare_send(SendRequest { destination: request, amount_sat: Some(pay_amount), send_max: false, fee, note: None })
+            .await?;
+        Ok((quote, swap_fee))
+    }
+
     async fn run_legs(&self, legs: Vec<Leg>, amount: Sats, fee: FeePriority, mut payments: Vec<Payment>) -> Result<Execution> {
         let mut legs = legs.into_iter();
         while let Some(leg) = legs.next() {
-            let from = self.account(leg.from()).await?;
-            let request = match &leg {
-                Leg::ToExternal { request, .. } => request.clone(),
-                Leg::ToAccount { to, method, .. } => {
-                    let target = self
-                        .account(to)
-                        .await?
-                        .receive(ReceiveRequest { method: *method, amount_sat: Some(amount), description: Some("Sessions Wallet transfer".into()) })
-                        .await?;
-                    parse::parse(&target.request)?
-                }
-                Leg::ViaSwap { provider, pay_method, request, .. } => {
-                    let refund = if *pay_method == Method::BitcoinAddress {
-                        Some(from.receive(ReceiveRequest { method: Method::BitcoinAddress, amount_sat: None, description: None }).await?.request)
-                    } else {
-                        None
-                    };
-                    let bridged = self.swap(provider).await?.bridge_payment(request.clone(), amount, *pay_method, refund).await?;
-                    bridged.pay
-                }
-            };
-
-            let quote = from
-                .prepare_send(SendRequest { destination: request, amount_sat: Some(amount), send_max: false, fee, note: None })
-                .await?;
-
+            let (quote, _) = self.prepare_leg(&leg, amount, fee).await?;
             if quote.needs_signature.is_some() {
                 return Ok(Execution { payments, awaiting_signature: Some(quote), remaining: legs.collect(), amount_sat: amount });
             }
-            let mut p = from.send(quote, None).await?;
+            let mut p = self.account(leg.from()).await?.send(quote, None).await?;
             if matches!(leg, Leg::ToAccount { .. }) {
                 p.direction = Direction::Internal;
             }
@@ -225,5 +275,199 @@ impl Wallet {
     /// Create a bearer token from an ecash account.
     pub async fn create_token(&self, from: &AccountId, amount_sat: Sats, memo: Option<String>) -> Result<Payment> {
         self.account(from).await?.create_token(amount_sat, memo).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rail::{BridgedPayment, SwapStatus};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    /// In-memory account that "pays" by moving numbers between mocks.
+    struct MockRail {
+        id: AccountId,
+        kind: RailKind,
+        custody: Custody,
+        balance: Mutex<Sats>,
+        receives: Vec<Method>,
+        pays: Vec<Method>,
+        fee: Sats,
+        /// request string -> receiving account balance cell
+        sent: Mutex<Vec<(String, Sats)>>,
+    }
+
+    impl MockRail {
+        fn new(id: &str, kind: RailKind, bal: Sats, receives: &[Method], pays: &[Method], fee: Sats) -> Arc<Self> {
+            Arc::new(Self {
+                id: id.into(),
+                kind,
+                custody: Custody::Hot,
+                balance: Mutex::new(bal),
+                receives: receives.to_vec(),
+                pays: pays.to_vec(),
+                fee,
+                sent: Mutex::new(vec![]),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Rail for MockRail {
+        fn id(&self) -> &AccountId {
+            &self.id
+        }
+        fn kind(&self) -> RailKind {
+            self.kind
+        }
+        async fn info(&self) -> Result<AccountInfo> {
+            Ok(AccountInfo {
+                id: self.id.clone(),
+                name: self.id.0.clone(),
+                rail: self.kind,
+                custody: self.custody.clone(),
+                balance: Balance { confirmed: *self.balance.lock().unwrap(), ..Default::default() },
+                receives: self.receives.clone(),
+                pays: self.pays.clone(),
+            })
+        }
+        async fn sync(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn receive(&self, req: ReceiveRequest) -> Result<ReceiveTarget> {
+            let request = match req.method {
+                Method::BitcoinAddress => "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string(),
+                Method::Bolt11 => format!("lnbc1{}xxxxxxxxxxxxxxxxxxxxxxxx", self.id),
+                Method::SparkAddress => format!("sp1{}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", self.id),
+                m => return Err(Error::Unsupported(format!("{m:?}"))),
+            };
+            Ok(ReceiveTarget { method: req.method, request, amount_sat: req.amount_sat, fee_sat: None, expires_at: None, watch_id: None })
+        }
+        async fn prepare_send(&self, req: SendRequest) -> Result<SendQuote> {
+            let amount = req.amount_sat.ok_or(Error::AmountRequired)?;
+            let have = *self.balance.lock().unwrap();
+            if have < amount + self.fee {
+                return Err(Error::InsufficientFunds { needed: amount + self.fee, available: have });
+            }
+            let method = req.destination.method().unwrap();
+            if !self.pays.contains(&method) {
+                return Err(Error::Unsupported(format!("pay {method:?}")));
+            }
+            Ok(SendQuote {
+                account: self.id.clone(),
+                method,
+                amount_sat: amount,
+                fee_sat: self.fee,
+                handle: serde_json::to_string(&req.destination).unwrap(),
+                needs_signature: None,
+            })
+        }
+        async fn send(&self, q: SendQuote, _signed: Option<String>) -> Result<Payment> {
+            *self.balance.lock().unwrap() -= q.amount_sat + q.fee_sat;
+            self.sent.lock().unwrap().push((q.handle.clone(), q.amount_sat));
+            Ok(Payment {
+                id: format!("p{}", q.amount_sat),
+                account: self.id.clone(),
+                direction: Direction::Outgoing,
+                amount_sat: q.amount_sat,
+                fee_sat: q.fee_sat,
+                status: PaymentStatus::Complete,
+                method: q.method,
+                timestamp: 0,
+                description: None,
+                token: None,
+            })
+        }
+        async fn payments(&self, _limit: usize) -> Result<Vec<Payment>> {
+            Ok(vec![])
+        }
+    }
+
+    struct MockBoltz;
+
+    #[async_trait]
+    impl SwapProvider for MockBoltz {
+        fn name(&self) -> &str {
+            "boltz"
+        }
+        fn pay_bridges(&self) -> Vec<(Method, Method)> {
+            vec![(Method::LiquidAddress, Method::Bolt11)]
+        }
+        fn receive_bridges(&self) -> Vec<(Method, Method)> {
+            vec![(Method::LiquidAddress, Method::Bolt11)]
+        }
+        async fn bridge_payment(&self, _t: PaymentRequest, amount: Sats, _m: Method, _r: Option<String>) -> Result<BridgedPayment> {
+            Ok(BridgedPayment {
+                swap_id: "s1".into(),
+                pay: PaymentRequest::Bolt11 { invoice: "lnbc1boltzxxxxxxxxxxxxxxxxxxxx".into() },
+                amount_sat: amount + 150,
+                swap_fee_sat: 150,
+            })
+        }
+        async fn bridge_receive(&self, ours: ReceiveTarget, _outside: Method) -> Result<ReceiveTarget> {
+            Ok(ReceiveTarget { method: Method::LiquidAddress, request: format!("lq1lockup-for-{}", ours.request), ..ours })
+        }
+        async fn tick(&self) -> Result<Vec<SwapStatus>> {
+            Ok(vec![])
+        }
+    }
+
+    async fn wallet() -> (Wallet, Arc<MockRail>, Arc<MockRail>) {
+        use Method::*;
+        let w = Wallet::new();
+        let savings = MockRail::new("savings", RailKind::Onchain, 1_000_000, &[BitcoinAddress], &[BitcoinAddress], 300);
+        let spending = MockRail::new("spending", RailKind::Spark, 50_000, &[SparkAddress, Bolt11, BitcoinAddress], &[SparkAddress, Bolt11, BitcoinAddress], 2);
+        w.add_account(savings.clone()).await;
+        w.add_account(spending.clone()).await;
+        w.add_swap_provider(Arc::new(MockBoltz)).await;
+        (w, savings, spending)
+    }
+
+    #[tokio::test]
+    async fn prepare_shows_fee_without_moving_funds() {
+        let (w, savings, spending) = wallet().await;
+        let plan = w.plan_move(&"savings".into(), &"spending".into(), 100_000).await.unwrap();
+        let prepared = w.prepare(plan, FeePriority::Normal).await.unwrap();
+        assert_eq!(prepared.quote.fee_sat, 300);
+        assert_eq!(*savings.balance.lock().unwrap(), 1_000_000);
+
+        let ex = w.confirm(prepared, FeePriority::Normal).await.unwrap();
+        assert_eq!(ex.payments[0].direction, Direction::Internal);
+        assert_eq!(*savings.balance.lock().unwrap(), 1_000_000 - 100_300);
+        assert!(spending.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn liquid_payment_pays_swap_amount_including_fee() {
+        let (w, _, spending) = wallet().await;
+        let plan = w.plan_payment("lq1qqexampleliquidaddress", Some(20_000), Some("spending".into())).await.unwrap();
+        let prepared = w.prepare(plan, FeePriority::Normal).await.unwrap();
+        assert_eq!(prepared.swap_fee_sat, 150);
+        assert_eq!(prepared.quote.amount_sat, 20_150);
+        w.confirm(prepared, FeePriority::Normal).await.unwrap();
+        assert_eq!(*spending.balance.lock().unwrap(), 50_000 - 20_150 - 2);
+    }
+
+    #[tokio::test]
+    async fn receive_liquid_is_bridged_to_lightning() {
+        let (w, _, _) = wallet().await;
+        let t = w.receive(&"spending".into(), Method::LiquidAddress, Some(5_000), None).await.unwrap();
+        assert_eq!(t.method, Method::LiquidAddress);
+        assert!(t.request.starts_with("lq1lockup-for-lnbc1spending"));
+    }
+
+    #[tokio::test]
+    async fn auto_payer_skips_accounts_that_cannot_afford_it() {
+        let (w, _, _) = wallet().await;
+        let plan = w.plan_payment("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", Some(200_000), None).await.unwrap();
+        assert_eq!(plan.legs[0].from(), &AccountId::from("savings"));
+    }
+
+    #[tokio::test]
+    async fn insufficient_funds_surfaces_at_prepare() {
+        let (w, _, _) = wallet().await;
+        let plan = w.plan_move(&"spending".into(), &"savings".into(), 60_000).await.unwrap();
+        assert!(matches!(w.prepare(plan, FeePriority::Normal).await, Err(Error::InsufficientFunds { .. })));
     }
 }

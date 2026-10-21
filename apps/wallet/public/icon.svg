@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFB340"/>
+      <stop offset="1" stop-color="#FF8A00"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#g)"/>
+  <!-- Three stacked tiles: a wallet you assemble yourself. -->
+  <rect x="232" y="268" width="560" height="152" rx="44" fill="#fff" opacity=".55"/>
+  <rect x="232" y="452" width="268" height="304" rx="44" fill="#fff" opacity=".8"/>
+  <rect x="524" y="452" width="268" height="304" rx="44" fill="#fff"/>
+</svg>

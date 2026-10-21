@@ -96,6 +96,32 @@ fn is_lightning_address(lower: &str) -> bool {
     }
 }
 
+/// Amount encoded in a BOLT11 invoice's human-readable part, rounded down to
+/// whole sats. `None` for amountless invoices.
+pub fn bolt11_amount_sat(invoice: &str) -> Option<Sats> {
+    let lower = invoice.to_ascii_lowercase();
+    let hrp = &lower[..lower.rfind('1')?];
+    let rest = ["lnbcrt", "lntbs", "lntb", "lnbc", "lnsb"].iter().find_map(|p| hrp.strip_prefix(p))?;
+    if rest.is_empty() {
+        return None;
+    }
+    let (digits, mult) = match rest.chars().last()? {
+        c @ ('m' | 'u' | 'n' | 'p') => (&rest[..rest.len() - 1], Some(c)),
+        _ => (rest, None),
+    };
+    let n: u64 = digits.parse().ok()?;
+    // Convert to millisats first so 'p' amounts are exact.
+    let msat = match mult {
+        None => n.checked_mul(100_000_000_000)?,
+        Some('m') => n.checked_mul(100_000_000)?,
+        Some('u') => n.checked_mul(100_000)?,
+        Some('n') => n.checked_mul(100)?,
+        Some('p') => n / 10,
+        Some(_) => return None,
+    };
+    Some(msat / 1000)
+}
+
 fn btc_to_sats(v: &str) -> Option<Sats> {
     // Exact decimal parse; avoid floats with money.
     let (whole, frac) = v.split_once('.').unwrap_or((v, ""));
@@ -229,6 +255,15 @@ mod tests {
         assert!(matches!(parse("cashuBo2FteCJodHRwczovL21pbnQ").unwrap(), PaymentRequest::CashuToken { .. }));
         assert!(matches!(parse("lightning:LNURL1DP68GURN8GHJ7").unwrap(), PaymentRequest::Lnurl { .. }));
         assert!(parse("hello world").is_err());
+    }
+
+    #[test]
+    fn bolt11_amounts() {
+        assert_eq!(bolt11_amount_sat("lnbc2500u1pvjluezpp5qqqsyqcyq5"), Some(250_000));
+        assert_eq!(bolt11_amount_sat("lnbc20m1pvjluezpp5qqqsyqcyq5"), Some(2_000_000));
+        assert_eq!(bolt11_amount_sat("lnbc10n1pjexample"), Some(1));
+        assert_eq!(bolt11_amount_sat("lnbc1pvjluezpp5qqqsyqcyq5"), None);
+        assert_eq!(bolt11_amount_sat("lntbs100u1pexample"), Some(10_000));
     }
 
     #[test]

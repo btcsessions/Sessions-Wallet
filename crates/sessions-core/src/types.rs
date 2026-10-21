@@ -155,6 +155,7 @@ impl PaymentRequest {
         match self {
             PaymentRequest::BitcoinAddress { amount_sat, .. } => *amount_sat,
             PaymentRequest::LiquidAddress { amount_sat, .. } => *amount_sat,
+            PaymentRequest::Bolt11 { invoice } => crate::parse::bolt11_amount_sat(invoice),
             PaymentRequest::Unified { options } => options.iter().find_map(|o| o.amount_sat()),
             _ => None,
         }
