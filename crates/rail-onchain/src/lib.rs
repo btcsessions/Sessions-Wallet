@@ -9,6 +9,7 @@
 //! | multisig       | `wsh(sortedmulti)`          | this device (optionally) + others  |
 //! | watch-only     | any imported descriptor     | nobody                             |
 
+mod bump;
 pub mod descriptors;
 pub mod payjoin;
 pub mod privacy;
@@ -249,6 +250,104 @@ impl OnchainAccount {
     fn psbt_from_b64(s: &str) -> Result<Psbt> {
         Psbt::from_str(s.trim()).map_err(|e| err(format!("invalid PSBT: {e}")))
     }
+
+    /// Wrap a built PSBT as a quote. Accounts that need outside signatures
+    /// get `needs_signature`, with our own signature already added.
+    fn quote(
+        &self,
+        mut psbt: Psbt,
+        amount_sat: u64,
+        notes: Vec<String>,
+        payjoin_uri: Option<&str>,
+    ) -> Result<SendQuote> {
+        let fee_sat = psbt.fee().map_err(err)?.to_sat();
+        let needed = self.signatures_needed();
+        let needs_signature = if needed > 0 {
+            // Multisig: add our own signature first so the PSBT shown to the
+            // user only needs the remaining cosigners.
+            self.sign_locally(&mut psbt)?;
+            Some(UnsignedPsbt {
+                psbt_base64: psbt.to_string(),
+                signatures_needed: needed,
+            })
+        } else {
+            None
+        };
+        Ok(SendQuote {
+            account: self.id.clone(),
+            method: Method::BitcoinAddress,
+            amount_sat,
+            fee_sat,
+            handle: encode_handle(&psbt, payjoin_uri),
+            needs_signature,
+            private: false,
+            payjoin: payjoin_uri.is_some(),
+            notes,
+        })
+    }
+
+    /// Merge outside signatures, add ours and finalize. Returns the
+    /// finalized PSBT and the same PSBT just before finalizing.
+    async fn sign_and_finalize(
+        &self,
+        mut psbt: Psbt,
+        signed_psbt: Option<String>,
+    ) -> Result<(Psbt, Psbt)> {
+        if let Some(signed) = signed_psbt {
+            let other = Self::psbt_from_b64(&signed)?;
+            if other.unsigned_tx.compute_txid() != psbt.unsigned_tx.compute_txid() {
+                return Err(err("the signed PSBT is for a different transaction"));
+            }
+            psbt.combine(other).map_err(err)?;
+        }
+        self.sign_locally(&mut psbt)?;
+        let unfinalized = psbt.clone();
+        let inner = self.inner.lock().await;
+        let finalized = inner
+            .wallet
+            .finalize_psbt(&mut psbt, SignOptions::default())
+            .map_err(err)?;
+        if !finalized {
+            return Err(Error::Unsupported(
+                "broadcast yet – signatures are still missing".into(),
+            ));
+        }
+        Ok((psbt, unfinalized))
+    }
+}
+
+/// Add a transaction we just broadcast to the wallet. Anything it replaces
+/// (an RBF speed-up or cancel) drops out of the history and balance.
+fn record_tx(wallet: &mut Wallet, tx: bdk_wallet::bitcoin::Transaction) {
+    let txid = tx.compute_txid();
+    let spends: std::collections::HashSet<_> = tx.input.iter().map(|i| i.previous_output).collect();
+    let mut latest = 0;
+    let replaced: Vec<_> = wallet
+        .transactions()
+        .filter(|t| t.tx_node.txid != txid)
+        .filter(|t| {
+            t.tx_node
+                .tx
+                .input
+                .iter()
+                .any(|i| spends.contains(&i.previous_output))
+        })
+        .filter_map(|t| match t.chain_position {
+            ChainPosition::Unconfirmed {
+                first_seen,
+                last_seen,
+            } => {
+                latest = latest.max(last_seen.or(first_seen).unwrap_or(0));
+                Some(t.tx_node.txid)
+            }
+            ChainPosition::Confirmed { .. } => None,
+        })
+        .collect();
+    // Newer than whatever it replaces, so it wins BDK's conflict resolution
+    // even within the same second.
+    let seen = now().max(latest + 1);
+    wallet.apply_evicted_txs(replaced.into_iter().map(|t| (t, seen)));
+    wallet.apply_unconfirmed_txs([(tx, seen)]);
 }
 
 #[async_trait]
@@ -410,11 +509,13 @@ impl Rail for OnchainAccount {
 
         let mut inner = self.inner.lock().await;
         let Inner { wallet, conn, .. } = &mut *inner;
-        let available = wallet.balance().trusted_spendable().to_sat();
+        // Unconfirmed incoming coins are spendable too (0-conf).
+        let bal = wallet.balance();
+        let available = (bal.trusted_spendable() + bal.untrusted_pending).to_sat();
 
         let private = req.style == SpendStyle::Private;
         let mut notes = Vec::new();
-        let mut psbt = if private {
+        let psbt = if private {
             if req.send_max {
                 return Err(Error::Invalid("Private mode can't send the whole balance, since the decoy needs a matching amount. Use Efficient".into()));
             }
@@ -423,6 +524,7 @@ impl Rail for OnchainAccount {
                 .or(*req_amount)
                 .ok_or(Error::AmountRequired)?;
             let utxos = privacy::spendable(wallet);
+            let preferred = privacy::settled(&utxos);
             let input_weight = privacy::input_weight(wallet)?;
             let fresh = [
                 wallet
@@ -435,14 +537,20 @@ impl Rail for OnchainAccount {
                     .reveal_next_address(KeychainKind::Internal)
                     .script_pubkey(),
             ];
-            let plan = privacy::plan(
-                &utxos,
+            let dest = address.script_pubkey();
+            // Confirmed coins and our own change first; fall back to also
+            // using unconfirmed incoming coins.
+            let plan = match privacy::plan(
+                &preferred,
                 input_weight,
-                &address.script_pubkey(),
+                &dest,
                 amount,
                 fee_rate,
-                fresh,
-            )?;
+                fresh.clone(),
+            ) {
+                Ok(p) => p,
+                Err(_) => privacy::plan(&utxos, input_weight, &dest, amount, fee_rate, fresh)?,
+            };
             notes.extend(plan.notes);
             let mut b = wallet.build_tx();
             b.add_utxos(&plan.inputs).map_err(err)?;
@@ -453,20 +561,51 @@ impl Rail for OnchainAccount {
             b.fee_absolute(Amount::from_sat(plan.fee));
             b.finish().map_err(err)?
         } else {
-            let mut b = wallet.build_tx();
-            b.fee_rate(fee_rate);
-            if req.send_max {
-                b.drain_wallet().drain_to(address.script_pubkey());
+            let amount = if req.send_max {
+                None
             } else {
-                let amount = req
-                    .amount_sat
-                    .or(*req_amount)
-                    .ok_or(Error::AmountRequired)?;
-                b.add_recipient(address.script_pubkey(), Amount::from_sat(amount));
+                Some(
+                    req.amount_sat
+                        .or(*req_amount)
+                        .ok_or(Error::AmountRequired)?,
+                )
+            };
+            // Unconfirmed incoming coins (not our own change) are held back
+            // on the first try, so they're only used when needed.
+            let unsettled: Vec<_> = wallet
+                .list_unspent()
+                .filter(|u| {
+                    !u.chain_position.is_confirmed() && u.keychain == KeychainKind::External
+                })
+                .map(|u| u.outpoint)
+                .collect();
+            let tiers: &[bool] = match (amount, unsettled.is_empty()) {
+                (Some(_), false) => &[true, false],
+                _ => &[false],
+            };
+            let mut result = None;
+            for &hold_back in tiers {
+                let mut b = wallet.build_tx();
+                b.fee_rate(fee_rate);
+                if hold_back {
+                    b.unspendable(unsettled.clone());
+                }
+                match amount {
+                    None => {
+                        b.drain_wallet().drain_to(address.script_pubkey());
+                    }
+                    Some(sats) => {
+                        b.add_recipient(address.script_pubkey(), Amount::from_sat(sats));
+                    }
+                }
+                result = Some(b.finish());
+                if matches!(result, Some(Ok(_))) {
+                    break;
+                }
             }
-            b.finish().map_err(|e| match e {
+            result.expect("at least one attempt").map_err(|e| match e {
                 bdk_wallet::error::CreateTxError::CoinSelection(_) => Error::InsufficientFunds {
-                    needed: req.amount_sat.or(*req_amount).unwrap_or(available),
+                    needed: amount.unwrap_or(available),
                     available,
                 },
                 other => err(other),
@@ -488,7 +627,6 @@ impl Rail for OnchainAccount {
             .persist(conn)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
-        let fee_sat = psbt.fee().map_err(err)?.to_sat();
         let spk = address.script_pubkey();
         let amount_sat: u64 = psbt
             .unsigned_tx
@@ -498,59 +636,22 @@ impl Rail for OnchainAccount {
             .map(|o| o.value.to_sat())
             .sum();
 
-        let needed = self.signatures_needed();
-        let needs_signature = if needed > 0 {
-            // Multisig: add our own signature first so the PSBT shown to the
-            // user only needs the remaining cosigners.
-            self.sign_locally(&mut psbt)?;
-            Some(UnsignedPsbt {
-                psbt_base64: psbt.to_string(),
-                signatures_needed: needed,
-            })
-        } else {
-            None
-        };
-
-        Ok(SendQuote {
-            account: self.id.clone(),
-            method: Method::BitcoinAddress,
+        let mut quote = self.quote(
+            psbt,
             amount_sat,
-            fee_sat,
-            handle: encode_handle(&psbt, payjoin_uri.as_deref().filter(|_| payjoin)),
-            needs_signature,
-            private,
-            payjoin,
             notes,
-        })
+            payjoin_uri.as_deref().filter(|_| payjoin),
+        )?;
+        quote.private = private;
+        Ok(quote)
     }
 
     async fn send(&self, quote: SendQuote, signed_psbt: Option<String>) -> Result<Payment> {
-        let (mut psbt, payjoin_uri) = Self::decode_handle(&quote.handle)?;
+        let (psbt, payjoin_uri) = Self::decode_handle(&quote.handle)?;
         let payjoin_uri =
             payjoin_uri.filter(|_| signed_psbt.is_none() && matches!(self.custody, Custody::Hot));
-        if let Some(signed) = signed_psbt {
-            let other = Self::psbt_from_b64(&signed)?;
-            if other.unsigned_tx.compute_txid() != psbt.unsigned_tx.compute_txid() {
-                return Err(err("the signed PSBT is for a different transaction"));
-            }
-            psbt.combine(other).map_err(err)?;
-        }
-        self.sign_locally(&mut psbt)?;
-        let unfinalized = psbt.clone();
-
-        let original = {
-            let inner = self.inner.lock().await;
-            let finalized = inner
-                .wallet
-                .finalize_psbt(&mut psbt, SignOptions::default())
-                .map_err(err)?;
-            if !finalized {
-                return Err(Error::Unsupported(
-                    "broadcast yet – signatures are still missing".into(),
-                ));
-            }
-            psbt.clone().extract_tx().map_err(err)?
-        };
+        let (psbt, unfinalized) = self.sign_and_finalize(psbt, signed_psbt).await?;
+        let original = psbt.clone().extract_tx().map_err(err)?;
 
         // Payjoin first; any problem means the Original goes out instead.
         let (tx, used_payjoin, extra_fee) = match &payjoin_uri {
@@ -591,7 +692,7 @@ impl Rail for OnchainAccount {
 
         let mut inner = self.inner.lock().await;
         let Inner { wallet, conn, .. } = &mut *inner;
-        wallet.apply_unconfirmed_txs([(tx.clone(), now())]);
+        record_tx(wallet, tx.clone());
         wallet
             .persist(conn)
             .map_err(|e| Error::Storage(e.to_string()))?;
@@ -612,6 +713,19 @@ impl Rail for OnchainAccount {
             },
             token: None,
         })
+    }
+
+    async fn tx_details(&self, txid: &str) -> Result<TxDetails> {
+        self.details(txid).await
+    }
+
+    async fn prepare_bump(
+        &self,
+        txid: &str,
+        action: BumpAction,
+        fee: FeePriority,
+    ) -> Result<SendQuote> {
+        self.bump(txid, action, fee).await
     }
 
     async fn payments(&self, limit: usize) -> Result<Vec<Payment>> {
@@ -939,15 +1053,16 @@ mod tests {
     const DEST: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 
     #[tokio::test]
-    async fn private_send_skips_unconfirmed_incoming_coins() {
+    async fn private_send_spends_unconfirmed_incoming_coins() {
         let dir = tempfile::tempdir().unwrap();
         let a = hot(dir.path());
         for i in 0..4 {
             fund_at(&a, i, 40_000, 10 + i as u8).await;
         }
-        // Incoming coins that haven't confirmed yet aren't used for private sends.
-        let q = a.prepare_send(private_req(30_000, DEST)).await;
-        assert!(matches!(q, Err(Error::Invalid(_))), "{q:?}");
+        // Incoming coins that haven't confirmed yet can be spent (0-conf).
+        let q = a.prepare_send(private_req(30_000, DEST)).await.unwrap();
+        assert!(q.private);
+        assert!(finalizes(&a, &q.handle).await);
     }
 
     #[tokio::test]
@@ -1144,5 +1259,473 @@ mod tests {
             fingerprint: "73c5da0a".into(),
         };
         assert_eq!(a.signatures_needed(), 1);
+    }
+
+    // --- 0-conf, RBF, speed up and cancel ----------------------------------
+
+    use bdk_wallet::bitcoin::{Transaction, TxOut};
+
+    /// Everything `send` does except talking to the network.
+    async fn broadcast_offline(
+        a: &OnchainAccount,
+        q: &SendQuote,
+        signed: Option<String>,
+    ) -> Transaction {
+        let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        let (psbt, _) = a.sign_and_finalize(psbt, signed).await.unwrap();
+        let tx = psbt.extract_tx().unwrap();
+        record_tx(&mut a.inner.lock().await.wallet, tx.clone());
+        tx
+    }
+
+    /// A confirmed coin of `sats` at receive index `index`.
+    async fn fund_confirmed(a: &OnchainAccount, index: u32, sats: u64, salt: u8) -> Txid {
+        use bdk_wallet::bitcoin::hashes::Hash;
+        use bdk_wallet::bitcoin::{
+            absolute, transaction, BlockHash, OutPoint, ScriptBuf, Sequence, TxIn, Witness,
+        };
+        use bdk_wallet::chain::{BlockId, ConfirmationBlockTime, TxUpdate};
+        let mut inner = a.inner.lock().await;
+        let spk = inner
+            .wallet
+            .peek_address(KeychainKind::External, index)
+            .script_pubkey();
+        let tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::from_byte_array([salt; 32]),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(sats),
+                script_pubkey: spk,
+            }],
+        };
+        let txid = tx.compute_txid();
+        let block = BlockId {
+            height: 100,
+            hash: BlockHash::from_byte_array([salt; 32]),
+        };
+        let cp = inner.wallet.latest_checkpoint().insert(block);
+        let mut tu = TxUpdate::default();
+        tu.txs = vec![std::sync::Arc::new(tx)];
+        tu.anchors = [(
+            ConfirmationBlockTime {
+                block_id: block,
+                confirmation_time: 1_700_000_000,
+            },
+            txid,
+        )]
+        .into();
+        inner
+            .wallet
+            .apply_update(bdk_wallet::Update {
+                chain: Some(cp),
+                tx_update: tu,
+                ..Default::default()
+            })
+            .unwrap();
+        txid
+    }
+
+    use bdk_wallet::bitcoin::Txid;
+
+    fn dest_spk() -> bdk_wallet::bitcoin::ScriptBuf {
+        Address::from_str(DEST)
+            .unwrap()
+            .assume_checked()
+            .script_pubkey()
+    }
+
+    fn all_signal_rbf(tx: &Transaction) -> bool {
+        tx.input
+            .iter()
+            .all(|i| i.sequence.to_consensus_u32() <= 0xFFFF_FFFD)
+    }
+
+    fn fee_of(a_wallet: &Wallet, tx: &Transaction) -> u64 {
+        a_wallet.calculate_fee(tx).unwrap().to_sat()
+    }
+
+    /// Send 40k to DEST at 3 sat/vB from a hot wallet holding one unconfirmed 100k coin.
+    async fn sent_payment(a: &OnchainAccount) -> Transaction {
+        fund(a, 100_000).await;
+        let q = a.prepare_send(send_req(40_000)).await.unwrap();
+        broadcast_offline(a, &q, None).await
+    }
+
+    #[tokio::test]
+    async fn zero_conf_incoming_is_spendable_and_confirmed_preferred() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        fund(&a, 100_000).await;
+        let b = a.info().await.unwrap().balance;
+        assert_eq!((b.confirmed, b.pending_in), (0, 100_000));
+        // The only coin is unconfirmed and from someone else: still spendable.
+        let q = a.prepare_send(send_req(90_000)).await.unwrap();
+        assert!(finalizes(&a, &q.handle).await);
+
+        // With a confirmed coin that covers it, that one is used first.
+        let confirmed = fund_confirmed(&a, 1, 60_000, 77).await;
+        let q = a.prepare_send(send_req(30_000)).await.unwrap();
+        let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        let ins: Vec<_> = psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .map(|i| i.previous_output.txid)
+            .collect();
+        assert_eq!(ins, vec![confirmed]);
+        // More than the confirmed coin: the unconfirmed one joins in.
+        let q = a.prepare_send(send_req(120_000)).await.unwrap();
+        let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        assert_eq!(psbt.unsigned_tx.input.len(), 2);
+        // Not enough even with everything.
+        assert!(matches!(
+            a.prepare_send(send_req(200_000)).await,
+            Err(Error::InsufficientFunds {
+                available: 160_000,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn every_send_signals_rbf() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        for i in 0..4 {
+            fund_at(&a, i, 40_000, 50 + i as u8).await;
+        }
+        let normal = a.prepare_send(send_req(30_000)).await.unwrap();
+        let private = a.prepare_send(private_req(20_000, DEST)).await.unwrap();
+        let mut max = send_req(0);
+        max.send_max = true;
+        max.amount_sat = None;
+        let max = a.prepare_send(max).await.unwrap();
+        for q in [normal, private, max] {
+            let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+            assert!(all_signal_rbf(&psbt.unsigned_tx), "{:?}", psbt.unsigned_tx);
+            let tx = broadcast_offline(&a, &q, None).await;
+            assert!(all_signal_rbf(&tx));
+            // Undo, so the next quote can use the same coins.
+            a.inner
+                .lock()
+                .await
+                .wallet
+                .apply_evicted_txs([(tx.compute_txid(), now() + 1_000)]);
+        }
+    }
+
+    #[tokio::test]
+    async fn speed_up_replaces_with_higher_fee_and_same_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        let tx1 = sent_payment(&a).await;
+        let txid1 = tx1.compute_txid().to_string();
+
+        let d = a.tx_details(&txid1).await.unwrap();
+        assert_eq!(d.confirmations, 0);
+        assert!(d.can_speed_up && d.can_cancel);
+        assert_eq!(d.speed_up_kind, Some(SpeedUpKind::Rbf));
+        assert_eq!(d.vsize, tx1.vsize() as u64);
+        let fee1 = d.fee_sat.unwrap();
+        assert!(d.fee_rate.unwrap() >= 3.0);
+
+        let q = a
+            .prepare_bump(&txid1, BumpAction::SpeedUp, FeePriority::Custom(10))
+            .await
+            .unwrap();
+        assert_eq!(q.amount_sat, 0);
+        assert!(q.fee_sat > fee1 && q.needs_signature.is_none() && !q.payjoin);
+        assert!(!q.notes.is_empty());
+        let tx2 = broadcast_offline(&a, &q, None).await;
+        assert!(all_signal_rbf(&tx2));
+        assert_eq!(bump::shared_inputs(&tx1, &tx2), tx1.input.len());
+        // Same payment output, only the change shrank.
+        let pay = |t: &Transaction| {
+            t.output
+                .iter()
+                .filter(|o| o.script_pubkey == dest_spk())
+                .map(|o| o.value.to_sat())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pay(&tx2), vec![40_000]);
+        assert_eq!(tx2.output.len(), tx1.output.len());
+        let guard = a.inner.lock().await;
+        let w = &guard.wallet;
+        let fee2 = fee_of(w, &tx2);
+        assert_eq!(fee2, q.fee_sat);
+        // BIP125: higher rate, and absolute fee covers the old fee plus 1 sat/vB.
+        assert!(fee2 >= fee1 + tx2.vsize() as u64);
+        assert!(
+            fee2 as f64 / tx2.vsize() as f64 >= 10.0,
+            "fee {fee2}, {} vB",
+            tx2.vsize()
+        );
+        drop(guard);
+
+        // The replaced one is gone from history; the replacement is pending.
+        let history = a.payments(10).await.unwrap();
+        let ids: Vec<_> = history.iter().map(|p| p.id.clone()).collect();
+        assert!(!ids.contains(&txid1), "{ids:?}");
+        assert!(ids.contains(&tx2.compute_txid().to_string()));
+        assert!(a.tx_details(&txid1).await.is_err());
+        let b = a.info().await.unwrap().balance;
+        assert_eq!(b.pending_out, 40_000 + fee2);
+
+        // Too low a requested rate still yields a valid replacement.
+        let txid2 = tx2.compute_txid().to_string();
+        let q = a
+            .prepare_bump(&txid2, BumpAction::SpeedUp, FeePriority::Custom(1))
+            .await
+            .unwrap();
+        assert!(q.fee_sat >= fee2 + tx2.vsize() as u64);
+    }
+
+    #[tokio::test]
+    async fn cancel_pays_everything_back_to_a_change_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        let tx1 = sent_payment(&a).await;
+        let txid1 = tx1.compute_txid().to_string();
+        let fee1 = fee_of(&a.inner.lock().await.wallet, &tx1);
+
+        // Even a "slow" request is raised to what BIP125 needs.
+        let q = a
+            .prepare_bump(&txid1, BumpAction::Cancel, FeePriority::Custom(1))
+            .await
+            .unwrap();
+        assert_eq!(q.amount_sat, 0);
+        let tx2 = broadcast_offline(&a, &q, None).await;
+        assert_eq!(tx2.input.len(), tx1.input.len());
+        assert_eq!(bump::shared_inputs(&tx1, &tx2), tx1.input.len());
+        assert_eq!(tx2.output.len(), 1);
+        let guard = a.inner.lock().await;
+        let w = &guard.wallet;
+        assert!(matches!(
+            w.derivation_of_spk(tx2.output[0].script_pubkey.clone()),
+            Some((KeychainKind::Internal, _))
+        ));
+        let fee2 = fee_of(w, &tx2);
+        assert_eq!(fee2, q.fee_sat);
+        assert_eq!(tx2.output[0].value.to_sat(), 100_000 - fee2);
+        assert!(fee2 >= fee1 + tx2.vsize() as u64);
+        let rate = |f: u64, t: &Transaction| f as f64 / t.vsize() as f64;
+        assert!(rate(fee2, &tx2) >= rate(fee1, &tx1) + 1.0);
+        drop(guard);
+
+        let ids: Vec<_> = a
+            .payments(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids.len(), 2, "{ids:?}"); // the funding coin and the cancel
+        assert!(!ids.contains(&txid1));
+        // Everything but the fee is ours again.
+        let b = a.info().await.unwrap().balance;
+        assert_eq!(b.confirmed + b.pending_in, 100_000 - fee2);
+    }
+
+    #[tokio::test]
+    async fn cpfp_child_meets_the_package_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        fund(&a, 50_000).await;
+        // Tell the wallet what the sender's input was worth: a 200 sat fee.
+        let parent = {
+            let mut inner = a.inner.lock().await;
+            let t = inner
+                .wallet
+                .transactions()
+                .next()
+                .unwrap()
+                .tx_node
+                .tx
+                .clone();
+            inner.wallet.insert_txout(
+                t.input[0].previous_output,
+                TxOut {
+                    value: Amount::from_sat(50_200),
+                    script_pubkey: dest_spk(),
+                },
+            );
+            t
+        };
+        let pid = parent.compute_txid().to_string();
+        let d = a.tx_details(&pid).await.unwrap();
+        assert!(d.can_speed_up && !d.can_cancel);
+        assert_eq!(d.speed_up_kind, Some(SpeedUpKind::Cpfp));
+        assert_eq!(d.fee_sat, Some(200));
+        assert!(matches!(
+            a.prepare_bump(&pid, BumpAction::Cancel, FeePriority::Custom(5))
+                .await,
+            Err(Error::Invalid(_))
+        ));
+
+        let q = a
+            .prepare_bump(&pid, BumpAction::SpeedUp, FeePriority::Custom(20))
+            .await
+            .unwrap();
+        assert_eq!(q.amount_sat, 0);
+        let child = broadcast_offline(&a, &q, None).await;
+        assert_eq!(child.input.len(), 1);
+        assert_eq!(child.input[0].previous_output.txid, parent.compute_txid());
+        assert_eq!(child.output.len(), 1);
+        assert!(all_signal_rbf(&child));
+        let child_fee = 50_000 - child.output[0].value.to_sat();
+        assert_eq!(child_fee, q.fee_sat);
+        let package = (200 + child_fee) as f64 / (parent.vsize() + child.vsize()) as f64;
+        assert!(package >= 20.0, "package rate {package}");
+        assert!(package < 21.0, "package rate {package}");
+        {
+            let guard = a.inner.lock().await;
+            let w = &guard.wallet;
+            assert!(matches!(
+                w.derivation_of_spk(child.output[0].script_pubkey.clone()),
+                Some((KeychainKind::Internal, _))
+            ));
+        }
+        // The parent's output is now spent, so it can't be sped up again;
+        // the child itself can (it's ours and replaceable).
+        assert!(!a.tx_details(&pid).await.unwrap().can_speed_up);
+        let cd = a
+            .tx_details(&child.compute_txid().to_string())
+            .await
+            .unwrap();
+        assert_eq!(cd.speed_up_kind, Some(SpeedUpKind::Rbf));
+
+        // Already fast enough.
+        assert!(matches!(
+            a.prepare_bump(&pid, BumpAction::SpeedUp, FeePriority::Custom(1))
+                .await,
+            Err(Error::Invalid(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn cpfp_errors_when_the_output_is_too_small() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        fund(&a, 2_000).await;
+        let pid = a
+            .inner
+            .lock()
+            .await
+            .wallet
+            .transactions()
+            .next()
+            .unwrap()
+            .tx_node
+            .txid;
+        let pid = pid.to_string();
+        // The sender's fee is unknown: assumed zero, with a note.
+        let d = a.tx_details(&pid).await.unwrap();
+        assert_eq!((d.fee_sat, d.fee_rate), (None, None));
+        let q = a
+            .prepare_bump(&pid, BumpAction::SpeedUp, FeePriority::Custom(2))
+            .await
+            .unwrap();
+        assert!(q.notes.iter().any(|n| n.contains("isn't known")));
+        let e = a
+            .prepare_bump(&pid, BumpAction::SpeedUp, FeePriority::Custom(50))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("aren't enough"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn confirmed_and_watch_only_transactions_cant_be_bumped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = hot(dir.path());
+        let txid = fund_confirmed(&a, 0, 30_000, 88).await.to_string();
+        let d = a.tx_details(&txid).await.unwrap();
+        assert_eq!(d.confirmations, 1);
+        assert_eq!(d.block_height, Some(100));
+        assert_eq!(d.block_time, Some(1_700_000_000));
+        assert!(!d.can_speed_up && !d.can_cancel && d.speed_up_kind.is_none());
+        assert!(a
+            .prepare_bump(&txid, BumpAction::SpeedUp, FeePriority::Custom(5))
+            .await
+            .is_err());
+        assert!(a.tx_details("nope").await.is_err());
+
+        fund(&a, 10_000).await;
+        let pending = a.payments(10).await.unwrap();
+        let pending = &pending
+            .iter()
+            .find(|p| p.status == PaymentStatus::Pending)
+            .unwrap()
+            .id;
+        a.custody = Custody::WatchOnly;
+        let d = a.tx_details(pending).await.unwrap();
+        assert!(!d.can_speed_up && !d.can_cancel);
+        assert!(matches!(
+            a.prepare_bump(pending, BumpAction::SpeedUp, FeePriority::Custom(5))
+                .await,
+            Err(Error::Unsupported(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn hardware_bumps_need_the_device_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let master = Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
+        let a = OnchainAccount::open(OnchainConfig {
+            id: "coldcard".into(),
+            name: "Coldcard".into(),
+            network: Network::Bitcoin,
+            db_path: dir.path().join("coldcard.db"),
+            esplora_url: None,
+            descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, 0).unwrap(),
+            custody: Custody::Hardware {
+                device: "Coldcard Q".into(),
+                fingerprint: "73c5da0a".into(),
+            },
+            signer: None,
+            payjoin_receive: false,
+            payjoin_dir: None,
+        })
+        .unwrap();
+        // The "device" signs whatever PSBT it's shown.
+        let device_sign = |b64: &str| {
+            let mut p = OnchainAccount::psbt_from_b64(b64).unwrap();
+            let secp = bdk_wallet::bitcoin::secp256k1::Secp256k1::new();
+            p.sign(&master, &secp).unwrap();
+            p.to_string()
+        };
+        fund(&a, 100_000).await;
+        let q = a.prepare_send(send_req(40_000)).await.unwrap();
+        let unsigned = q.needs_signature.clone().unwrap();
+        let tx1 = broadcast_offline(&a, &q, Some(device_sign(&unsigned.psbt_base64))).await;
+        let txid1 = tx1.compute_txid().to_string();
+
+        for action in [BumpAction::SpeedUp, BumpAction::Cancel] {
+            let q = a
+                .prepare_bump(&txid1, action, FeePriority::Custom(8))
+                .await
+                .unwrap();
+            let unsigned = q.needs_signature.clone().expect("needs the device");
+            assert_eq!(unsigned.signatures_needed, 1);
+            assert_eq!(q.amount_sat, 0);
+            // Without the device signature it can't go out.
+            let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+            assert!(a.sign_and_finalize(psbt.clone(), None).await.is_err());
+            let (_, _) = a
+                .sign_and_finalize(psbt, Some(device_sign(&unsigned.psbt_base64)))
+                .await
+                .unwrap();
+        }
     }
 }

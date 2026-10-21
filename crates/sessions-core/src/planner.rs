@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{AccountId, AccountInfo, Method, PaymentRequest, Sats};
+use crate::types::{AccountId, AccountInfo, Method, PaymentRequest, RailKind, Sats};
 use crate::{Error, Result};
 
 /// Lower is better: cheapest and fastest first.
@@ -236,7 +236,15 @@ pub fn choose_payer(
 ) -> Result<Plan> {
     accounts
         .iter()
-        .filter(|a| a.balance.confirmed >= amount_sat)
+        // On-chain accounts can spend unconfirmed incoming coins too.
+        .filter(|a| {
+            let unconfirmed = if a.rail == RailKind::Onchain {
+                a.balance.pending_in
+            } else {
+                0
+            };
+            a.balance.confirmed + unconfirmed >= amount_sat
+        })
         .filter_map(|a| plan_payment(accounts, bridges, &a.id, request, amount_sat).ok())
         .min_by_key(|p| {
             let first_rank = match &p.legs[0] {

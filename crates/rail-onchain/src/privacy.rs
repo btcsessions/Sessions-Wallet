@@ -208,11 +208,18 @@ fn script_kind(s: &ScriptBuf) -> Kind {
     }
 }
 
-/// Spendable coins for a private send: confirmed, or our own unconfirmed change.
+/// Spendable coins for a private send: every coin, including unconfirmed
+/// incoming ones (0-conf).
 pub fn spendable(wallet: &Wallet) -> Vec<LocalOutput> {
-    wallet
-        .list_unspent()
+    wallet.list_unspent().collect()
+}
+
+/// The coins to try first: confirmed, or our own unconfirmed change.
+pub fn settled(utxos: &[LocalOutput]) -> Vec<LocalOutput> {
+    utxos
+        .iter()
         .filter(|u| u.chain_position.is_confirmed() || u.keychain == KeychainKind::Internal)
+        .cloned()
         .collect()
 }
 

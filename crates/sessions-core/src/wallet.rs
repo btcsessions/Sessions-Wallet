@@ -273,6 +273,43 @@ impl Wallet {
             .await
     }
 
+    /// Chain details for an on-chain transaction. `None` when the account
+    /// isn't on-chain.
+    pub async fn tx_details(&self, account: &AccountId, txid: &str) -> Result<Option<TxDetails>> {
+        let rail = self.account(account).await?;
+        if rail.kind() != RailKind::Onchain {
+            return Ok(None);
+        }
+        rail.tx_details(txid).await.map(Some)
+    }
+
+    /// Price speeding up or cancelling an unconfirmed on-chain transaction.
+    /// Send the quote with [`Wallet::confirm_quote`], or, when it
+    /// `needs_signature`, with [`Wallet::resume`] on an [`Execution`] whose
+    /// `awaiting_signature` is the quote.
+    pub async fn prepare_bump(
+        &self,
+        account: &AccountId,
+        txid: &str,
+        action: BumpAction,
+        fee: FeePriority,
+    ) -> Result<SendQuote> {
+        self.account(account)
+            .await?
+            .prepare_bump(txid, action, fee)
+            .await
+    }
+
+    /// Send a standalone quote from an account that signs on this device.
+    pub async fn confirm_quote(&self, quote: SendQuote) -> Result<Payment> {
+        if quote.needs_signature.is_some() {
+            return Err(Error::Invalid(
+                "This needs a signature from your hardware wallet or cosigners first".into(),
+            ));
+        }
+        self.account(&quote.account).await?.send(quote, None).await
+    }
+
     /// Returns the quote for one leg plus any swap fee on top of it.
     async fn prepare_leg(
         &self,
@@ -1053,5 +1090,69 @@ mod tests {
             w.prepare(plan, FeePriority::Normal).await,
             Err(Error::InsufficientFunds { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn bump_quotes_go_through_confirm_quote_and_resume() {
+        let (w, savings, _) = wallet().await;
+        // Not on-chain: no details. On-chain rails without support say so.
+        assert!(w
+            .tx_details(&"spending".into(), "ab")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            w.tx_details(&"savings".into(), "ab").await,
+            Err(Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            w.prepare_bump(
+                &"savings".into(),
+                "ab",
+                BumpAction::Cancel,
+                FeePriority::Fast
+            )
+            .await,
+            Err(Error::Unsupported(_))
+        ));
+
+        let bump = SendQuote {
+            account: "savings".into(),
+            method: Method::BitcoinAddress,
+            amount_sat: 0,
+            fee_sat: 700,
+            handle: "replacement".into(),
+            needs_signature: None,
+            private: false,
+            payjoin: false,
+            notes: vec![],
+        };
+        let p = w.confirm_quote(bump.clone()).await.unwrap();
+        assert_eq!((p.amount_sat, p.fee_sat), (0, 700));
+        assert_eq!(*savings.balance.lock().unwrap(), 1_000_000 - 700);
+
+        // Hardware / multisig: refused here, resumed with the signed PSBT.
+        let mut signed = bump;
+        signed.needs_signature = Some(UnsignedPsbt {
+            psbt_base64: "cHNidP8=".into(),
+            signatures_needed: 1,
+        });
+        assert!(w.confirm_quote(signed.clone()).await.is_err());
+        let done = w
+            .resume(
+                Execution {
+                    payments: vec![],
+                    awaiting_signature: Some(signed),
+                    remaining: vec![],
+                    amount_sat: 0,
+                },
+                "signed".into(),
+                FeePriority::Normal,
+            )
+            .await
+            .unwrap();
+        assert!(done.awaiting_signature.is_none());
+        assert_eq!(done.payments.len(), 1);
+        assert_eq!(*savings.balance.lock().unwrap(), 1_000_000 - 1_400);
     }
 }

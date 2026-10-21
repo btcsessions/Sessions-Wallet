@@ -1683,6 +1683,10 @@ mod tests {
         }
         assert_eq!(ins.len(), original_tx.input.len() + 1);
         assert!(tx.input.iter().all(|i| !i.witness.is_empty()));
+        // Both the Original (the fallback) and the payjoin stay replaceable,
+        // including the receiver's input.
+        assert!(original_tx.input.iter().all(|i| i.sequence.is_rbf()));
+        assert!(tx.input.iter().all(|i| i.sequence.is_rbf()));
 
         // The receiver's output grew by exactly the contributed coin (the
         // sender's fee contribution covered the extra input).

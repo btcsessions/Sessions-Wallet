@@ -101,6 +101,10 @@ pub fn run() {
             commands::receive_quote,
             commands::trezor_sign_request,
             commands::trezor_merge,
+            commands::tx_details,
+            commands::sync_account,
+            commands::prepare_bump,
+            commands::confirm_quote,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

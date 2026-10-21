@@ -35,6 +35,25 @@ pub trait Rail: Send + Sync {
     }
 
     async fn payments(&self, limit: usize) -> Result<Vec<Payment>>;
+
+    /// Chain details and speed-up / cancel options for one transaction.
+    /// On-chain accounts only.
+    async fn tx_details(&self, _txid: &str) -> Result<TxDetails> {
+        Err(crate::Error::Unsupported("show transaction details".into()))
+    }
+
+    /// Price speeding up or cancelling an unconfirmed transaction. The quote
+    /// is sent with [`Rail::send`] like any other. On-chain accounts only.
+    async fn prepare_bump(
+        &self,
+        _txid: &str,
+        _action: BumpAction,
+        _fee: FeePriority,
+    ) -> Result<SendQuote> {
+        Err(crate::Error::Unsupported(
+            "speed up or cancel transactions".into(),
+        ))
+    }
 }
 
 /// A conversion service that turns one method into another, e.g. Boltz turning

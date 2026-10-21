@@ -305,6 +305,47 @@ pub struct UnsignedPsbt {
     pub signatures_needed: u8,
 }
 
+/// How a stuck on-chain transaction can be sped up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpeedUpKind {
+    /// Replace-by-fee: a new version of the same payment with a higher fee.
+    Rbf,
+    /// Child-pays-for-parent: spend our output of it with a high-fee child.
+    Cpfp,
+}
+
+/// What to do with an unconfirmed on-chain transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BumpAction {
+    /// Get it confirmed sooner by paying a higher fee.
+    SpeedUp,
+    /// Replace it with one that pays everything back to this account.
+    Cancel,
+}
+
+/// Chain details of one on-chain transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxDetails {
+    pub txid: String,
+    /// 0 while unconfirmed.
+    pub confirmations: u32,
+    pub block_height: Option<u32>,
+    /// Unix seconds.
+    pub block_time: Option<u64>,
+    /// `None` when some input values are unknown (e.g. a payment from
+    /// someone else whose source coins the chain server didn't report).
+    pub fee_sat: Option<Sats>,
+    /// sat/vB.
+    pub fee_rate: Option<f32>,
+    pub vsize: u64,
+    pub can_speed_up: bool,
+    pub can_cancel: bool,
+    pub speed_up_kind: Option<SpeedUpKind>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {

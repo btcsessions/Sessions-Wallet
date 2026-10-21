@@ -814,3 +814,53 @@ pub async fn receive_quote(
         .receive_quote(&into, method, amount_sat)
         .await
 }
+
+/// Chain details and speed-up / cancel options for an on-chain transaction.
+/// `null` for accounts that aren't on-chain.
+#[tauri::command]
+pub async fn tx_details(
+    state: State<'_, AppState>,
+    account: AccountId,
+    txid: String,
+) -> Result<Option<sessions_core::TxDetails>> {
+    wallet(&state).await?.tx_details(&account, &txid).await
+}
+
+/// Price speeding up or cancelling an unconfirmed on-chain transaction.
+/// Send it with `confirm_quote`, or, when it `needsSignature`, with `resume`
+/// on `{ payments: [], awaitingSignature: quote, remaining: [], amountSat: 0 }`.
+#[tauri::command]
+pub async fn prepare_bump(
+    state: State<'_, AppState>,
+    account: AccountId,
+    txid: String,
+    action: sessions_core::BumpAction,
+    fee: FeePriority,
+) -> Result<sessions_core::SendQuote> {
+    wallet(&state)
+        .await?
+        .prepare_bump(&account, &txid, action, fee)
+        .await
+}
+
+/// Send a standalone quote (e.g. from `prepare_bump`) from an account that
+/// signs on this device.
+#[tauri::command]
+pub async fn confirm_quote(
+    state: State<'_, AppState>,
+    quote: sessions_core::SendQuote,
+) -> Result<Payment> {
+    wallet(&state).await?.confirm_quote(quote).await
+}
+
+/// Sync one account now. The Receive screen calls this every few seconds
+/// while a request is showing, so a payment appears as soon as possible.
+#[tauri::command]
+pub async fn sync_account(state: State<'_, AppState>, id: AccountId) -> Result<()> {
+    let rail = wallet(&state).await?.account(&id).await?;
+    match tokio::time::timeout(std::time::Duration::from_secs(15), rail.sync()).await {
+        Ok(r) => r,
+        // Slow server: the next poll tries again.
+        Err(_) => Ok(()),
+    }
+}
