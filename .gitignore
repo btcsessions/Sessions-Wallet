@@ -5,3 +5,5 @@ dist/
 *.sqlite
 *.sqlite-*
 apps/wallet/src-tauri/gen/
+.env
+.env.*
