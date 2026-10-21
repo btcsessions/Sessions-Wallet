@@ -13,7 +13,8 @@ export type SheetName =
   | { name: "account"; id: string }
   | { name: "settings" }
   | { name: "ecash-token"; account: string }
-  | { name: "tx"; id: string; back?: string };
+  | { name: "tx"; id: string; back?: string }
+  | { name: "coins"; account: string };
 
 interface Toast {
   kind: "ok" | "error";

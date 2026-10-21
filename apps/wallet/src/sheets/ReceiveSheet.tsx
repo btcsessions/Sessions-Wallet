@@ -50,6 +50,7 @@ const EXPLAIN: Partial<Record<Method, string>> = {
 
 export function ReceiveSheet({ account: initial }: { account?: string }) {
   const { accounts, activity, open, notify, layout } = useWallet();
+  const advanced = layout?.advanced ?? false;
   const [openedAt] = useState(() => Math.floor(Date.now() / 1000) - 5);
   const [lnAddress, setLnAddress] = useState<LightningAddress | null>(null);
   const [preferId, preferMethod] = (initial ?? "").split("#");
@@ -251,6 +252,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
               </button>
             )}
           </div>
+          {advanced && account?.rail === "onchain" && method === "bitcoinAddress" && <AddressLabel account={account.id} request={target.request} />}
           <p className="group-note" style={{ margin: "0 0 8px", textAlign: "center" }}>
             {swap
               ? `Paid over Lightning into Spending, then sent on-chain to ${account?.name} automatically. If the wallet is closed, it's sent the next time you open it.`
@@ -334,5 +336,32 @@ function SwapTerms({
             : `${how} payments land in Spending, then go on-chain to ${account?.name ?? "this account"} automatically. The amount above is what they pay.`}
       </p>
     </>
+  );
+}
+
+/** Advanced: name the address before sharing it; the label follows the coins it receives. */
+function AddressLabel({ account, request }: { account: string; request: string }) {
+  const notify = useWallet((s) => s.notify);
+  const [label, setLabel] = useState("");
+  const [saved, setSaved] = useState("");
+  const address = request.replace(/^bitcoin:/i, "").split("?")[0];
+  const save = async () => {
+    const v = label.trim();
+    if (v === saved) return;
+    try {
+      await (await api()).setLabel(account, "address", address, v || null);
+      setSaved(v);
+      if (v) notify("ok", "Label saved");
+    } catch (e) {
+      notify("error", errorText(e));
+    }
+  };
+  return (
+    <div className="group">
+      <label className="cell">
+        <span className="grow">Label</span>
+        <input value={label} placeholder="Who's paying? Only you see this" maxLength={80} style={{ textAlign: "right" }} onChange={(e) => setLabel(e.target.value)} onBlur={() => void save()} onKeyDown={(e) => e.key === "Enter" && void save()} />
+      </label>
+    </div>
   );
 }

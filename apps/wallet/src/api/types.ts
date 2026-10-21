@@ -194,6 +194,21 @@ export interface SpendOptions {
   coins?: string[] | null;
 }
 
+/** One coin (UTXO) in an on-chain account. */
+export interface Utxo {
+  outpoint: string;
+  txid: string;
+  vout: number;
+  amountSat: number;
+  address: string;
+  label: string | null;
+  confirmations: number;
+  frozen: boolean;
+  change: boolean;
+}
+
+export type LabelKind = "address" | "tx" | "output";
+
 export type BumpAction = "speedUp" | "cancel";
 
 export interface DetailRow {

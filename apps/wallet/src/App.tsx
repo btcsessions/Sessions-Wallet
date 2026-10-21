@@ -13,6 +13,7 @@ import { PaySheet } from "./sheets/PaySheet";
 import { ReceiveSheet } from "./sheets/ReceiveSheet";
 import { SettingsSheet } from "./sheets/SettingsSheet";
 import { TxSheet } from "./sheets/TxSheet";
+import { CoinsSheet } from "./sheets/CoinsSheet";
 import { useWallet } from "./state/store";
 
 function ActiveSheet() {
@@ -30,6 +31,8 @@ function ActiveSheet() {
       return <GallerySheet />;
     case "add-account":
       return sheet.kind === "hardware" ? <AddHardwareSheet /> : <AddAccountSheet key={sheet.kind} kind={sheet.kind} />;
+    case "coins":
+      return <CoinsSheet account={sheet.account} />;
     case "tx":
       return <TxSheet key={sheet.id} id={sheet.id} back={sheet.back} />;
     case "account":

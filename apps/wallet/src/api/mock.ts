@@ -14,6 +14,7 @@ let status: "empty" | "locked" | "unlocked" = "empty";
 
 let accounts: AccountInfo[] = [];
 let activity: Payment[] = [];
+const mockUtxos = new Map<string, import("./types").Utxo[]>();
 
 function seedDemo() {
   accounts = [
@@ -235,6 +236,29 @@ export const mockApi: WalletApi = {
     return a;
   },
   async syncAccount() {},
+  async listUtxos(account) {
+    const a = accounts.find((x) => x.id === account);
+    if (a?.rail !== "onchain") return [];
+    if (!mockUtxos.has(account)) {
+      const t = (n: number) => n.toString(16).padStart(2, "0").repeat(32);
+      mockUtxos.set(account, [
+        { outpoint: `${t(1)}:0`, txid: t(1), vout: 0, amountSat: 2_500_000, address: "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", label: "Kraken withdrawal", confirmations: 812, frozen: false, change: false },
+        { outpoint: `${t(2)}:1`, txid: t(2), vout: 1, amountSat: 1_250_000, address: "bc1qnjg0jd8228aq7egyzacy8cys3knf9xvrerkf9g", label: "Sat Market sales", confirmations: 140, frozen: false, change: false },
+        { outpoint: `${t(3)}:0`, txid: t(3), vout: 0, amountSat: 500_000, address: "bc1qp59yckz4ae5c4efgw2s5wfyvrz0ala7rgvuz8z", label: null, confirmations: 31, frozen: true, change: true },
+        { outpoint: `${t(4)}:0`, txid: t(4), vout: 0, amountSat: 120_000, address: "bc1qgl5vlg0zdl7yvprgxj9fevsc6q6x5dmcyk3cn3", label: null, confirmations: 0, frozen: false, change: false },
+      ]);
+    }
+    return mockUtxos.get(account)!;
+  },
+  async setLabel(account, kind, reference, label) {
+    if (kind !== "output") return;
+    const u = mockUtxos.get(account)?.find((x) => x.outpoint === reference);
+    if (u) u.label = label;
+  },
+  async setFrozen(account, outpoint, frozen) {
+    const u = mockUtxos.get(account)?.find((x) => x.outpoint === outpoint);
+    if (u) u.frozen = frozen;
+  },
   async txDetails(account, txid) {
     const a = accounts.find((x) => x.id === account);
     const p = activity.find((x) => x.id === txid);

@@ -3,6 +3,8 @@ import type {
   BumpAction,
   DescriptorPreview,
   SendQuote,
+  Utxo,
+  LabelKind,
   SpendOptions,
   TxDetails,
   DetailRow,
@@ -45,6 +47,12 @@ export interface WalletApi {
   /** Hot on-chain accounts only. */
   payjoinReceive(account: string): Promise<boolean>;
   setPayjoinReceive(account: string, enabled: boolean): Promise<void>;
+  /** Coins in an on-chain account (advanced: coin control). */
+  listUtxos(account: string): Promise<Utxo[]>;
+  /** Label an address, transaction or coin; null removes it. */
+  setLabel(account: string, kind: LabelKind, reference: string, label: string | null): Promise<void>;
+  /** Frozen coins are never picked automatically. */
+  setFrozen(account: string, outpoint: string, frozen: boolean): Promise<void>;
   /** Sync one account now (the Receive screen polls this while it waits). */
   syncAccount(id: string): Promise<void>;
   /** On-chain transaction details; null for other rails. */

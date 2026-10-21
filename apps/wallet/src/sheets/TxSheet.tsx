@@ -177,6 +177,8 @@ export function TxSheet({ id, back }: { id: string; back?: string }) {
         </>
       )}
 
+      {advanced && account?.rail === "onchain" && txid && <TxLabel account={account.id} txid={txid} initial={p.description ?? ""} />}
+
       {pending && details && (details.canSpeedUp || details.canCancel) && (
         <div style={{ display: "grid", gap: 10, gridTemplateColumns: details.canSpeedUp && details.canCancel ? "1fr 1fr" : "1fr" }}>
           {details.canSpeedUp && (
@@ -208,6 +210,31 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="value" style={{ color: "var(--label)", textAlign: "right" }}>
         {value}
       </span>
+    </div>
+  );
+}
+
+/** Advanced: label the transaction; its change and coins inherit it. */
+function TxLabel({ account, txid, initial }: { account: string; txid: string; initial: string }) {
+  const { notify, refresh } = useWallet();
+  const [label, setLabel] = useState(initial);
+  const save = async () => {
+    const v = label.trim();
+    if (v === initial.trim()) return;
+    try {
+      await (await api()).setLabel(account, "tx", txid, v || null);
+      notify("ok", "Label saved");
+      void refresh();
+    } catch (e) {
+      notify("error", errorText(e));
+    }
+  };
+  return (
+    <div className="group">
+      <label className="cell">
+        <span className="grow">Label</span>
+        <input value={label} placeholder="Only you see this" maxLength={80} style={{ textAlign: "right" }} onChange={(e) => setLabel(e.target.value)} onBlur={() => void save()} onKeyDown={(e) => e.key === "Enter" && void save()} />
+      </label>
     </div>
   );
 }

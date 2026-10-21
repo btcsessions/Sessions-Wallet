@@ -12,6 +12,7 @@ import { useWallet } from "../state/store";
 
 export function AccountSheet({ id }: { id: string }) {
   const { accounts, activity, unit, price, currency, open, refresh, notify, close } = useWallet();
+  const advanced = useWallet((s) => s.layout?.advanced ?? false);
   const [busy, run] = useBusy();
   const a = accounts.find((x) => x.id === id);
   if (!a) return null;
@@ -94,6 +95,12 @@ export function AccountSheet({ id }: { id: string }) {
         </p>
       )}
 
+      {advanced && a.rail === "onchain" && (
+        <button className="btn block" style={{ marginBottom: 12 }} onClick={() => open({ name: "coins", account: a.id })}>
+          <Icon name="coins" size={16} />
+          Coins and labels
+        </button>
+      )}
       <WalletDetails id={a.id}>
         {a.id !== "spending" && a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut === 0 && (
           <button className="btn block" style={{ color: "var(--red)", marginBottom: 22 }} disabled={busy} onClick={remove}>

@@ -2178,3 +2178,124 @@ button {
 [data-skin="sessions"] .mode-options button {
   border-radius: var(--r-control);
 }
+
+/* ───────── Coins (coin control) ───────── */
+
+.coin-list {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  background: var(--card);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+[data-skin="sessions"] .coin-list {
+  border: var(--tile-border);
+  border-radius: var(--r-control);
+}
+
+.coin-list > li + li {
+  border-top: 0.5px solid var(--separator);
+}
+
+.coin-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  text-align: left;
+}
+
+.coin-row.checked {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.coin-check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 2px var(--label-3);
+}
+
+.coin-check.on {
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+.coin-main,
+.coin-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.coin-side {
+  align-items: flex-end;
+  flex: none;
+}
+
+.coin-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coin-label em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--label-3);
+}
+
+.coin-amount {
+  font-weight: 600;
+}
+
+.coin-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--label-2);
+}
+
+.coin-meta.mono {
+  font-size: 11.5px;
+}
+
+.coin-frozen {
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 14%, transparent);
+}
+
+.coin-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent-ink);
+}
+
+.coin-editor {
+  padding: 0 16px 14px;
+}
+
+.coin-editor .cell {
+  padding: 0;
+  margin-bottom: 10px;
+  min-height: 40px;
+  border-bottom: 1px solid var(--separator);
+}
+
+.coin-main {
+  flex: 1;
+}

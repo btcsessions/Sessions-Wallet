@@ -5,6 +5,7 @@ import { Icon } from "../components/Icon";
 import { ScanButton, scanText } from "../components/Scanner";
 import { AmountInput, FeePicker, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, feeEta, useBusy, useFeeRates } from "../components/ui";
 import { Dropdown, accountOptions } from "../components/Dropdown";
+import { CoinList } from "../components/Coins";
 import { METHOD_LABEL, errorText, formatFiat, formatSats, held } from "../format";
 import { useWallet } from "../state/store";
 import { RoutePreview } from "./RoutePreview";
@@ -64,6 +65,15 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
   allRef.current = all;
   const tunes = useRef(0);
   const rates = useFeeRates();
+  // Coin control and labels (Advanced, on-chain accounts).
+  const [coinMode, setCoinMode] = useState<"auto" | "manual">("auto");
+  const [coins, setCoins] = useState<Map<string, number>>(new Map());
+  const [label, setLabel] = useState("");
+  const [labelSent, setLabelSent] = useState("");
+  const coinSum = [...coins.values()].reduce((x, y) => x + y, 0);
+  const manual = coinMode === "manual" && coins.size > 0;
+  /** What "All" can spend: the chosen coins, or the whole account. */
+  const pool = (payer: AccountInfo | undefined) => (manual ? coinSum : payer ? held(payer) : 0);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -99,7 +109,8 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         const p = await a.planPayment(input, amount, from);
         if (!alive) return;
         setPlan(p);
-        const prep = await a.prepare(p, fee, style);
+        const spend = labelSent || manual ? { label: labelSent || null, coins: manual ? [...coins.keys()] : null } : undefined;
+        const prep = await a.prepare(p, fee, style, spend);
         if (alive) setPrepared(prep);
       } catch (e) {
         if (!alive) return;
@@ -113,7 +124,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         if (allRef.current && payer && tunes.current < 5) {
           tunes.current += 1;
           const need = /need ([\d,]+)/i.exec(errorText(e))?.[1];
-          const over = need ? Number(need.replace(/,/g, "")) - held(payer) : Math.ceil(amount * 0.01);
+          const over = need && !manual ? Number(need.replace(/,/g, "")) - pool(payer) : Math.ceil(amount * 0.01);
           setAmount(Math.max(1, amount - Math.max(1, over)));
           return;
         }
@@ -123,13 +134,13 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
     return () => {
       alive = false;
     };
-  }, [step, input, amount, from, fee, style]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [step, input, amount, from, fee, style, coins, coinMode, labelSent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sending everything: shrink the amount until amount + fees is exactly the balance.
   useEffect(() => {
     const payer = accounts.find((x) => x.id === from);
     if (!all || !prepared || !payer || !amount) return;
-    const over = prepared.quote.amountSat + prepared.quote.feeSat - held(payer);
+    const over = prepared.quote.amountSat + prepared.quote.feeSat - pool(payer);
     if ((over > 0 || over < -3) && tunes.current < 5) {
       tunes.current += 1;
       setAmount(Math.max(1, amount - over));
@@ -139,7 +150,21 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
   // A new speed or account re-fits "All".
   useEffect(() => {
     tunes.current = 0;
-  }, [fee, from, style]);
+  }, [fee, from, style, coins, coinMode]);
+
+  // Coins belong to one account.
+  useEffect(() => {
+    setCoins(new Map());
+    setCoinMode("auto");
+  }, [from]);
+
+  // "All" with chosen coins sends exactly those coins.
+  useEffect(() => {
+    if (all && manual) {
+      tunes.current = 0;
+      setAmount(coinSum);
+    }
+  }, [all, manual, coinSum]);
 
   // Privacy only matters per account.
   useEffect(() => {
@@ -310,6 +335,50 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         {showFees && <FeePicker value={fee} onChange={setFee} rates={rates} />}
 
         {advanced && plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} unavailable={privateBlocked} />}
+
+        {advanced && from && plan && onchainAccountLeg(plan, accounts) && (
+          <>
+            <p className="group-label">Coins</p>
+            <div className="segmented" style={{ marginBottom: 8 }}>
+              <button aria-pressed={coinMode === "auto"} onClick={() => setCoinMode("auto")}>
+                Automatic
+              </button>
+              <button aria-pressed={coinMode === "manual"} onClick={() => setCoinMode("manual")}>
+                {manual ? `${coins.size} chosen · ${formatSats(coinSum)}` : "Choose coins"}
+              </button>
+            </div>
+            {coinMode === "manual" && (
+              <CoinList
+                account={from}
+                selected={new Set(coins.keys())}
+                onToggle={(u) =>
+                  setCoins((m) => {
+                    const n = new Map(m);
+                    if (n.has(u.outpoint)) n.delete(u.outpoint);
+                    else n.set(u.outpoint, u.amountSat);
+                    return n;
+                  })
+                }
+              />
+            )}
+          </>
+        )}
+
+        {advanced && from && plan && plan.legs[0] && accounts.find((a) => a.id === plan.legs[0].from)?.rail === "onchain" && (
+          <div className="group">
+            <label className="cell">
+              <span className="grow">Label</span>
+              <input
+                value={label}
+                placeholder="Only you see this"
+                maxLength={80}
+                style={{ textAlign: "right" }}
+                onChange={(e) => setLabel(e.target.value)}
+                onBlur={() => setLabelSent(label.trim())}
+              />
+            </label>
+          </div>
+        )}
 
         {prepared && <QuoteNotes notes={prepared.quote.notes} payjoin={prepared.quote.payjoin} />}
 
