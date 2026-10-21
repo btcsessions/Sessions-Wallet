@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- BitBox02 (03eb:2403). Plugging it in offers to open the wallet, which
+     also grants it access to the device. -->
+<resources>
+    <usb-device vendor-id="1003" product-id="9219" />
+</resources>

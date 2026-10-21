@@ -37,7 +37,23 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/etc/udev/rules.d/53-sessions-wallet-bitbox02.rules": "linux/53-hid-bitbox02.rules",
+          "/etc/udev/rules.d/54-sessions-wallet-bitbox02.rules": "linux/54-hid-bitbox02.rules"
+        },
+        "postInstallScript": "linux/postinst.sh"
+      },
+      "rpm": {
+        "files": {
+          "/etc/udev/rules.d/53-sessions-wallet-bitbox02.rules": "linux/53-hid-bitbox02.rules",
+          "/etc/udev/rules.d/54-sessions-wallet-bitbox02.rules": "linux/54-hid-bitbox02.rules"
+        },
+        "postInstallScript": "linux/postinst.sh"
+      }
+    }
   },
   "plugins": {
     "deep-link": {

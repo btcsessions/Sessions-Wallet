@@ -7,6 +7,7 @@ members = [
     "crates/rail-liquid",
     "crates/rail-ecash",
     "apps/wallet/src-tauri",
+    "apps/wallet/src-tauri/plugins/tauri-plugin-bitbox",
 ]
 default-members = [
     "crates/sessions-core",

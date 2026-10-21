@@ -6,6 +6,7 @@ import type { AccountInfo, BitboxEvent, Layout, Leg, LightningAddress, Method, P
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bitboxListeners = new Set<(e: BitboxEvent) => void>();
+let bitboxPaired = false;
 const mockBitbox = (e: BitboxEvent) => bitboxListeners.forEach((cb) => cb(e));
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -370,6 +371,11 @@ export const mockApi: WalletApi = {
     await sleep(400);
     mockBitbox({ kind: "status", state: "unlock" });
     await sleep(800);
+    if (!bitboxPaired) {
+      bitboxPaired = true;
+      mockBitbox({ kind: "pairing", code: "XKQ7M 2RT9P\nHB4WD 8NJ3C" });
+      await sleep(2500);
+    }
     mockBitbox({ kind: "paired" });
     // BIP84 test vector key (abandon … about); fake for other accounts and Taproot.
     const purpose = script === "tr" ? 86 : 84;
