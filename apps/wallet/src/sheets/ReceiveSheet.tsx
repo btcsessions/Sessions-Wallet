@@ -3,6 +3,7 @@ import { api } from "../api";
 import type { AccountInfo, LightningAddress, Method, ReceiveTarget } from "../api/types";
 import { Icon } from "../components/Icon";
 import { AmountInput, CopyButton, QR, Sheet } from "../components/ui";
+import { ScanButton, scanText } from "../components/Scanner";
 import { METHOD_LABEL, accountColor, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 
@@ -35,7 +36,7 @@ const EXPLAIN: Partial<Record<Method, string>> = {
 };
 
 export function ReceiveSheet({ account: initial }: { account?: string }) {
-  const { accounts, activity, open } = useWallet();
+  const { accounts, activity, open, notify } = useWallet();
   const [openedAt] = useState(() => Math.floor(Date.now() / 1000) - 5);
   const [lnAddress, setLnAddress] = useState<LightningAddress | null>(null);
   const [preferId, preferMethod] = (initial ?? "").split("#");
@@ -212,6 +213,19 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       ) : (
         <p className="empty">Getting a fresh request…</p>
       )}
+      <p style={{ textAlign: "center", margin: "18px 0 0" }}>
+        <ScanButton
+          className="text-button with-icon"
+          label="Scan an ecash token"
+          title="Scan ecash token"
+          hint="Scan a Cashu ecash token to claim it."
+          onResult={(r) =>
+            scanText(r)
+              .then((text) => open({ name: "pay", prefill: text }))
+              .catch(() => notify("error", "That QR code isn't an ecash token."))
+          }
+        />
+      </p>
     </Sheet>
   );
 }

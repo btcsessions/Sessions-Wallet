@@ -9,7 +9,25 @@ use tauri::{Emitter, Manager};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Trezor Suite on phones: we open its deep link, it calls us back.
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
+        // The QR scanner uses the camera from inside the webview.
+        .on_permission_request(|_, kind| match kind {
+            tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
+            _ => tauri::webview::PermissionResponse::Default,
+        })
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            if let Some(w) = app.get_webview_window("main") {
+                // WebKitGTK ships with getUserMedia switched off.
+                let _ = w.with_webview(|wv| {
+                    use webkit2gtk::{SettingsExt, WebViewExt};
+                    if let Some(s) = wv.inner().settings() {
+                        s.set_enable_media_stream(true);
+                    }
+                });
+            }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             // Tell the UI when an account changes so it refreshes at once.
@@ -78,6 +96,9 @@ pub fn run() {
             commands::remove_account,
             commands::payjoin_receive,
             commands::set_payjoin_receive,
+            commands::inspect_descriptor,
+            commands::trezor_sign_request,
+            commands::trezor_merge,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

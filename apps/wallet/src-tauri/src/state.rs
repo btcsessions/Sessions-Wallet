@@ -63,6 +63,12 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The unlocked wallet's network.
+    pub async fn network(&self) -> Result<Network> {
+        let g = self.inner.lock().await;
+        Ok(g.as_ref().ok_or(Error::Locked)?.config.network)
+    }
+
     pub fn new(root: PathBuf, notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         AppState {
             paths: Paths { root },

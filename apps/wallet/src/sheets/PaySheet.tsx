@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { AccountInfo, Execution, FeePriority, Leg, PaymentRequest, Plan, Prepared, SpendStyle } from "../api/types";
 import { Icon } from "../components/Icon";
+import { ScanButton, scanText } from "../components/Scanner";
 import { AmountInput, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
 import { METHOD_LABEL, accountColor, errorText, formatFiat, formatSats } from "../format";
 import { useWallet } from "../state/store";
@@ -320,6 +321,14 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           <Icon name="paste" size={16} />
           Paste
         </button>
+        <ScanButton
+          hint="Scan a bitcoin address, Lightning invoice or ecash token."
+          onResult={(r) =>
+            scanText(r)
+              .then(setInput)
+              .catch(() => notify("error", "That QR code isn't a payment. Try a bitcoin address or Lightning invoice."))
+          }
+        />
       </div>
 
       {isToken ? (

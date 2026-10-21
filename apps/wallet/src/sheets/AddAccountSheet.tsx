@@ -4,6 +4,8 @@ import type { NewAccount } from "../api/types";
 import { Icon } from "../components/Icon";
 import { CopyButton, QR, SelectRow, Sheet, useBusy } from "../components/ui";
 import { useWallet } from "../state/store";
+import { ScanButton, scanKey } from "../components/Scanner";
+import { errorText } from "../format";
 
 type Kind = "multisig" | "hardware" | "watchOnly" | "ecash" | "savings";
 
@@ -32,8 +34,6 @@ const MODULE_FOR: Record<Kind, string> = {
   savings: "savings",
 };
 
-const DEVICES = ["Coldcard", "Jade", "BitBox02", "Trezor", "Passport", "Keystone", "SeedSigner", "Other"];
-
 export function AddAccountSheet({ kind }: { kind: Kind }) {
   const { addModule, refresh, notify, close } = useWallet();
   const [busy, run] = useBusy();
@@ -42,7 +42,6 @@ export function AddAccountSheet({ kind }: { kind: Kind }) {
   );
   const [mintChoice, setMintChoice] = useState(MINTS[0].value);
   const [understood, setUnderstood] = useState(false);
-  const [device, setDevice] = useState("Coldcard");
   const [descriptor, setDescriptor] = useState("");
   const [customMint, setCustomMint] = useState("https://");
   const mintUrl = mintChoice === "custom" ? customMint : mintChoice;
@@ -79,7 +78,7 @@ export function AddAccountSheet({ kind }: { kind: Kind }) {
             ? { kind, name: name.trim(), mintUrl: mintUrl.trim() }
             : kind === "savings"
             ? { kind, name: name.trim() }
-            : { kind, name: name.trim(), descriptor: descriptor.trim(), device: kind === "hardware" ? device : undefined };
+            : { kind, name: name.trim(), descriptor: descriptor.trim() };
       const account = await (await api()).addAccount(spec);
       await addModule({ id: `${MODULE_FOR[kind]}:${account.id}`, size: "small" });
       await refresh();
@@ -140,19 +139,6 @@ export function AddAccountSheet({ kind }: { kind: Kind }) {
         </>
       )}
 
-      {kind === "hardware" && (
-        <>
-          <p className="group-label">Device</p>
-          <div className="chips" style={{ flexWrap: "wrap" }}>
-            {DEVICES.map((d) => (
-              <button key={d} className="chip" aria-pressed={d === device} onClick={() => setDevice(d)}>
-                {d}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-
       {(kind === "hardware" || kind === "watchOnly") && (
         <>
           <p className="group-label">Wallet descriptor</p>
@@ -168,11 +154,17 @@ export function AddAccountSheet({ kind }: { kind: Kind }) {
               />
             </label>
           </div>
-          <p className="group-note">
-            {kind === "hardware"
-              ? `On your ${device}, export the wallet for Sparrow or as a generic descriptor, then paste it or scan the QR. Private keys never leave the device.`
-              : "Paste a descriptor or a [fingerprint/path]xpub. This account can see the balance but can't spend."}
-          </p>
+          <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
+            <ScanButton
+              title="Scan wallet export"
+              onResult={(r) =>
+                scanKey(r, "single")
+                  .then(setDescriptor)
+                  .catch((e) => notify("error", errorText(e)))
+              }
+            />
+          </div>
+          <p className="group-note">Paste or scan a descriptor or a [fingerprint/path]xpub. This account can see the balance but can't spend.</p>
         </>
       )}
 
@@ -215,6 +207,17 @@ export function AddAccountSheet({ kind }: { kind: Kind }) {
                   spellCheck={false}
                   autoCapitalize="off"
                   onChange={(e) => setCosigners(cosigners.map((x, j) => (j === i ? e.target.value : x)))}
+                />
+                <ScanButton
+                  className="icon-button"
+                  label=""
+                  title="Scan cosigner key"
+                  hint="On the device, export its multisig key (BIP48, P2WSH)."
+                  onResult={(r) =>
+                    scanKey(r, "multisig")
+                      .then((k) => setCosigners((cs) => cs.map((x, j) => (j === i ? k : x))))
+                      .catch((e) => notify("error", errorText(e)))
+                  }
                 />
                 {cosigners.length > 1 && (
                   <button className="icon-button" aria-label="Remove key" onClick={(e) => (e.preventDefault(), setCosigners(cosigners.filter((_, j) => j !== i)))}>

@@ -164,3 +164,10 @@ export interface LightningAddress {
   username: string;
   lnurl: string;
 }
+
+export interface DescriptorPreview {
+  descriptor: string;
+  fingerprint: string;
+  scriptType: string;
+  firstAddress: string;
+}

@@ -5,6 +5,7 @@ import { Lock, Onboarding } from "./Onboarding";
 import { Toast } from "./components/ui";
 import { AccountSheet } from "./sheets/AccountSheet";
 import { AddAccountSheet } from "./sheets/AddAccountSheet";
+import { AddHardwareSheet } from "./sheets/AddHardwareSheet";
 import { EcashTokenSheet } from "./sheets/EcashTokenSheet";
 import { GallerySheet } from "./sheets/GallerySheet";
 import { MoveSheet } from "./sheets/MoveSheet";
@@ -27,7 +28,7 @@ function ActiveSheet() {
     case "gallery":
       return <GallerySheet />;
     case "add-account":
-      return <AddAccountSheet key={sheet.kind} kind={sheet.kind} />;
+      return sheet.kind === "hardware" ? <AddHardwareSheet /> : <AddAccountSheet key={sheet.kind} kind={sheet.kind} />;
     case "account":
       return <AccountSheet key={sheet.id} id={sheet.id} />;
     case "settings":

@@ -232,6 +232,23 @@ export const mockApi: WalletApi = {
     accounts.push(a);
     return a;
   },
+  async inspectDescriptor(descriptor) {
+    const d = descriptor.trim();
+    if (d.length < 20) throw new Error("That doesn't look like a wallet export");
+    const fp = /\[([0-9a-f]{8})/i.exec(d)?.[1] ?? "73c5da0a";
+    return {
+      descriptor: d.startsWith("[") ? `wpkh(${d}/0/*)` : d,
+      fingerprint: fp.toLowerCase(),
+      scriptType: d.startsWith("tr(") ? "Taproot" : "Native SegWit",
+      firstAddress: "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+    };
+  },
+  async trezorSignRequest() {
+    return { coin: "btc", inputs: [], outputs: [] };
+  },
+  async trezorMerge(psbt) {
+    return psbt;
+  },
   async payjoinReceive(account) {
     return mockPayjoin.has(account);
   },

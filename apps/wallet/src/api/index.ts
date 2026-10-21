@@ -1,5 +1,6 @@
 import type {
   AccountInfo,
+  DescriptorPreview,
   Execution,
   FeeRates,
   FeePriority,
@@ -38,6 +39,12 @@ export interface WalletApi {
   /** Hot on-chain accounts only. */
   payjoinReceive(account: string): Promise<boolean>;
   setPayjoinReceive(account: string, enabled: boolean): Promise<void>;
+  /** Check a hardware wallet export before adding it. */
+  inspectDescriptor(descriptor: string): Promise<DescriptorPreview>;
+  /** Trezor Connect signTransaction params for an unsigned PSBT. */
+  trezorSignRequest(psbt: string): Promise<Record<string, unknown>>;
+  /** Fold a Trezor-signed raw transaction back into the PSBT. */
+  trezorMerge(psbt: string, signedTx: string): Promise<string>;
   /** Our own cosigner key to share when setting up a multisig. */
   cosignerKey(): Promise<string>;
   sync(): Promise<void>;

@@ -28,7 +28,8 @@
   --rail-onchain: #5856d6;
   --rail-vault: #30b0c7;
   --rail-ecash: #34c759;
-  --rail-hardware: #8e8e93;
+  --rail-hardware: #a2845e;
+  --rail-watch: #8e8e93;
 
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter Variable", "Segoe UI Variable", system-ui, sans-serif;
   --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter Variable", system-ui, sans-serif;
@@ -68,6 +69,7 @@
     --rail-onchain: #5e5ce6;
     --rail-vault: #40c8e0;
     --rail-ecash: #30d158;
+    --rail-hardware: #ac8e68;
   }
 }
 
@@ -216,6 +218,10 @@ button {
   flex-direction: column;
   touch-action: manipulation;
   container-type: inline-size;
+  /* Long-press means "edit", not "select text". */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .tile[data-size="small"] {
@@ -263,8 +269,9 @@ button {
 .editing .tile {
   animation: jiggle 0.28s ease-in-out infinite alternate;
   cursor: grab;
-  /* Let a finger drag the tile instead of scrolling the page. */
-  touch-action: none;
+  /* Swipes still scroll; a short hold picks the tile up (see TouchSensor). */
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -1278,4 +1285,197 @@ button {
   gap: 4px;
   font-size: 15px;
   padding: 0 8px;
+}
+
+/* ───────── QR scanner ───────── */
+
+.scanner {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: #000;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  animation: fade 0.2s ease-out;
+}
+
+.scanner-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.scanner-top,
+.scanner-bottom {
+  position: relative;
+  z-index: 1;
+  padding: calc(var(--safe-top) + 10px) 16px 14px;
+  background: linear-gradient(rgba(0, 0, 0, 0.6), transparent);
+}
+
+.scanner-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.scanner-top h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.scanner-top .text-button {
+  color: #fff;
+  width: 56px;
+  text-align: left;
+}
+
+.scanner-frame {
+  position: relative;
+  z-index: 1;
+  margin: auto;
+  width: min(72vw, 300px);
+  aspect-ratio: 1;
+  border-radius: 28px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.35);
+  outline: 3px solid rgba(255, 255, 255, 0.9);
+  display: grid;
+  place-items: center;
+}
+
+.scanner-progress {
+  width: 64px;
+  height: 64px;
+  filter: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.5));
+}
+
+.scanner-bottom {
+  padding: 18px 24px calc(var(--safe-bottom, 0px) + 28px);
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.scanner-msg {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.4;
+  max-width: 34ch;
+}
+
+.scanner-msg.error {
+  color: #ffd2cf;
+}
+
+.scanner-bottom .btn {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+
+.with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-ligatures: none;
+}
+
+/* ───────── Hardware wallets ───────── */
+
+.device-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.device-grid.small {
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  margin-bottom: 24px;
+}
+
+.device-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px;
+  border-radius: 14px;
+  background: var(--fill);
+  color: var(--label);
+  text-align: center;
+  font-size: 13px;
+  transition: transform 0.12s ease;
+}
+
+.device-card:active {
+  transform: scale(0.97);
+}
+
+.device-card .device-icon {
+  color: var(--rail-hardware);
+}
+
+.device-card.featured {
+  padding: 20px 12px 16px;
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--separator), var(--shadow-tile);
+}
+
+.device-card.featured strong {
+  font-size: 16px;
+}
+
+.device-card.featured span {
+  color: var(--label-2);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.hw-hero {
+  display: grid;
+  place-items: center;
+  width: 88px;
+  height: 88px;
+  margin: 4px auto 18px;
+  border-radius: 24px;
+  color: var(--rail-hardware);
+  background: color-mix(in srgb, var(--rail-hardware) 14%, transparent);
+}
+
+.hw-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--rail-hardware);
+  background: color-mix(in srgb, var(--rail-hardware) 13%, transparent);
+}
+
+.hw-badge > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hw-badge-sep {
+  opacity: 0.6;
 }

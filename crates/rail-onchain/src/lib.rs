@@ -12,6 +12,7 @@
 pub mod descriptors;
 pub mod payjoin;
 pub mod privacy;
+pub mod trezor;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -1067,6 +1068,64 @@ mod tests {
         let mut all = private_req(0, DEST);
         all.send_max = true;
         assert!(a.prepare_send(all).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn trezor_request_and_signed_tx_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot(dir.path());
+        fund(&a, 100_000).await;
+        let q = a.prepare_send(send_req(40_000)).await.unwrap();
+        let (unsigned, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        let b64 = unsigned.to_string();
+
+        let req = trezor::sign_request(&b64, Network::Bitcoin).unwrap();
+        assert_eq!(req["coin"], "btc");
+        let input = &req["inputs"][0];
+        assert_eq!(input["script_type"], "SPENDWITNESS");
+        // m/84'/0'/0'/0/0
+        assert_eq!(
+            input["address_n"],
+            serde_json::json!([0x8000_0054u32, 0x8000_0000u32, 0x8000_0000u32, 0, 0])
+        );
+        assert_eq!(input["amount"], "100000");
+        assert_eq!(req["refTxs"].as_array().unwrap().len(), 1);
+        let outs = req["outputs"].as_array().unwrap();
+        assert!(outs.iter().any(
+            |o| o["address"] == "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+                && o["amount"] == "40000"
+        ));
+        assert!(outs
+            .iter()
+            .any(|o| o["script_type"] == "PAYTOWITNESS" && o["address_n"][3] == 1));
+
+        // Stand in for the device: sign the same transaction elsewhere.
+        let mut signed = unsigned.clone();
+        a.sign_locally(&mut signed).unwrap();
+        assert!(a
+            .inner
+            .lock()
+            .await
+            .wallet
+            .finalize_psbt(&mut signed, SignOptions::default())
+            .unwrap());
+        let raw = trezor::extract_hex(signed).unwrap();
+
+        let merged = trezor::merge_signed_tx(&b64, &raw).unwrap();
+        let mut merged = OnchainAccount::psbt_from_b64(&merged).unwrap();
+        assert!(a
+            .inner
+            .lock()
+            .await
+            .wallet
+            .finalize_psbt(&mut merged, SignOptions::default())
+            .unwrap());
+        assert_eq!(trezor::extract_hex(merged).unwrap(), raw);
+
+        // A different transaction is refused.
+        let other = a.prepare_send(send_req(30_000)).await.unwrap();
+        let (other, _) = OnchainAccount::decode_handle(&other.handle).unwrap();
+        assert!(trezor::merge_signed_tx(&other.to_string(), &raw).is_err());
     }
 
     #[test]

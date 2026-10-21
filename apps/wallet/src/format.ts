@@ -56,7 +56,8 @@ export function accountColor(a: AccountInfo): string {
   if (a.rail === "spark") return "var(--rail-spark)";
   if (a.rail === "ecash") return "var(--rail-ecash)";
   if (a.custody.type === "multisig") return "var(--rail-vault)";
-  if (a.custody.type === "hardware" || a.custody.type === "watchOnly") return "var(--rail-hardware)";
+  if (a.custody.type === "hardware") return "var(--rail-hardware)";
+  if (a.custody.type === "watchOnly") return "var(--rail-watch)";
   return "var(--rail-onchain)";
 }
 

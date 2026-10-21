@@ -21,6 +21,7 @@ const paths: Record<string, string> = {
   close: "M6 6l12 12M18 6 6 18",
   copy: "M9 9h11v11H9zM5 15H4V4h11v1",
   scan: "M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 12h10",
+  photo: "M4 6h16v13H4zM4 16l5-5 4 4 2-2 5 5M15.5 9.5h.01",
   paste: "M9 4h6v3H9zM15 5h3v16H6V5h3",
   warn: "M12 3 2 20h20L12 3Zm0 6v5m0 3h.01",
   lock: "M6 11h12v10H6zM8 11V8a4 4 0 1 1 8 0v3",

@@ -1,4 +1,5 @@
 import { Icon } from "../components/Icon";
+import { DeviceIcon, HardwareBadge } from "../hw/devices";
 import { useWallet } from "../state/store";
 import { accountColor, accountKind, amountParts } from "../format";
 import type { AccountInfo } from "../api/types";
@@ -43,7 +44,7 @@ export function AccountModule({ module }: ModuleProps) {
   return (
     <>
       <div className="tile-title" style={{ ["--tint" as string]: accountColor(account) }}>
-        <Icon name={def.icon} size={16} />
+        {account.custody.type === "hardware" ? <DeviceIcon device={account.custody.device} size={17} /> : <Icon name={def.icon} size={16} />}
         {account.name}
       </div>
       <button style={{ textAlign: "left" }} onClick={() => open({ name: "account", id: account.id })} aria-label={`${account.name}: ${value} ${suffix}`}>
@@ -52,7 +53,7 @@ export function AccountModule({ module }: ModuleProps) {
           {suffix && <span className="balance-unit">{suffix}</span>}
         </div>
       </button>
-      <div className="tile-foot">{accountKind(account)}</div>
+      <div className="tile-foot">{account.custody.type === "hardware" ? <HardwareBadge device={account.custody.device} compact={module.size === "small"} /> : accountKind(account)}</div>
       {module.size === "medium" && (
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           {account.pays.length > 0 && (

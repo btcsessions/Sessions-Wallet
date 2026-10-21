@@ -42,5 +42,8 @@ export const tauriApi: WalletApi = {
   lightningAddress: (account) => invoke("lightning_address", { account }),
   lightningAddressAvailable: (account, username) => invoke("lightning_address_available", { account, username }),
   registerLightningAddress: (account, username) => invoke("register_lightning_address", { account, username }),
+  inspectDescriptor: (descriptor) => invoke("inspect_descriptor", { descriptor }),
+  trezorSignRequest: (psbt) => invoke("trezor_sign_request", { psbt }),
+  trezorMerge: (psbt, signedTx) => invoke("trezor_merge", { psbt, signedTx }),
   onChange: (cb) => listen("wallet-changed", () => cb()),
 };

@@ -1,9 +1,10 @@
-import { DndContext, KeyboardSensor, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { InstalledModule } from "./api/types";
 import { Icon } from "./components/Icon";
+import { Scanner, scanText } from "./components/Scanner";
 import { moduleDef } from "./modules/catalog";
 import { useWallet } from "./state/store";
 
@@ -11,20 +12,41 @@ function Tile({ module, editing }: { module: InstalledModule; editing: boolean }
   const { removeModule, resizeModule, setEditing } = useWallet();
   const def = moduleDef(module.id);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: module.id, disabled: !editing });
-  const press = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number } | null>(null);
+
+  // Cancel a pending long-press as soon as the page scrolls.
+  useEffect(() => {
+    const onScroll = () => cancelPress();
+    window.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    return () => window.removeEventListener("scroll", onScroll, { capture: true });
+  }, []);
 
   if (!def) return null;
   const Comp = def.component;
 
-  // Long-press anywhere on a tile enters edit mode, like the iOS home screen.
-  const startPress = () => {
-    if (editing) return;
-    press.current = setTimeout(() => {
-      navigator.vibrate?.(10);
-      setEditing(true);
-    }, 550);
+  // Long-press (finger held still) enters edit mode, like the iOS home screen.
+  // Any real movement, a scroll, or the browser taking the gesture cancels it.
+  const startPress = (e: React.PointerEvent) => {
+    if (editing || e.button > 0) return;
+    cancelPress();
+    press.current = {
+      x: e.clientX,
+      y: e.clientY,
+      timer: setTimeout(() => {
+        press.current = null;
+        navigator.vibrate?.(12);
+        setEditing(true);
+      }, 500),
+    };
   };
-  const cancelPress = () => press.current && clearTimeout(press.current);
+  function cancelPress() {
+    if (press.current) clearTimeout(press.current.timer);
+    press.current = null;
+  }
+  const movePress = (e: React.PointerEvent) => {
+    const p = press.current;
+    if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 8) cancelPress();
+  };
 
   return (
     <div
@@ -35,7 +57,9 @@ function Tile({ module, editing }: { module: InstalledModule; editing: boolean }
       onPointerDown={startPress}
       onPointerUp={cancelPress}
       onPointerLeave={cancelPress}
-      onPointerMove={(e) => e.movementX + e.movementY > 4 && cancelPress()}
+      onPointerCancel={cancelPress}
+      onPointerMove={movePress}
+      onContextMenu={(e) => e.preventDefault()}
       {...(editing ? { ...attributes, ...listeners, "aria-label": `${def.name}. Drag to reorder.` } : {})}
     >
       {editing && (
@@ -56,10 +80,13 @@ function Tile({ module, editing }: { module: InstalledModule; editing: boolean }
 }
 
 export function Home() {
-  const { layout, editing, setEditing, reorder, open, sync, syncing, isMock, unavailable, accounts } = useWallet();
+  const { layout, editing, setEditing, reorder, open, sync, syncing, isMock, unavailable, accounts, notify } = useWallet();
+  const [scanning, setScanning] = useState(false);
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 8 } }),
+    // Mouse: drag as soon as it moves. Touch: hold briefly, then drag, so a
+    // quick swipe always scrolls the page, even in edit mode.
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
@@ -92,6 +119,11 @@ export function Home() {
         )}
         <div className="topbar-actions">
           {!editing && (
+            <button className="icon-button" aria-label="Scan a QR code" onClick={() => setScanning(true)}>
+              <Icon name="scan" size={20} stroke={1.8} />
+            </button>
+          )}
+          {!editing && (
             <button className="icon-button" aria-label="Refresh" onClick={() => void sync()} disabled={syncing}>
               <span style={{ display: "grid", animation: syncing ? "spin 0.9s linear infinite" : undefined }}>
                 <Icon name="refresh" size={20} stroke={1.8} />
@@ -110,7 +142,7 @@ export function Home() {
         </p>
       ))}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={() => navigator.vibrate?.(8)} onDragEnd={onDragEnd}>
         <SortableContext items={ids} strategy={rectSortingStrategy}>
           <div className="grid">
             {layout.modules.map((m) => (
@@ -130,6 +162,18 @@ export function Home() {
         <p className="subtitle" style={{ margin: "22px 0 0", textAlign: "center" }}>
           Want more? Tap Edit to add savings, a vault, hardware wallets, ecash and more.
         </p>
+      )}
+      {scanning && (
+        <Scanner
+          hint="Scan an address, invoice or ecash token to send or receive."
+          onClose={() => setScanning(false)}
+          onResult={(r) => {
+            setScanning(false);
+            scanText(r)
+              .then((text) => open({ name: "pay", prefill: text }))
+              .catch(() => notify("error", "That QR code isn't something this wallet can pay or receive."));
+          }}
+        />
       )}
       <style>{"@keyframes spin { to { transform: rotate(360deg); } }"}</style>
     </main>

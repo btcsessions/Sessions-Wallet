@@ -628,3 +628,47 @@ pub async fn set_payjoin_receive(
 ) -> Result<()> {
     state.set_payjoin_receive(&account, enabled).await
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DescriptorPreview {
+    descriptor: String,
+    fingerprint: String,
+    script_type: String,
+    first_address: String,
+}
+
+/// Check an export from a hardware wallet before adding it.
+#[tauri::command]
+pub async fn inspect_descriptor(
+    state: State<'_, AppState>,
+    descriptor: String,
+) -> Result<DescriptorPreview> {
+    let network = state.network().await?;
+    let d = descriptors::import(&descriptor, network)?;
+    Ok(DescriptorPreview {
+        fingerprint: descriptors::fingerprints(&d.external)?
+            .into_iter()
+            .next()
+            .unwrap_or_default(),
+        script_type: descriptors::script_label(&d).into(),
+        first_address: descriptors::address_at(&d, network, 0)?,
+        descriptor: d.external,
+    })
+}
+
+/// Trezor Connect `signTransaction` parameters for an unsigned PSBT.
+#[tauri::command]
+pub async fn trezor_sign_request(
+    state: State<'_, AppState>,
+    psbt: String,
+) -> Result<serde_json::Value> {
+    let network = state.network().await?;
+    rail_onchain::trezor::sign_request(&psbt, network)
+}
+
+/// The PSBT with the Trezor-signed transaction folded back in.
+#[tauri::command]
+pub async fn trezor_merge(psbt: String, signed_tx: String) -> Result<String> {
+    rail_onchain::trezor::merge_signed_tx(&psbt, &signed_tx)
+}

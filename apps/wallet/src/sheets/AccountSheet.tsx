@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
 import { Sheet, useBusy } from "../components/ui";
+import { DeviceIcon, HardwareBadge } from "../hw/devices";
 import { accountColor, accountKind, amountParts, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 
@@ -26,6 +27,14 @@ export function AccountSheet({ id }: { id: string }) {
 
   return (
     <Sheet title={a.name}>
+      {a.custody.type === "hardware" && (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginTop: 4 }}>
+          <div className="hw-hero" style={{ margin: 0, width: 72, height: 72, borderRadius: 20 }}>
+            <DeviceIcon device={a.custody.device} size={44} />
+          </div>
+          <HardwareBadge device={a.custody.device} />
+        </div>
+      )}
       <div className="amount-entry" style={{ paddingTop: 4 }}>
         <div className="big-stat num" style={{ fontSize: 44 }}>
           {value}
@@ -33,7 +42,7 @@ export function AccountSheet({ id }: { id: string }) {
         </div>
         <div className="balance-sub">
           <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: accountColor(a), marginRight: 6 }} />
-          {accountKind(a)}
+          {a.custody.type === "hardware" ? `Fingerprint ${a.custody.fingerprint}` : accountKind(a)}
           {a.balance.pendingIn > 0 && <>, {formatSats(a.balance.pendingIn)} sats on the way</>}
         </div>
       </div>
@@ -69,6 +78,11 @@ export function AccountSheet({ id }: { id: string }) {
       {a.custody.type === "mint" && (
         <p className="notice">
           Held by the mint at {a.custody.url}. Keep amounts small and move larger ones to Spending or a vault.
+        </p>
+      )}
+      {a.custody.type === "hardware" && (
+        <p className="notice">
+          Keys stay on your {a.custody.device}. Sending prepares the transaction here; you check and sign it on the device.
         </p>
       )}
       {a.custody.type === "multisig" && (
