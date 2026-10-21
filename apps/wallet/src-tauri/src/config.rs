@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rail_onchain::DescriptorPair;
+use rail_onchain::{descriptors, DescriptorPair};
 use serde::{Deserialize, Serialize};
 use sessions_core::modules::Layout;
 use sessions_core::{AccountId, Error, Network, Result};
@@ -61,6 +61,59 @@ impl AccountSpec {
             | AccountSpec::Ecash { id, .. } => id,
         }
     }
+
+    pub fn name_mut(&mut self) -> &mut String {
+        match self {
+            AccountSpec::Savings { name, .. }
+            | AccountSpec::Spending { name, .. }
+            | AccountSpec::Multisig { name, .. }
+            | AccountSpec::Hardware { name, .. }
+            | AccountSpec::WatchOnly { name, .. }
+            | AccountSpec::Ecash { name, .. } => name,
+        }
+    }
+
+    /// The on-chain wallet this account shares keys with: `"hot"` for every
+    /// account from the app seed, `"hw:<fingerprint>"` per hardware wallet.
+    pub fn group(&self) -> Option<String> {
+        match self {
+            AccountSpec::Savings { .. } => Some("hot".into()),
+            AccountSpec::Hardware {
+                fingerprint,
+                descriptors: d,
+                ..
+            } => {
+                let fp = if fingerprint.is_empty() {
+                    descriptors::fingerprints(&d.external)
+                        .ok()?
+                        .into_iter()
+                        .next()?
+                } else {
+                    fingerprint.clone()
+                };
+                Some(format!("hw:{}", fp.to_lowercase()))
+            }
+            _ => None,
+        }
+    }
+
+    /// BIP44-style account number within its wallet.
+    pub fn account_index(&self) -> Option<u32> {
+        match self {
+            AccountSpec::Savings { account_index, .. } => Some(*account_index),
+            AccountSpec::Hardware { descriptors: d, .. } => descriptors::account_index(&d.external),
+            _ => None,
+        }
+    }
+}
+
+/// Trimmed account name, 1 to 32 characters.
+pub fn check_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if !(1..=32).contains(&name.chars().count()) {
+        return Err(Error::Invalid("Use a name of 1 to 32 characters".into()));
+    }
+    Ok(name.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +158,44 @@ impl Config {
         id
     }
 
+    /// Refuse an account that's already in the wallet.
+    pub fn check_new(&self, spec: &AccountSpec) -> Result<()> {
+        let dup = || Err(Error::Invalid("That account is already added".into()));
+        if self.accounts.iter().any(|a| a.id() == spec.id()) {
+            return dup();
+        }
+        let watched = |a: &AccountSpec| match a {
+            AccountSpec::Hardware { descriptors, .. }
+            | AccountSpec::WatchOnly { descriptors, .. } => Some(descriptors.clone()),
+            _ => None,
+        };
+        match spec {
+            AccountSpec::Savings { account_index, .. } => {
+                if *account_index >= 0x8000_0000 {
+                    return Err(Error::Invalid("That account number is too large".into()));
+                }
+                if self.accounts.iter().any(|a| {
+                    matches!(a, AccountSpec::Savings { account_index: i, .. } if i == account_index)
+                }) {
+                    return dup();
+                }
+            }
+            AccountSpec::Hardware { .. } | AccountSpec::WatchOnly { .. } => {
+                let new = watched(spec).expect("watched kind");
+                if self
+                    .accounts
+                    .iter()
+                    .filter_map(watched)
+                    .any(|d| descriptors::same_account(&d, &new))
+                {
+                    return dup();
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub fn load(path: &Path) -> Result<Option<Config>> {
         match std::fs::read(path) {
             Ok(bytes) => serde_json::from_slice::<Config>(&bytes)
@@ -144,4 +235,119 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp: PathBuf = path.with_extension("tmp");
     std::fs::write(&tmp, bytes).map_err(|e| Error::Storage(e.to_string()))?;
     std::fs::rename(&tmp, path).map_err(|e| Error::Storage(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const XPUB: &str = "xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V";
+
+    fn pair(origin: &str) -> DescriptorPair {
+        descriptors::import(&format!("[{origin}]{XPUB}"), Network::Bitcoin).unwrap()
+    }
+
+    fn hardware(id: &str, fingerprint: &str, origin: &str) -> AccountSpec {
+        AccountSpec::Hardware {
+            id: id.into(),
+            name: "Trezor".into(),
+            device: "Trezor".into(),
+            fingerprint: fingerprint.into(),
+            descriptors: pair(origin),
+        }
+    }
+
+    fn savings(id: &str, account_index: u32) -> AccountSpec {
+        AccountSpec::Savings {
+            id: id.into(),
+            name: "On-Chain".into(),
+            account_index,
+            payjoin_receive: false,
+        }
+    }
+
+    #[test]
+    fn group_and_index_per_kind() {
+        let s = savings("savings", 4);
+        assert_eq!(
+            (s.group(), s.account_index()),
+            (Some("hot".into()), Some(4))
+        );
+
+        let h = hardware("hw-1", "73C5DA0A", "73c5da0a/84h/0h/3h");
+        assert_eq!(
+            (h.group(), h.account_index()),
+            (Some("hw:73c5da0a".into()), Some(3))
+        );
+        // Fingerprint missing from the spec: read it from the descriptor.
+        let h = hardware("hw-2", "", "73c5da0a/84'/0'/0'");
+        assert_eq!(
+            (h.group(), h.account_index()),
+            (Some("hw:73c5da0a".into()), Some(0))
+        );
+
+        let w = AccountSpec::WatchOnly {
+            id: "watch-1".into(),
+            name: "Watch".into(),
+            descriptors: pair("73c5da0a/84h/0h/0h"),
+        };
+        let m = AccountSpec::Multisig {
+            id: "vault-1".into(),
+            name: "Vault".into(),
+            threshold: 2,
+            total: 3,
+            descriptors: pair("73c5da0a/84h/0h/0h"),
+            local_account: 0,
+        };
+        let sp = AccountSpec::Spending {
+            id: "spending".into(),
+            name: "Spending".into(),
+        };
+        let e = AccountSpec::Ecash {
+            id: "ecash-1".into(),
+            name: "Ecash".into(),
+            mint_url: "https://mint.example".into(),
+        };
+        for a in [w, m, sp, e] {
+            assert_eq!((a.group(), a.account_index()), (None, None));
+        }
+    }
+
+    #[test]
+    fn duplicates_are_refused() {
+        let mut c = Config::new(Network::Bitcoin);
+        c.accounts.push(savings("savings", 0));
+        c.accounts
+            .push(hardware("hw-1", "73c5da0a", "73c5da0a/84h/0h/3h"));
+
+        let msg = |r: Result<()>| r.unwrap_err().to_string();
+        assert!(msg(c.check_new(&savings("savings-9", 0))).contains("already added"));
+        assert!(c.check_new(&savings("savings-9", 1)).is_ok());
+        assert!(c.check_new(&savings("savings-9", 0x8000_0000)).is_err());
+        // Same account written with ' instead of h.
+        assert!(
+            msg(c.check_new(&hardware("hw-2", "73c5da0a", "73c5da0a/84'/0'/3'")))
+                .contains("That account is already added")
+        );
+        // Another account of the same device is fine.
+        assert!(c
+            .check_new(&hardware("hw-2", "73c5da0a", "73c5da0a/84h/0h/4h"))
+            .is_ok());
+        // ...but not as watch-only either.
+        let w = AccountSpec::WatchOnly {
+            id: "watch-1".into(),
+            name: "Watch".into(),
+            descriptors: pair("73c5da0a/84h/0h/3h"),
+        };
+        assert!(c.check_new(&w).is_err());
+    }
+
+    #[test]
+    fn names() {
+        assert_eq!(check_name("  Rainy day ").unwrap(), "Rainy day");
+        assert!(check_name("   ").is_err());
+        assert!(check_name(&"x".repeat(33)).is_err());
+        // Characters, not bytes.
+        assert!(check_name(&"₿".repeat(32)).is_ok());
+    }
 }

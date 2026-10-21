@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { api } from "../api";
-import type { DescriptorPreview } from "../api/types";
+import type { DescriptorPreview, FoundAccount } from "../api/types";
 import { Icon } from "../components/Icon";
 import { ScanButton, type ScanResult } from "../components/Scanner";
 import { SelectRow, Sheet, useBusy } from "../components/ui";
 import { DEVICES, DeviceIcon, type DeviceDef } from "../hw/devices";
-import { isMobile, trezorDescriptor, type TrezorScript } from "../hw/trezor";
-import { errorText } from "../format";
+import { isMobile, trezorDescriptor, trezorDescriptors, type TrezorScript } from "../hw/trezor";
+import { errorText, formatSats } from "../format";
+import { switchMode } from "../state/mode";
 import { useWallet } from "../state/store";
 import { walletHasCard } from "../modules/AccountModule";
 
@@ -31,6 +32,9 @@ export function AddHardwareSheet() {
   const [accountNo, setAccountNo] = useState("0");
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
+  // After adding a Trezor: its other used accounts (null = still looking).
+  const [more, setMore] = useState<{ name: string; found: FoundAccount[] | null } | null>(null);
+  const [adding, setAdding] = useState<number | null>(null);
 
   const inspect = async (text: string) => {
     setError(null);
@@ -65,8 +69,77 @@ export function AddHardwareSheet() {
       if (!walletHasCard([...all, account], layout, account)) await addModule({ id: `hardware:${account.id}`, size: "small" });
       await refresh();
       notify("ok", `Added ${account.name}`);
-      close();
+      if (device.connect === "trezor" && accountNo === "0") void lookForMore(account.name);
+      else close();
     });
+
+  // A Trezor that's been used before may have accounts 2, 3… with coins in them.
+  const lookForMore = async (name: string) => {
+    setMore({ name, found: null });
+    try {
+      const descs = await trezorDescriptors(script, [1, 2, 3, 4, 5]);
+      const found = (await (await api()).scanDescriptors(descs)).filter((f) => f.index > 0);
+      if (!found.length) return close();
+      setMore({ name, found });
+    } catch {
+      close();
+    }
+  };
+
+  const addMore = async (f: FoundAccount) => {
+    if (!device || !more) return;
+    setAdding(f.index);
+    try {
+      if (!useWallet.getState().layout?.advanced) await switchMode(true);
+      const a = await (await api()).addAccount({ kind: "hardware", name: `${more.name} ${f.index + 1}`, descriptor: f.descriptor, device: device.name });
+      await refresh();
+      notify("ok", `Added ${a.name}`);
+      setMore((m) => (m && m.found ? { ...m, found: m.found.filter((x) => x.index !== f.index) } : m));
+    } catch (e) {
+      notify("error", errorText(e));
+    } finally {
+      setAdding(null);
+    }
+  };
+
+  if (more) {
+    return (
+      <Sheet
+        title="Other accounts"
+        left={
+          <button className="text-button" onClick={close}>
+            Done
+          </button>
+        }
+      >
+        {!more.found ? (
+          <p className="empty">Checking your {device?.name} for other accounts with history…</p>
+        ) : more.found.length === 0 ? (
+          <p className="empty">All added.</p>
+        ) : (
+          <>
+            <p className="group-note">This {device?.name} has other accounts that have been used. Add them to keep everything in one card.</p>
+            <div className="group">
+              {more.found.map((f) => (
+                <div className="cell" key={f.index}>
+                  <span className="grow">
+                    <div>Account {f.index + 1}</div>
+                    <div className="row-sub num">
+                      {formatSats(f.balanceSat)} sats · {f.txCount} transaction{f.txCount === 1 ? "" : "s"}
+                    </div>
+                  </span>
+                  <button className="btn small primary" disabled={adding !== null} onClick={() => void addMore(f)}>
+                    {adding === f.index ? "Adding…" : "Add"}
+                  </button>
+                </div>
+              ))}
+            </div>
+            {!advanced && <p className="group-note">Adding a second account turns on Advanced mode.</p>}
+          </>
+        )}
+      </Sheet>
+    );
+  }
 
   const back = (
     <button

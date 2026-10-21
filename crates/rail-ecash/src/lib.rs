@@ -73,7 +73,7 @@ impl std::fmt::Debug for EcashConfig {
 /// A Cashu ecash balance held against a single mint.
 pub struct EcashAccount {
     id: AccountId,
-    name: String,
+    name: std::sync::RwLock<String>,
     wallet: Wallet,
     /// Set when the database file was just created (new device or restore
     /// from the recovery phrase): the next sync scans the mint (NUT-09/13) for
@@ -85,7 +85,10 @@ impl std::fmt::Debug for EcashAccount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EcashAccount")
             .field("id", &self.id)
-            .field("name", &self.name)
+            .field(
+                "name",
+                &*self.name.read().unwrap_or_else(|e| e.into_inner()),
+            )
             .field("mint_url", &self.wallet.mint_url.to_string())
             .finish()
     }
@@ -149,7 +152,7 @@ impl EcashAccount {
 
         Ok(Self {
             id: config.id,
-            name: config.name,
+            name: std::sync::RwLock::new(config.name),
             wallet,
             needs_restore: std::sync::atomic::AtomicBool::new(fresh),
         })
@@ -294,6 +297,11 @@ impl sessions_core::Rail for EcashAccount {
         RailKind::Ecash
     }
 
+    fn set_name(&self, name: &str) -> Result<()> {
+        *self.name.write().unwrap_or_else(|e| e.into_inner()) = name.to_string();
+        Ok(())
+    }
+
     async fn info(&self) -> Result<AccountInfo> {
         let confirmed = self.spendable().await?;
 
@@ -320,7 +328,7 @@ impl sessions_core::Rail for EcashAccount {
 
         Ok(AccountInfo {
             id: self.id.clone(),
-            name: self.name.clone(),
+            name: self.name.read().unwrap_or_else(|e| e.into_inner()).clone(),
             rail: RailKind::Ecash,
             custody: Custody::Mint {
                 url: self.wallet.mint_url.to_string(),
@@ -332,6 +340,8 @@ impl sessions_core::Rail for EcashAccount {
             },
             receives: vec![Method::Bolt11],
             pays: vec![Method::Bolt11],
+            group: None,
+            account_index: None,
         })
     }
 

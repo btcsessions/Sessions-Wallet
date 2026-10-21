@@ -12,6 +12,11 @@ pub trait Rail: Send + Sync {
     /// Current snapshot, including the methods this account can use.
     async fn info(&self) -> Result<AccountInfo>;
 
+    /// Change the display name in the running account. The caller persists it.
+    fn set_name(&self, _name: &str) -> Result<()> {
+        Err(crate::Error::Unsupported("rename this account".into()))
+    }
+
     /// Pull fresh state from the network.
     async fn sync(&self) -> Result<()>;
 

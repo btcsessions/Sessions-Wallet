@@ -665,6 +665,8 @@ mod tests {
                 },
                 receives: self.receives.clone(),
                 pays: self.pays.clone(),
+                group: None,
+                account_index: None,
             })
         }
         async fn sync(&self) -> Result<()> {

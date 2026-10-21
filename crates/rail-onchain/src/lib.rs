@@ -11,6 +11,7 @@
 
 mod bump;
 pub mod descriptors;
+pub mod discovery;
 mod labels;
 pub mod payjoin;
 pub mod privacy;
@@ -76,6 +77,10 @@ pub struct OnchainConfig {
     pub payjoin_receive: bool,
     /// Where payjoin receive sessions are stored.
     pub payjoin_dir: Option<PathBuf>,
+    /// The wallet this account shares keys with (see [`AccountInfo::group`]).
+    pub group: Option<String>,
+    /// Account number within that wallet (see [`AccountInfo::account_index`]).
+    pub account_index: Option<u32>,
 }
 
 struct Inner {
@@ -91,7 +96,9 @@ struct Inner {
 
 pub struct OnchainAccount {
     id: AccountId,
-    name: String,
+    name: std::sync::RwLock<String>,
+    group: Option<String>,
+    account_index: Option<u32>,
     network: Network,
     custody: Custody,
     signer: Option<Xpriv>,
@@ -152,7 +159,9 @@ impl OnchainAccount {
         Ok(Self {
             pj,
             id: cfg.id,
-            name: cfg.name,
+            name: std::sync::RwLock::new(cfg.name),
+            group: cfg.group,
+            account_index: cfg.account_index,
             network: cfg.network,
             custody: cfg.custody,
             signer: cfg.signer,
@@ -407,7 +416,7 @@ impl Rail for OnchainAccount {
             .sum();
         Ok(AccountInfo {
             id: self.id.clone(),
-            name: self.name.clone(),
+            name: self.name.read().unwrap_or_else(|e| e.into_inner()).clone(),
             rail: RailKind::Onchain,
             custody: self.custody.clone(),
             balance: Balance {
@@ -421,7 +430,14 @@ impl Rail for OnchainAccount {
             } else {
                 vec![Method::BitcoinAddress]
             },
+            group: self.group.clone(),
+            account_index: self.account_index,
         })
+    }
+
+    fn set_name(&self, name: &str) -> Result<()> {
+        *self.name.write().unwrap_or_else(|e| e.into_inner()) = name.to_string();
+        Ok(())
     }
 
     async fn sync(&self) -> Result<()> {
@@ -1047,6 +1063,8 @@ mod tests {
             signer: Some(master),
             payjoin_receive: false,
             payjoin_dir: None,
+            group: None,
+            account_index: None,
         })
         .unwrap()
     }
@@ -1231,6 +1249,8 @@ mod tests {
                 signer: Some(signer),
                 payjoin_receive: false,
                 payjoin_dir: None,
+                group: None,
+                account_index: None,
             })
             .unwrap()
         };
@@ -1941,6 +1961,8 @@ mod tests {
             signer: None,
             payjoin_receive: false,
             payjoin_dir: None,
+            group: None,
+            account_index: None,
         })
         .unwrap();
         // The "device" signs whatever PSBT it's shown.

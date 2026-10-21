@@ -105,6 +105,23 @@ export async function trezorDescriptor(script: TrezorScript, testnet = false, ac
   return `${script}([${fp}/${origin}]${r.xpub}/<0;1>/*)`;
 }
 
+/** Descriptors for several account numbers in one Trezor Suite request. */
+export async function trezorDescriptors(script: TrezorScript, accounts: number[]): Promise<string[]> {
+  const tc = await connect();
+  const paths = accounts.map((a) => `m/${PURPOSE[script]}'/0'/${a}'`);
+  const rs = unwrap(
+    await tc.getPublicKey({
+      bundle: paths.map((path) => ({ path, coin: "btc", scriptType: script === "tr" ? "SPENDTAPROOT" : "SPENDWITNESS" })),
+    }),
+  ) as unknown as Array<{ descriptor?: string; xpub: string; rootFingerprint?: number }>;
+  return rs.map((r, i) => {
+    if (r.descriptor) return r.descriptor;
+    if (r.rootFingerprint === undefined) throw new Error("Trezor Suite didn't return the wallet fingerprint. Update Trezor Suite and try again.");
+    const fp = (r.rootFingerprint >>> 0).toString(16).padStart(8, "0");
+    return `${script}([${fp}/${paths[i].slice(2).replace(/'/g, "h")}]${r.xpub}/<0;1>/*)`;
+  });
+}
+
 /** Sign an unsigned PSBT on the Trezor. Returns the PSBT with the signed inputs. */
 export async function trezorSign(psbt: string): Promise<string> {
   const a = await api();

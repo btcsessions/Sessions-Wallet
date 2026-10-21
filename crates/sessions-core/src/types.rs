@@ -100,6 +100,14 @@ pub struct AccountInfo {
     pub receives: Vec<Method>,
     /// Methods this account can pay out to.
     pub pays: Vec<Method>,
+    /// The on-chain wallet this account belongs to, when several accounts
+    /// share one set of keys: `"hot"` for accounts from the app's recovery
+    /// phrase, `"hw:<fingerprint>"` for one hardware wallet. `None` otherwise.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// BIP44-style account number within its wallet (`m/84'/0'/3'` → 3).
+    #[serde(default)]
+    pub account_index: Option<u32>,
 }
 
 /// A way of moving sats. The planner matches these up between accounts.

@@ -349,6 +349,43 @@ pub fn fingerprints(descriptor: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Account number of a single-sig descriptor, from its key origin: the third
+/// level of a BIP44/49/84/86 path (`[fp/84h/0h/3h]` → 3, `'` or `h`).
+/// `None` for multisig paths, missing origins or anything non-standard.
+pub fn account_index(descriptor: &str) -> Option<u32> {
+    let start = descriptor.find('[')?;
+    let origin = &descriptor[start + 1..];
+    let origin = &origin[..origin.find(']')?];
+    let mut levels = origin.split('/').skip(1).map(|l| {
+        l.trim_end_matches(['\'', 'h', 'H'])
+            .parse::<u32>()
+            .ok()
+            .filter(|n| *n < 0x8000_0000)
+    });
+    let purpose = levels.next()??;
+    if ![44, 49, 84, 86].contains(&purpose) {
+        return None;
+    }
+    let _coin = levels.next()??;
+    levels.next()?
+}
+
+/// Whether two descriptor pairs watch the same coins, ignoring how they're
+/// written (`h` or `'`, checksums, spacing).
+pub fn same_account(a: &DescriptorPair, b: &DescriptorPair) -> bool {
+    let canon = |d: &str| {
+        Descriptor::<DescriptorPublicKey>::from_str(d)
+            .map(|d| d.to_string())
+            .unwrap_or_else(|_| d.to_string())
+    };
+    canon(&a.external) == canon(&b.external) && canon(&a.internal) == canon(&b.internal)
+}
+
+/// One line for the pair, `<0;1>` multipath, that [`import`] reads back.
+pub fn multipath(pair: &DescriptorPair) -> String {
+    pair.external.replacen("/0/*", "/<0;1>/*", usize::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +464,57 @@ mod tests {
             .starts_with("tr("));
         let ms = key_expression(&master(), "m/48'/0'/0'/2'").unwrap();
         assert!(import(&ms, Network::Bitcoin).is_err());
+    }
+
+    #[test]
+    fn account_index_from_origin_path() {
+        let x = "xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V";
+        assert_eq!(
+            account_index(&format!("wpkh([73c5da0a/84h/0h/3h]{x}/0/*)")),
+            Some(3)
+        );
+        assert_eq!(
+            account_index(&format!("wpkh([73c5da0a/84'/0'/0']{x}/0/*)")),
+            Some(0)
+        );
+        assert_eq!(
+            account_index(&format!("tr([73c5da0a/86H/1H/12H]{x}/0/*)")),
+            Some(12)
+        );
+        assert_eq!(
+            account_index(&format!("sh(wpkh([73c5da0a/49'/0'/7']{x}/<0;1>/*))")),
+            Some(7)
+        );
+        assert_eq!(account_index(&format!("[73c5da0a/44h/0h/2h]{x}")), Some(2));
+        // Multisig, too short, no origin, garbage.
+        assert_eq!(
+            account_index(&format!(
+                "wsh(sortedmulti(2,[73c5da0a/48h/0h/0h/2h]{x}/0/*))"
+            )),
+            None
+        );
+        assert_eq!(
+            account_index(&format!("wpkh([73c5da0a/84h/0h]{x}/0/*)")),
+            None
+        );
+        assert_eq!(account_index(&format!("wpkh({x}/0/*)")), None);
+        assert_eq!(account_index("wpkh([73c5da0a/84h/0h/xh]"), None);
+        // Real derivation agrees.
+        let pair = hot_single_sig(&master(), Network::Bitcoin, 5).unwrap();
+        assert_eq!(account_index(&pair.external), Some(5));
+    }
+
+    #[test]
+    fn same_account_ignores_notation() {
+        let pair = hot_single_sig(&master(), Network::Bitcoin, 0).unwrap();
+        let h = DescriptorPair {
+            external: pair.external.replace('\'', "h"),
+            internal: pair.internal.replace('\'', "h"),
+        };
+        assert!(same_account(&pair, &h));
+        assert_eq!(import(&multipath(&h), Network::Bitcoin).unwrap(), h);
+        let other = hot_single_sig(&master(), Network::Bitcoin, 1).unwrap();
+        assert!(!same_account(&pair, &other));
     }
 
     #[test]

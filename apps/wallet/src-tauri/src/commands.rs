@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use rail_onchain::descriptors;
+use rail_onchain::{descriptors, discovery};
 use serde::{Deserialize, Serialize};
 use sessions_core::keystore::Seed;
 use sessions_core::modules::Layout;
@@ -16,7 +16,7 @@ use sessions_core::{
 };
 use tauri::State;
 
-use crate::config::AccountSpec;
+use crate::config::{check_name, AccountSpec};
 use crate::state::AppState;
 
 async fn wallet(state: &AppState) -> Result<Arc<Wallet>> {
@@ -107,6 +107,18 @@ pub struct NewAccount {
     descriptor: Option<String>,
     device: Option<String>,
     mint_url: Option<String>,
+    /// Hot on-chain only: add this exact BIP84 account number (e.g. one
+    /// found by `discover_hot_accounts`) instead of the next free one.
+    account_index: Option<u32>,
+}
+
+/// The name the user typed, or `default` when they left it blank.
+fn name_or(name: &str, default: impl Into<String>) -> Result<String> {
+    if name.trim().is_empty() {
+        Ok(default.into())
+    } else {
+        check_name(name)
+    }
 }
 
 #[tauri::command]
@@ -115,7 +127,7 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
         let mut guard = state.inner.lock().await;
         let u = guard.as_mut().ok_or(Error::Locked)?;
         let network = u.config.network;
-        let name = spec.name.trim().to_string();
+        let name = spec.name.as_str();
         match spec.kind.as_str() {
             "multisig" => {
                 let local_account = u.config.next_multisig_account;
@@ -136,7 +148,7 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                 u.config.next_multisig_account += 1;
                 AccountSpec::Multisig {
                     id: u.config.fresh_id("vault"),
-                    name,
+                    name: name_or(name, "Vault")?,
                     threshold,
                     total: keys.len() as u8,
                     descriptors,
@@ -150,17 +162,18 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                     .next()
                     .unwrap_or_default();
                 if spec.kind == "hardware" {
+                    let device = spec.device.unwrap_or_else(|| "Hardware wallet".into());
                     AccountSpec::Hardware {
                         id: u.config.fresh_id("hw"),
-                        name,
-                        device: spec.device.unwrap_or_else(|| "Hardware wallet".into()),
+                        name: name_or(name, device.as_str())?,
+                        device,
                         fingerprint,
                         descriptors: d,
                     }
                 } else {
                     AccountSpec::WatchOnly {
                         id: u.config.fresh_id("watch"),
-                        name,
+                        name: name_or(name, "Watch-only")?,
                         descriptors: d,
                     }
                 }
@@ -176,7 +189,13 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                         _ => None,
                     })
                     .collect();
-                let account_index = (0..).find(|i| !used.contains(i)).unwrap_or(0);
+                let account_index = match spec.account_index {
+                    Some(i) if used.contains(&i) => {
+                        return Err(Error::Invalid("That account is already added".into()))
+                    }
+                    Some(i) => i,
+                    None => (0..).find(|i| !used.contains(i)).unwrap_or(0),
+                };
                 let id = if account_index == 0
                     && !u.config.accounts.iter().any(|a| a.id().0 == "savings")
                 {
@@ -186,7 +205,14 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                 };
                 AccountSpec::Savings {
                     id,
-                    name,
+                    name: name_or(
+                        name,
+                        if account_index == 0 {
+                            "On-Chain".to_string()
+                        } else {
+                            format!("On-Chain #{account_index}")
+                        },
+                    )?,
                     account_index,
                     payjoin_receive: false,
                 }
@@ -200,7 +226,7 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                 }
                 AccountSpec::Ecash {
                     id: u.config.fresh_id("ecash"),
-                    name,
+                    name: name_or(name, "Ecash")?,
                     mint_url,
                 }
             }
@@ -209,6 +235,136 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
     };
     let id = state.add_account(spec).await?;
     wallet(&state).await?.account(&id).await?.info().await
+}
+
+/// Rename any account (1 to 32 characters).
+#[tauri::command]
+pub async fn rename_account(
+    state: State<'_, AppState>,
+    id: AccountId,
+    name: String,
+) -> Result<AccountInfo> {
+    state.rename_account(&id, &name).await?;
+    wallet(&state).await?.account(&id).await?.info().await
+}
+
+/// An on-chain account with history, found by a scan.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundAccount {
+    /// Account number (BIP44 account level).
+    index: u32,
+    balance_sat: Sats,
+    tx_count: usize,
+    /// `<0;1>` descriptor; for hardware, pass it back to `add_account`.
+    descriptor: String,
+}
+
+/// Highest hot account number discovery looks at, plus one.
+const DISCOVER_MAX: u32 = 20;
+const DISCOVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+async fn esplora_url(state: &AppState) -> Result<String> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    Ok(u.config
+        .esplora_url
+        .clone()
+        .unwrap_or_else(|| rail_onchain::default_esplora(u.config.network).to_string()))
+}
+
+/// Hot on-chain accounts (BIP84, numbers 0 to 19) this recovery phrase used
+/// before and that aren't added yet. Nothing is saved; add the ones you want
+/// with `add_account { kind: "savings", accountIndex }`.
+#[tauri::command]
+pub async fn discover_hot_accounts(state: State<'_, AppState>) -> Result<Vec<FoundAccount>> {
+    let url = esplora_url(&state).await?;
+    let (master, network, known) = {
+        let guard = state.inner.lock().await;
+        let u = guard.as_ref().ok_or(Error::Locked)?;
+        let known: std::collections::BTreeSet<u32> = u
+            .config
+            .accounts
+            .iter()
+            .filter_map(|a| match a {
+                AccountSpec::Savings { account_index, .. } => Some(*account_index),
+                _ => None,
+            })
+            .collect();
+        let network = u.config.network;
+        (u.seed.master_xpriv(network)?, network, known)
+    };
+    let pair = |i: u32| descriptors::hot_single_sig(&master, network, i);
+    let found = discovery::discover(
+        &known,
+        DISCOVER_MAX,
+        discovery::ACCOUNT_GAP,
+        discovery::CONCURRENCY,
+        tokio::time::Instant::now() + DISCOVER_TIMEOUT,
+        |i| {
+            // Only the public descriptors go to the scan task.
+            let pair = pair(i);
+            let url = url.clone();
+            async move { discovery::scan(&url, network, &pair?).await }
+        },
+    )
+    .await?;
+    found
+        .into_iter()
+        .map(|(index, a)| {
+            Ok(FoundAccount {
+                index,
+                balance_sat: a.balance_sat,
+                tx_count: a.tx_count,
+                descriptor: descriptors::multipath(&pair(index)?),
+            })
+        })
+        .collect()
+}
+
+/// Which of these descriptors (e.g. accounts 1..n exported from a hardware
+/// wallet) have any history. `index` is the account number from each key's
+/// origin path (0 when it has none).
+#[tauri::command]
+pub async fn scan_descriptors(
+    state: State<'_, AppState>,
+    descriptors: Vec<String>,
+) -> Result<Vec<FoundAccount>> {
+    if descriptors.len() > 50 {
+        return Err(Error::Invalid("Scan at most 50 accounts at a time".into()));
+    }
+    let network = state.network().await?;
+    let url = esplora_url(&state).await?;
+    let pairs = descriptors
+        .iter()
+        .map(|d| descriptors::import(d, network))
+        .collect::<Result<Vec<_>>>()?;
+    let pairs = Arc::new(pairs);
+    let found = {
+        let pairs = pairs.clone();
+        discovery::scan_each(
+            pairs.len() as u32,
+            discovery::CONCURRENCY,
+            tokio::time::Instant::now() + DISCOVER_TIMEOUT,
+            move |i| {
+                let (pairs, url) = (pairs.clone(), url.clone());
+                async move { discovery::scan(&url, network, &pairs[i as usize]).await }
+            },
+        )
+        .await?
+    };
+    Ok(found
+        .into_iter()
+        .map(|(i, a)| {
+            let pair = &pairs[i as usize];
+            FoundAccount {
+                index: descriptors::account_index(&pair.external).unwrap_or(0),
+                balance_sat: a.balance_sat,
+                tx_count: a.tx_count,
+                descriptor: descriptors::multipath(pair),
+            }
+        })
+        .collect())
 }
 
 #[tauri::command]

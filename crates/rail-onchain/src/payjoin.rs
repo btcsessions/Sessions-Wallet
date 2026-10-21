@@ -1389,6 +1389,8 @@ mod tests {
             signer: Some(master),
             payjoin_receive: receive,
             payjoin_dir: Some(dir.join(format!("{name}-payjoin"))),
+            group: None,
+            account_index: None,
         })
         .unwrap()
     }

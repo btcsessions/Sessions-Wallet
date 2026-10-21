@@ -11,7 +11,7 @@ use sessions_core::keystore::{child, KdfParams, Seed, Vault};
 use sessions_core::{AccountId, Custody, Error, Network, Result, Wallet};
 use tokio::sync::Mutex;
 
-use crate::config::{write_atomic, AccountSpec, Config};
+use crate::config::{check_name, write_atomic, AccountSpec, Config};
 
 /// Mainnet. Change only for development builds.
 pub const NETWORK: Network = Network::Bitcoin;
@@ -233,6 +233,7 @@ impl AppState {
         master: &rail_onchain::Xpriv,
         cfg: &Config,
     ) -> Result<Opened> {
+        let (group, account_index) = (spec.group(), spec.account_index());
         let onchain = |id: &AccountId,
                        name: &str,
                        descriptors,
@@ -252,6 +253,8 @@ impl AppState {
                     signer,
                     payjoin_receive,
                     payjoin_dir: Some(self.paths.root.join("payjoin").join(&id.0)),
+                    group: group.clone(),
+                    account_index,
                 },
             )?)))
         };
@@ -357,6 +360,7 @@ impl AppState {
     pub async fn add_account(&self, spec: AccountSpec) -> Result<AccountId> {
         let mut guard = self.inner.lock().await;
         let u = guard.as_mut().ok_or(Error::Locked)?;
+        u.config.check_new(&spec)?;
         let master = u.seed.master_xpriv(u.config.network)?;
         let opened = self
             .open_account(&spec, &u.seed, &master, &u.config)
@@ -379,6 +383,25 @@ impl AppState {
         u.config.accounts.push(spec);
         u.config.save(&self.paths.config())?;
         Ok(id)
+    }
+
+    /// Rename an account, in the config and in the running wallet.
+    pub async fn rename_account(&self, id: &AccountId, name: &str) -> Result<()> {
+        let name = check_name(name)?;
+        let mut guard = self.inner.lock().await;
+        let u = guard.as_mut().ok_or(Error::Locked)?;
+        let spec = u
+            .config
+            .accounts
+            .iter_mut()
+            .find(|a| a.id() == id)
+            .ok_or_else(|| Error::AccountNotFound(id.0.clone()))?;
+        // An account that failed to open only has its config entry.
+        if let Ok(live) = u.wallet.account(id).await {
+            live.set_name(&name)?;
+        }
+        *spec.name_mut() = name;
+        u.config.save(&self.paths.config())
     }
 
     /// Turn payjoin receiving on or off for a hot on-chain account.
@@ -526,5 +549,68 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.request, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+    }
+
+    #[tokio::test]
+    async fn accounts_in_one_wallet_rename_and_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(dir.path().to_path_buf(), None);
+        state
+            .create(Seed::from_phrase(ABANDON).unwrap(), "123456")
+            .await
+            .unwrap();
+        let savings = |id: &str, account_index| AccountSpec::Savings {
+            id: id.into(),
+            name: "On-Chain".into(),
+            account_index,
+            payjoin_receive: false,
+        };
+        let a = state.add_account(savings("savings", 0)).await.unwrap();
+        let b = state.add_account(savings("savings-7", 3)).await.unwrap();
+        // Same account number twice is refused.
+        let e = state
+            .add_account(savings("savings-8", 3))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("already added"));
+
+        let info = |id: AccountId| {
+            let state = &state;
+            async move {
+                let w = state.inner.lock().await.as_ref().unwrap().wallet.clone();
+                w.account(&id).await.unwrap().info().await.unwrap()
+            }
+        };
+        let (ia, ib) = (info(a.clone()).await, info(b.clone()).await);
+        assert_eq!(
+            (ia.group.as_deref(), ia.account_index),
+            (Some("hot"), Some(0))
+        );
+        assert_eq!(
+            (ib.group.as_deref(), ib.account_index),
+            (Some("hot"), Some(3))
+        );
+        let json = serde_json::to_value(&ib).unwrap();
+        assert_eq!(json["group"], "hot");
+        assert_eq!(json["accountIndex"], 3);
+
+        // Rename: live account and config on disk.
+        state.rename_account(&b, "  Rainy day  ").await.unwrap();
+        assert_eq!(info(b.clone()).await.name, "Rainy day");
+        let cfg = Config::load(&state.paths.config()).unwrap().unwrap();
+        assert!(cfg
+            .accounts
+            .iter()
+            .any(|s| matches!(s, AccountSpec::Savings { id, name, .. } if *id == b && name == "Rainy day")));
+        assert!(state.rename_account(&b, "   ").await.is_err());
+        assert!(state.rename_account(&"nope".into(), "X").await.is_err());
+
+        // Survives a lock/unlock.
+        state.lock().await;
+        state
+            .unlock_with(Seed::from_phrase(ABANDON).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(info(b).await.name, "Rainy day");
     }
 }

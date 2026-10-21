@@ -280,6 +280,8 @@ mod tests {
             },
             receives: receives.to_vec(),
             pays: pays.to_vec(),
+            group: None,
+            account_index: None,
         }
     }
 

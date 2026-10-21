@@ -86,7 +86,7 @@ struct PendingQuote {
 
 pub struct SparkAccount {
     id: AccountId,
-    name: String,
+    name: std::sync::RwLock<String>,
     network: breez_sdk_spark::Network,
     sdk: BreezSdk,
     quotes: Mutex<HashMap<String, PendingQuote>>,
@@ -145,7 +145,7 @@ impl SparkAccount {
         tracing::info!(account = %config.id, ?network, "spark account connected");
         Ok(Self {
             id: config.id,
-            name: config.name,
+            name: std::sync::RwLock::new(config.name),
             network,
             sdk,
             quotes: Mutex::new(HashMap::new()),
@@ -311,6 +311,11 @@ impl Rail for SparkAccount {
         RailKind::Spark
     }
 
+    fn set_name(&self, name: &str) -> Result<()> {
+        *self.name.write().unwrap_or_else(|e| e.into_inner()) = name.to_string();
+        Ok(())
+    }
+
     async fn info(&self) -> Result<AccountInfo> {
         let confirmed = self.balance_sat(false).await?;
 
@@ -351,7 +356,7 @@ impl Rail for SparkAccount {
 
         Ok(AccountInfo {
             id: self.id.clone(),
-            name: self.name.clone(),
+            name: self.name.read().unwrap_or_else(|e| e.into_inner()).clone(),
             rail: RailKind::Spark,
             custody: Custody::Hot,
             balance: Balance {
@@ -361,6 +366,8 @@ impl Rail for SparkAccount {
             },
             receives: RECEIVES.to_vec(),
             pays: PAYS.to_vec(),
+            group: None,
+            account_index: None,
         })
     }
 
