@@ -907,6 +907,127 @@ mod tests {
         }
     }
 
+    /// The app's line-up since Boltz paused (Aug 2026): the Spending forwarder
+    /// (Lightning → on-chain) first, then Boltz advertising Liquid → Lightning only.
+    #[tokio::test]
+    async fn lightning_into_onchain_uses_the_spending_forwarder() {
+        struct Named(&'static str, Vec<(Method, Method)>);
+        #[async_trait]
+        impl SwapProvider for Named {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn pay_bridges(&self) -> Vec<(Method, Method)> {
+                vec![]
+            }
+            fn receive_bridges(&self) -> Vec<(Method, Method)> {
+                self.1.clone()
+            }
+            async fn bridge_payment(
+                &self,
+                _: PaymentRequest,
+                _: Sats,
+                _: Method,
+                _: Option<String>,
+            ) -> Result<BridgedPayment> {
+                Err(Error::Unsupported("pay".into()))
+            }
+            async fn bridge_receive(
+                &self,
+                ours: ReceiveTarget,
+                outside: Method,
+            ) -> Result<ReceiveTarget> {
+                Ok(ReceiveTarget {
+                    method: outside,
+                    request: format!("{}:{:?}:{}", self.0, ours.method, ours.request),
+                    ..ours
+                })
+            }
+            async fn receive_quote(
+                &self,
+                _: Method,
+                _: Method,
+                _: Option<Sats>,
+            ) -> Result<Option<ReceiveQuote>> {
+                Ok(Some(ReceiveQuote {
+                    provider: self.0.into(),
+                    min_sat: 0,
+                    max_sat: 0,
+                    fee_percent: 0.0,
+                    network_fee_sat: 0,
+                    total_fee_sat: None,
+                    receive_sat: None,
+                }))
+            }
+            async fn tick(&self) -> Result<Vec<SwapStatus>> {
+                Ok(vec![])
+            }
+        }
+        use Method::*;
+        let w = Wallet::new();
+        w.add_account(MockRail::new(
+            "savings",
+            RailKind::Onchain,
+            0,
+            &[BitcoinAddress],
+            &[BitcoinAddress],
+            0,
+        ))
+        .await;
+        w.add_account(MockRail::new(
+            "spending",
+            RailKind::Spark,
+            0,
+            &[SparkAddress, Bolt11, BitcoinAddress],
+            &[Bolt11],
+            0,
+        ))
+        .await;
+        w.add_swap_provider(Arc::new(Named("Spending", vec![(Bolt11, BitcoinAddress)])))
+            .await;
+        w.add_swap_provider(Arc::new(Named("boltz", vec![(LiquidAddress, Bolt11)])))
+            .await;
+
+        let t = w
+            .receive(&"savings".into(), Bolt11, Some(50_000), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            t.request,
+            "Spending:BitcoinAddress:bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+        );
+        assert_eq!(t.amount_sat, Some(50_000));
+        let q = w
+            .receive_quote(&"savings".into(), Bolt11, Some(50_000))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(q.provider, "Spending");
+
+        // Spending still takes Liquid through Boltz, and Lightning natively.
+        let t = w
+            .receive(&"spending".into(), LiquidAddress, Some(5_000), None)
+            .await
+            .unwrap();
+        assert!(
+            t.request.starts_with("boltz:Bolt11:lnbc1spending"),
+            "{}",
+            t.request
+        );
+        assert_eq!(
+            w.receive_quote(&"spending".into(), Bolt11, None)
+                .await
+                .unwrap(),
+            None
+        );
+        // With Boltz paused there is no Liquid route into an on-chain account.
+        assert!(matches!(
+            w.receive(&"savings".into(), LiquidAddress, Some(50_000), None)
+                .await,
+            Err(Error::Unsupported(_))
+        ));
+    }
+
     #[tokio::test]
     async fn auto_payer_skips_accounts_that_cannot_afford_it() {
         let (w, _, _) = wallet().await;

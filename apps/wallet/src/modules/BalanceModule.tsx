@@ -1,16 +1,16 @@
 import { useWallet } from "../state/store";
 import { accountColor, amountParts, formatFiat, formatSats } from "../format";
 import type { ModuleProps } from "./catalog";
-import { resolveAccount } from "./AccountModule";
+import { activeAccounts } from "./AccountModule";
 
 export function BalanceModule({ module }: ModuleProps) {
   const { accounts: all, unit, price, currency, cycleUnit, open, layout } = useWallet();
-  // Only accounts in use: holding funds, on the home screen, or Spending.
-  const onHome = new Set((layout?.modules ?? []).map((m) => resolveAccount(all, m.id)?.id).filter(Boolean));
-  const accounts = all.filter((a) => a.rail === "spark" || onHome.has(a.id) || a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut > 0);
+  const accounts = activeAccounts(all, layout);
   const total = accounts.reduce((s, a) => s + a.balance.confirmed, 0);
   const incoming = accounts.reduce((s, a) => s + a.balance.pendingIn, 0);
   const { value, suffix } = amountParts(total, unit, price, currency);
+  // Shrink long amounts (BTC, big fiat) so they stay on one line.
+  const fit = Math.min(1, 11.4 / (value.length + suffix.length * 0.6));
   const large = module.size === "large";
   const funded = accounts.filter((a) => a.balance.confirmed + a.balance.pendingIn > 0);
 
@@ -19,6 +19,7 @@ export function BalanceModule({ module }: ModuleProps) {
       <div className="tile-title">Total balance</div>
       <button
         className="balance-amount num"
+        style={{ ["--fit" as string]: fit }}
         onClick={cycleUnit}
         aria-label={`Total balance ${value} ${suffix}. Tap to change unit.`}
       >

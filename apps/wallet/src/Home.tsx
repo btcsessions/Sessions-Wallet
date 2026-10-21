@@ -135,7 +135,7 @@ export function Home() {
           </button>
         </div>
       </div>
-      <h1 className="large-title">Wallet</h1>
+      <h1 className="large-title">Sessions Wallet</h1>
       {unavailable.map((u) => (
         <p className="notice" key={u.id} role="status">
           <strong>{accounts.find((a) => a.id === u.id)?.name ?? (u.id === "spending" ? "Spending" : u.id)} is unavailable.</strong> {u.reason}, then lock and unlock to try again.

@@ -1,6 +1,6 @@
 import { ActivityRow } from "../modules/ActivityModule";
 import { LightningAddressCard } from "./LightningAddressCard";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
 import { CopyButton, Sheet, useBusy } from "../components/ui";
@@ -87,13 +87,13 @@ export function AccountSheet({ id }: { id: string }) {
         </p>
       )}
 
-      <WalletDetails id={a.id} />
-
-      {a.id !== "spending" && a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut === 0 && (
-        <button className="btn block" style={{ color: "var(--red)", marginBottom: 22 }} disabled={busy} onClick={remove}>
-          Remove {a.name}
-        </button>
-      )}
+      <WalletDetails id={a.id}>
+        {a.id !== "spending" && a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut === 0 && (
+          <button className="btn block" style={{ color: "var(--red)", marginBottom: 22 }} disabled={busy} onClick={remove}>
+            Remove {a.name}
+          </button>
+        )}
+      </WalletDetails>
 
       <p className="group-label">Activity</p>
       {items.length ? (
@@ -151,7 +151,7 @@ function PayjoinSwitch({ account }: { account: string }) {
 }
 
 /** Technical details, one tap away so they don't crowd the account. */
-function WalletDetails({ id }: { id: string }) {
+function WalletDetails({ id, children }: { id: string; children?: ReactNode }) {
   const [rows, setRows] = useState<DetailRow[] | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -189,6 +189,7 @@ function WalletDetails({ id }: { id: string }) {
           ))}
         </div>
       )}
+      {open && children}
     </>
   );
 }

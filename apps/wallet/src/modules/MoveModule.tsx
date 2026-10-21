@@ -3,9 +3,11 @@ import { Icon } from "../components/Icon";
 import { AccountPicker } from "../components/Dropdown";
 import { useWallet } from "../state/store";
 import type { ModuleProps } from "./catalog";
+import { activeAccounts } from "./AccountModule";
 
 export function MoveModule({ module }: ModuleProps) {
-  const { accounts, open } = useWallet();
+  const { accounts: all, layout, open } = useWallet();
+  const accounts = activeAccounts(all, layout);
   const sources = accounts.filter((a) => a.pays.length > 0);
   const targets = accounts.filter((a) => a.custody.type !== "watchOnly");
   const [from, setFrom] = useState<string | undefined>();

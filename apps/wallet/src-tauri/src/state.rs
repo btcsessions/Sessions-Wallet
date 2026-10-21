@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use rail_ecash::{EcashAccount, EcashConfig};
 use rail_liquid::{BoltzConfig, BoltzSwaps};
 use rail_onchain::{descriptors, OnchainAccount, OnchainConfig};
-use rail_spark::{SparkAccount, SparkConfig};
+use rail_spark::{SparkAccount, SparkConfig, SparkForwarder};
 use sessions_core::keystore::{child, KdfParams, Seed, Vault};
 use sessions_core::{AccountId, Custody, Error, Network, Result, Wallet};
 use tokio::sync::Mutex;
@@ -42,6 +42,10 @@ impl Paths {
     fn swaps(&self) -> PathBuf {
         self.root.join("swaps")
     }
+    /// Journal of Lightning → on-chain forwards through a Spending account.
+    fn forwards(&self, id: &AccountId) -> PathBuf {
+        self.root.join("forwards").join(format!("{id}.json"))
+    }
 }
 
 pub struct Unlocked {
@@ -50,6 +54,9 @@ pub struct Unlocked {
     pub config: Config,
     pub onchain: HashMap<AccountId, Arc<OnchainAccount>>,
     pub spark: HashMap<AccountId, Arc<SparkAccount>>,
+    /// The Spending account that forwards Lightning payments to on-chain
+    /// accounts, once one is open.
+    pub forwarder: Option<AccountId>,
     /// Accounts that failed to open (e.g. offline at startup), with the reason.
     pub unavailable: Vec<(AccountId, String)>,
 }
@@ -149,6 +156,7 @@ impl AppState {
         let wallet = Arc::new(Wallet::new());
         let mut onchain = HashMap::new();
         let mut spark = HashMap::new();
+        let mut forwarder = None;
         let mut unavailable = Vec::new();
 
         let master = seed.master_xpriv(config.network)?;
@@ -161,6 +169,9 @@ impl AppState {
                 Ok(Opened::Other(r)) => wallet.add_account(r).await,
                 Ok(Opened::Spark(a)) => {
                     spark.insert(spec.id().clone(), a.clone());
+                    if forwarder.is_none() {
+                        forwarder = self.add_forwarder(&wallet, spec.id(), &a).await;
+                    }
                     wallet.add_account(a).await;
                 }
                 Err(e) => {
@@ -170,6 +181,8 @@ impl AppState {
             }
         }
 
+        // Registered after the Spending forwarder: Boltz now only bridges
+        // Liquid (its Lightning → on-chain bridge is withdrawn while paused).
         match BoltzSwaps::new(BoltzConfig {
             network: config.network,
             data_dir: self.paths.swaps(),
@@ -187,9 +200,30 @@ impl AppState {
             config,
             onchain,
             spark,
+            forwarder,
             unavailable,
         });
         Ok(())
+    }
+
+    /// Let on-chain accounts receive over Lightning through this Spending
+    /// account. Returns the account id when registered.
+    async fn add_forwarder(
+        &self,
+        wallet: &Wallet,
+        id: &AccountId,
+        account: &Arc<SparkAccount>,
+    ) -> Option<AccountId> {
+        match SparkForwarder::new(account.clone(), self.paths.forwards(id)) {
+            Ok(f) => {
+                wallet.add_swap_provider(Arc::new(f)).await;
+                Some(id.clone())
+            }
+            Err(e) => {
+                tracing::warn!(account = %id, "Lightning → on-chain forwarding unavailable: {e}");
+                None
+            }
+        }
     }
 
     async fn open_account(
@@ -336,6 +370,9 @@ impl AppState {
             Opened::Other(r) => u.wallet.add_account(r).await,
             Opened::Spark(a) => {
                 u.spark.insert(id.clone(), a.clone());
+                if u.forwarder.is_none() {
+                    u.forwarder = self.add_forwarder(&u.wallet, &id, &a).await;
+                }
                 u.wallet.add_account(a).await;
             }
         }

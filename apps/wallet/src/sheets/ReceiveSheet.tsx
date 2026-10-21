@@ -7,6 +7,7 @@ import { AmountInput, CopyButton, QR, Sheet } from "../components/ui";
 import { ScanButton, scanText } from "../components/Scanner";
 import { METHOD_LABEL, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
+import { activeAccounts } from "../modules/AccountModule";
 
 /**
  * Methods to offer for an account, best first. Spark addresses only work
@@ -14,12 +15,16 @@ import { useWallet } from "../state/store";
  * take natively comes through a swap: Liquid into Lightning accounts, and
  * Lightning or Liquid straight into on-chain accounts (hardware included).
  */
-function methodsFor(a: AccountInfo): Method[] {
+function methodsFor(a: AccountInfo, hasSpending: boolean): Method[] {
   const out = (["bolt11", "bitcoinAddress"] as Method[]).filter((m) => a.receives.includes(m));
-  if (a.receives.includes("bolt11")) out.push("liquidAddress");
-  else if (a.rail === "onchain") out.push("bolt11", "liquidAddress");
+  if (LIQUID_SWAPS && a.receives.includes("bolt11")) out.push("liquidAddress");
+  // Lightning into on-chain arrives in Spending and is sent on automatically.
+  if (a.rail === "onchain" && hasSpending) out.push("bolt11");
   return out;
 }
+
+/** Boltz, which did the Liquid swaps, suspended its service in August 2026. */
+export const LIQUID_SWAPS = false;
 
 /** Received through a swap into this account (so: limits and fees apply). */
 const viaSwap = (a: AccountInfo | undefined, m: Method) => !!a && !a.receives.includes(m) && m !== "lightningAddress";
@@ -44,20 +49,21 @@ const EXPLAIN: Partial<Record<Method, string>> = {
 };
 
 export function ReceiveSheet({ account: initial }: { account?: string }) {
-  const { accounts, activity, open, notify } = useWallet();
+  const { accounts, activity, open, notify, layout } = useWallet();
   const [openedAt] = useState(() => Math.floor(Date.now() / 1000) - 5);
   const [lnAddress, setLnAddress] = useState<LightningAddress | null>(null);
   const [preferId, preferMethod] = (initial ?? "").split("#");
-  const receivable = accounts.filter((a) => a.receives.length > 0);
+  const receivable = activeAccounts(accounts, layout).filter((a) => a.receives.length > 0 || a.id === preferId);
+  const hasSpending = accounts.some((a) => a.rail === "spark");
   // Default to Spending: everything can arrive there, including on-chain.
   const [accountId, setAccountId] = useState(preferId || receivable.find((a) => a.rail === "spark")?.id || receivable[0]?.id || "");
   const account = accounts.find((a) => a.id === accountId);
   const isSpark = account?.rail === "spark";
   const methods = useMemo(() => {
-    const m = account ? methodsFor(account) : [];
+    const m = account ? methodsFor(account, hasSpending) : [];
     return lnAddress && isSpark ? (["lightningAddress", ...m] as Method[]) : m;
   }, [account?.id, lnAddress, isSpark]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [method, setMethod] = useState<Method>(preferMethod === "liquid" ? "liquidAddress" : methods[0] ?? "bitcoinAddress");
+  const [method, setMethod] = useState<Method>(preferMethod === "liquid" && LIQUID_SWAPS ? "liquidAddress" : methods[0] ?? "bitcoinAddress");
   const [amount, setAmount] = useState<number | null>(null);
   /** The amount is settled and the request can be made (always true for amount-free methods). */
   const [ready, setReady] = useState(false);
@@ -217,7 +223,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
           </div>
           <p className="group-note" style={{ margin: "0 0 8px", textAlign: "center" }}>
             {swap
-              ? `Paid ${method === "bolt11" ? "over Lightning" : "from Liquid"}, swapped by ${quote?.provider ?? "Boltz"} and sent on-chain to ${account?.name}. It completes once the swap confirms, usually 10 to 60 minutes. Keep the wallet open until then.`
+              ? `Paid over Lightning into Spending, then sent on-chain to ${account?.name} automatically. If the wallet is closed, it's sent the next time you open it.`
               : method === "bitcoinAddress" && isSpark
                 ? "Send from any bitcoin wallet. It lands in Spending after 3 confirmations, ready to spend over Lightning."
                 : EXPLAIN[method]}
@@ -279,7 +285,8 @@ function SwapTerms({
         <div className="cell">
           <span className="grow">Fee</span>
           <span className="value num">
-            {quote.feePercent}% + about {formatSats(quote.networkFeeSat)} sats
+            {quote.feePercent > 0 ? `${quote.feePercent}% + about ` : "About "}
+            {formatSats(quote.networkFeeSat)} sats{quote.feePercent > 0 ? "" : " on-chain"}
           </span>
         </div>
         {quote.receiveSat != null && amount != null && !tooSmall && !tooBig && (
@@ -291,10 +298,10 @@ function SwapTerms({
       </div>
       <p className="group-note" style={{ margin: "-12px 4px 18px" }}>
         {tooSmall
-          ? `Ask for at least ${formatSats(quote.minSat)} sats to swap ${how} into ${account?.name ?? "this account"}.`
+          ? `Ask for at least ${formatSats(quote.minSat)} sats so the on-chain fee is worth paying.`
           : tooBig
-            ? `The most ${quote.provider} swaps at once is ${formatSats(quote.maxSat)} sats.`
-            : `${how} payments to ${account?.name ?? "this account"} are swapped to on-chain bitcoin by ${quote.provider}. The amount above is what they pay.`}
+            ? `The most this can take at once is ${formatSats(quote.maxSat)} sats.`
+            : `${how} payments land in Spending, then go on-chain to ${account?.name ?? "this account"} automatically. The amount above is what they pay.`}
       </p>
     </>
   );

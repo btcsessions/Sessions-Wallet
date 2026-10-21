@@ -18,6 +18,16 @@ export function resolveAccount(accounts: AccountInfo[], moduleId: string): Accou
   return undefined;
 }
 
+/**
+ * Accounts the user is actually using: Spending, anything on the home screen,
+ * and anything holding funds. Accounts that only exist because the seed can
+ * derive them (like the hot on-chain wallet) stay out of pickers until added.
+ */
+export function activeAccounts(accounts: AccountInfo[], layout: { modules: { id: string }[] } | null | undefined): AccountInfo[] {
+  const onHome = new Set((layout?.modules ?? []).map((m) => resolveAccount(accounts, m.id)?.id).filter(Boolean));
+  return accounts.filter((a) => a.rail === "spark" || onHome.has(a.id) || a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut > 0);
+}
+
 export function AccountModule({ module }: ModuleProps) {
   const { accounts, unit, price, currency, open } = useWallet();
   const def = moduleDef(module.id)!;

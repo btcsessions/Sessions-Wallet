@@ -366,7 +366,8 @@ button {
 .balance-amount {
   font-family: var(--font-number);
   font-weight: 700;
-  font-size: clamp(40px, 11vw, 56px);
+  font-size: calc(clamp(40px, 11vw, 56px) * var(--fit, 1));
+  white-space: nowrap;
   line-height: 1.05;
   letter-spacing: -0.03em;
   text-align: left;
@@ -1577,10 +1578,11 @@ button {
   --rail-watch: #8a90a3;
 }
 
+/* Same rhythm as Classic, so nothing needs more scrolling. */
 [data-skin="sessions"] body {
   letter-spacing: 0;
   font-size: 16px;
-  line-height: 1.45;
+  line-height: 1.29;
 }
 
 [data-skin="sessions"] :focus-visible {
@@ -1590,11 +1592,11 @@ button {
 
 [data-skin="sessions"] .large-title {
   font-weight: 400;
-  font-size: 52px;
-  line-height: 0.95;
+  font-size: 46px;
+  line-height: 41px;
   letter-spacing: 0.01em;
   text-transform: uppercase;
-  margin: 6px 0 16px;
+  margin: 2px 0 14px;
 }
 
 [data-skin="sessions"] .tile,
@@ -1619,15 +1621,15 @@ button {
 /* Big numbers in Bebas: it's narrow, so it runs larger. */
 [data-skin="sessions"] .balance-amount {
   font-weight: 400;
-  font-size: clamp(56px, 17vw, 84px);
-  line-height: 0.95;
+  font-size: calc(clamp(48px, 15vw, 64px) * var(--fit, 1));
+  line-height: 0.92;
   letter-spacing: 0.01em;
 }
 
 [data-skin="sessions"] .big-stat {
   font-weight: 400;
-  font-size: clamp(28px, 22cqi, 44px);
-  line-height: 1;
+  font-size: clamp(26px, 20cqi, 38px);
+  line-height: 0.9;
   letter-spacing: 0.01em;
 }
 

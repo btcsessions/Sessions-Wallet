@@ -7,11 +7,13 @@ import { AccountPicker } from "../components/Dropdown";
 import { errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 import { onchainAccountLeg } from "./PaySheet";
+import { activeAccounts } from "../modules/AccountModule";
 import { RoutePreview } from "./RoutePreview";
 import { SignStep } from "./SignStep";
 
 export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string; to?: string }) {
-  const { accounts, refresh, notify, close } = useWallet();
+  const { accounts: everyAccount, layout, refresh, notify, close } = useWallet();
+  const accounts = activeAccounts(everyAccount, layout);
   const [paused, setPaused] = useState<Execution | null>(null);
   const sources = accounts.filter((a) => a.pays.length > 0);
   const [from, setFrom] = useState(initialFrom ?? sources.find((a) => a.balance.confirmed > 0)?.id ?? sources[0]?.id);

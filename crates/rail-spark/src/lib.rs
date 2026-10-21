@@ -5,6 +5,7 @@
 //! supplied by the caller. The SDK keeps its own SQLite database under
 //! `storage_dir`; see the crate README for the layout.
 
+mod forward;
 mod map;
 
 use std::collections::HashMap;
@@ -26,6 +27,7 @@ use sessions_core::{
     ReceiveRequest, ReceiveTarget, Result, Sats, SendQuote, SendRequest,
 };
 
+pub use forward::{ForwardRecord, ForwardStatus, ForwardStore, SparkForwarder};
 pub use map::{PAYS, RECEIVES};
 
 /// A claimed Lightning address.

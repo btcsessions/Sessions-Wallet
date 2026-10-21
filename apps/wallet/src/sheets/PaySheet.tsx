@@ -7,6 +7,7 @@ import { AmountInput, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, useBusy }
 import { METHOD_LABEL, accountColor, errorText, formatFiat, formatSats } from "../format";
 import { useWallet } from "../state/store";
 import { RoutePreview } from "./RoutePreview";
+import { activeAccounts } from "../modules/AccountModule";
 import { SignStep } from "./SignStep";
 
 type Step = "input" | "amount" | "review" | "sign" | "done";
@@ -98,7 +99,8 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
     };
   }, [step, input, amount, from, fee, style]);
 
-  const payers = useMemo(() => accounts.filter((a) => a.pays.length > 0), [accounts]);
+  const layout = useWallet((s) => s.layout);
+  const payers = useMemo(() => activeAccounts(accounts, layout).filter((a) => a.pays.length > 0 || a.id === initialFrom), [accounts, layout, initialFrom]);
   const isToken = request?.type === "cashuToken";
 
   async function paste() {

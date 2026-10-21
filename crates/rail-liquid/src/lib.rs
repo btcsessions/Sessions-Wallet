@@ -9,6 +9,11 @@
 //! * Receive from a Liquid sender into an on-chain account: chain swap
 //!   (L-BTC → BTC), claimed to one of the account's own addresses.
 //!
+//! Boltz paused its swap service on 3 Aug 2026. The two on-chain receive
+//! bridges are no longer advertised (Lightning → on-chain now goes through
+//! the user's Spending account, see `rail_spark::SparkForwarder`), and an
+//! unreachable Boltz is reported as [`BOLTZ_PAUSED`].
+//!
 //! See `README.md` for trust assumptions and the recovery story.
 
 mod esplora;
@@ -111,6 +116,30 @@ pub struct BoltzSwaps {
 
 fn rail(e: impl std::fmt::Display) -> Error {
     Error::rail(NAME, e)
+}
+
+/// Shown when Boltz can't be reached or answers with a server error.
+pub const BOLTZ_PAUSED: &str =
+    "Boltz has paused its swap service (since August 2026), so Liquid payments aren't available right now.";
+
+/// Whether a Boltz API error means the service is down: no connection
+/// (refused, DNS, timeout) or a 5xx answer such as 503.
+fn boltz_unavailable(e: &boltz_client::error::Error) -> bool {
+    use boltz_client::error::Error as B;
+    match e {
+        B::HTTP(_) => true,
+        B::HTTPStatusNotSuccess(status, _) => status.is_server_error(),
+        _ => false,
+    }
+}
+
+/// Map an error from a Boltz API call, explaining an outage plainly.
+fn boltz_api(e: boltz_client::error::Error) -> Error {
+    if boltz_unavailable(&e) {
+        Error::Invalid(BOLTZ_PAUSED.into())
+    } else {
+        rail(e)
+    }
 }
 
 fn now() -> u64 {
@@ -349,7 +378,13 @@ impl BoltzSwaps {
                     .api
                     .post_swap_restore_index(&self.keys.xpub(), Some("m".to_string()), None)
                     .await
-                    .map_err(|e| rail(format!("couldn't check previously used swap keys: {e}")))?;
+                    .map_err(|e| {
+                        if boltz_unavailable(&e) {
+                            boltz_api(e)
+                        } else {
+                            rail(format!("couldn't check previously used swap keys: {e}"))
+                        }
+                    })?;
                 let boltz_next = u64::try_from(r.index + 1).unwrap_or(0);
                 let mut s = self.store.lock().await;
                 if boltz_next > s.next_index {
@@ -437,7 +472,7 @@ impl BoltzSwaps {
     // ---------- pay bridges ----------
 
     async fn reverse_swap(&self, destination: &str, target: Sats) -> Result<BridgedPayment> {
-        let pairs = self.api.get_reverse_pairs().await.map_err(rail)?;
+        let pairs = self.api.get_reverse_pairs().await.map_err(boltz_api)?;
         let pair = pairs
             .get_btc_to_lbtc_pair()
             .ok_or_else(|| rail("Boltz isn't offering Lightning → Liquid swaps right now"))?;
@@ -475,7 +510,7 @@ impl BoltzSwaps {
                 webhook: None,
             })
             .await
-            .map_err(rail)?;
+            .map_err(boltz_api)?;
         // Checks the invoice's payment hash and that the lockup script/address are ours.
         resp.validate(&preimage, &claim_pk, Chain::Liquid(self.lchain))
             .map_err(rail)?;
@@ -551,7 +586,7 @@ impl BoltzSwaps {
             rail("a BTC refund address is required for an on-chain → Liquid swap")
         })?;
         self.check_btc_address(&refund_address)?;
-        let pairs = self.api.get_chain_pairs().await.map_err(rail)?;
+        let pairs = self.api.get_chain_pairs().await.map_err(boltz_api)?;
         let pair = pairs
             .get_btc_to_lbtc_pair()
             .ok_or_else(|| rail("Boltz isn't offering BTC → Liquid swaps right now"))?;
@@ -589,7 +624,7 @@ impl BoltzSwaps {
                 webhook: None,
             })
             .await
-            .map_err(rail)?;
+            .map_err(boltz_api)?;
         resp.validate(
             &claim_pk,
             &refund_pk,
@@ -656,7 +691,7 @@ impl BoltzSwaps {
     /// pays Boltz's hold invoice for `amount`; Boltz locks BTC; `tick` claims
     /// it to `address`.
     async fn receive_ln_to_btc(&self, address: String, amount: Sats) -> Result<ReceiveTarget> {
-        let pairs = self.api.get_reverse_pairs().await.map_err(rail)?;
+        let pairs = self.api.get_reverse_pairs().await.map_err(boltz_api)?;
         let pair = pairs
             .get_btc_to_btc_pair()
             .ok_or_else(|| rail("Boltz isn't offering Lightning → on-chain swaps right now"))?;
@@ -695,7 +730,7 @@ impl BoltzSwaps {
                 webhook: None,
             })
             .await
-            .map_err(rail)?;
+            .map_err(boltz_api)?;
         // Checks the invoice's payment hash and that the lockup script/address are ours.
         resp.validate(&preimage, &claim_pk, Chain::Bitcoin(self.bchain))
             .map_err(rail)?;
@@ -745,7 +780,7 @@ impl BoltzSwaps {
     /// locks `amount` L-BTC at Boltz's lockup address; Boltz locks BTC; `tick`
     /// claims it to `address`.
     async fn receive_lbtc_to_btc(&self, address: String, amount: Sats) -> Result<ReceiveTarget> {
-        let pairs = self.api.get_chain_pairs().await.map_err(rail)?;
+        let pairs = self.api.get_chain_pairs().await.map_err(boltz_api)?;
         let pair = pairs
             .get_lbtc_to_btc_pair()
             .ok_or_else(|| rail("Boltz isn't offering Liquid → on-chain swaps right now"))?;
@@ -784,7 +819,7 @@ impl BoltzSwaps {
                 webhook: None,
             })
             .await
-            .map_err(rail)?;
+            .map_err(boltz_api)?;
         resp.validate(
             &claim_pk,
             &refund_pk,
@@ -865,7 +900,7 @@ impl BoltzSwaps {
             ));
         }
 
-        let pairs = self.api.get_submarine_pairs().await.map_err(rail)?;
+        let pairs = self.api.get_submarine_pairs().await.map_err(boltz_api)?;
         let pair = pairs
             .get_lbtc_to_btc_pair()
             .ok_or_else(|| rail("Boltz isn't offering Liquid → Lightning swaps right now"))?;
@@ -891,7 +926,7 @@ impl BoltzSwaps {
                 webhook: None,
             })
             .await
-            .map_err(rail)?;
+            .map_err(boltz_api)?;
         // Checks the script pays to our invoice's hash, refunds to our key, and matches the address.
         resp.validate(&invoice, &refund_pk, Chain::Liquid(self.lchain))
             .map_err(rail)?;
@@ -971,7 +1006,7 @@ impl BoltzSwaps {
             p if p.finished() => return Ok(()),
             _ => {}
         }
-        let st = self.api.get_swap(&r.id).await.map_err(rail)?;
+        let st = self.api.get_swap(&r.id).await.map_err(boltz_api)?;
         if state::lockup_seen(&st.status) {
             r.payer_locked = true;
         }
@@ -1076,7 +1111,7 @@ impl BoltzSwaps {
             SwapKind::Reverse => {
                 let resp: CreateReverseResponse = boltz_response(r)?;
                 let script = SwapScript::reverse_from_swap_resp(lchain, &resp, pk).map_err(rail)?;
-                let txid = self.api.get_reverse_tx(&r.id).await.map_err(rail)?.id;
+                let txid = self.api.get_reverse_tx(&r.id).await.map_err(boltz_api)?.id;
                 (script, txid, TransactionOptions::default())
             }
             SwapKind::ChainBtcToLbtc => {
@@ -1107,7 +1142,7 @@ impl BoltzSwaps {
                     .api
                     .get_chain_txs(&r.id)
                     .await
-                    .map_err(rail)?
+                    .map_err(boltz_api)?
                     .server_lock
                     .ok_or_else(|| rail("Boltz hasn't locked its side yet"))?
                     .transaction
@@ -1212,7 +1247,7 @@ impl BoltzSwaps {
             SwapKind::ReverseToBtc => {
                 let resp: CreateReverseResponse = boltz_response(r)?;
                 let script = SwapScript::reverse_from_swap_resp(bchain, &resp, pk).map_err(rail)?;
-                let txid = self.api.get_reverse_tx(&r.id).await.map_err(rail)?.id;
+                let txid = self.api.get_reverse_tx(&r.id).await.map_err(boltz_api)?.id;
                 (script, txid, TransactionOptions::default())
             }
             SwapKind::ChainLbtcToBtc => {
@@ -1245,7 +1280,7 @@ impl BoltzSwaps {
                     .api
                     .get_chain_txs(&r.id)
                     .await
-                    .map_err(rail)?
+                    .map_err(boltz_api)?
                     .server_lock
                     .ok_or_else(|| rail("Boltz hasn't locked its side yet"))?
                     .transaction
@@ -1376,7 +1411,7 @@ impl BoltzSwaps {
         r.payer_locked = true;
         let resp: CreateChainResponse = boltz_response(r)?;
         let paid = self.user_lockup_amount(&r.id, &resp).await?;
-        let pairs = self.api.get_chain_pairs().await.map_err(rail)?;
+        let pairs = self.api.get_chain_pairs().await.map_err(boltz_api)?;
         let pair = pairs
             .get_lbtc_to_btc_pair()
             .ok_or_else(|| rail("Boltz isn't offering Liquid → on-chain swaps right now"))?;
@@ -1427,7 +1462,7 @@ impl BoltzSwaps {
             .api
             .get_chain_txs(id)
             .await
-            .map_err(rail)?
+            .map_err(boltz_api)?
             .user_lock
             .ok_or_else(|| rail("Boltz hasn't seen the sender's lockup"))?;
         let txid = elements::Txid::from_str(&lock.transaction.id)
@@ -1787,7 +1822,7 @@ impl BoltzSwaps {
         {
             // Funds left the lockup: either Boltz paid late and swept it, or it
             // was refunded elsewhere (e.g. with Boltz's rescue tool).
-            let status = self.api.get_swap(&r.id).await.map_err(rail)?.status;
+            let status = self.api.get_swap(&r.id).await.map_err(boltz_api)?.status;
             r.boltz_status = Some(status.clone());
             r.phase = if status == "transaction.claimed" {
                 Phase::Complete
@@ -1836,14 +1871,14 @@ impl SwapProvider for BoltzSwaps {
         ]
     }
 
-    /// Liquid → Lightning comes first: `Wallet::receive` prefers it for
-    /// accounts that take invoices, and uses the on-chain bridges otherwise.
+    /// Only Liquid → Lightning is advertised. Boltz paused its swap service
+    /// on 3 Aug 2026, and Lightning → on-chain now goes through the user's
+    /// Spending account (`rail_spark::SparkForwarder`), so the on-chain
+    /// bridges (`Bolt11`/`LiquidAddress` → `BitcoinAddress`) are no longer
+    /// offered. Their code stays: `bridge_receive` still handles them, and
+    /// `tick` still drives any such swap already in the journal.
     fn receive_bridges(&self) -> Vec<(Method, Method)> {
-        vec![
-            (Method::LiquidAddress, Method::Bolt11),
-            (Method::Bolt11, Method::BitcoinAddress),
-            (Method::LiquidAddress, Method::BitcoinAddress),
-        ]
+        vec![(Method::LiquidAddress, Method::Bolt11)]
     }
 
     async fn bridge_payment(
@@ -1902,7 +1937,7 @@ impl SwapProvider for BoltzSwaps {
     ) -> Result<Option<ReceiveQuote>> {
         let q = match (outside, ours) {
             (Method::Bolt11, Method::BitcoinAddress) => {
-                let pairs = self.api.get_reverse_pairs().await.map_err(rail)?;
+                let pairs = self.api.get_reverse_pairs().await.map_err(boltz_api)?;
                 let pair = pairs.get_btc_to_btc_pair().ok_or_else(|| {
                     rail("Boltz isn't offering Lightning → on-chain swaps right now")
                 })?;
@@ -1918,7 +1953,7 @@ impl SwapProvider for BoltzSwaps {
                 )
             }
             (Method::LiquidAddress, Method::BitcoinAddress) => {
-                let pairs = self.api.get_chain_pairs().await.map_err(rail)?;
+                let pairs = self.api.get_chain_pairs().await.map_err(boltz_api)?;
                 let pair = pairs.get_lbtc_to_btc_pair().ok_or_else(|| {
                     rail("Boltz isn't offering Liquid → on-chain swaps right now")
                 })?;
@@ -1936,7 +1971,7 @@ impl SwapProvider for BoltzSwaps {
             // The amount here is the invoice amount we receive; the sender
             // pays the fees on top (see `receive_lbtc_to_ln`).
             (Method::LiquidAddress, Method::Bolt11) => {
-                let pairs = self.api.get_submarine_pairs().await.map_err(rail)?;
+                let pairs = self.api.get_submarine_pairs().await.map_err(boltz_api)?;
                 let pair = pairs.get_lbtc_to_btc_pair().ok_or_else(|| {
                     rail("Boltz isn't offering Liquid → Lightning swaps right now")
                 })?;
@@ -2039,13 +2074,10 @@ mod tests {
         assert!(b
             .pay_bridges()
             .contains(&(Method::LiquidAddress, Method::BitcoinAddress)));
+        // Boltz is paused: the on-chain receive bridges aren't advertised.
         assert_eq!(
             b.receive_bridges(),
-            vec![
-                (Method::LiquidAddress, Method::Bolt11),
-                (Method::Bolt11, Method::BitcoinAddress),
-                (Method::LiquidAddress, Method::BitcoinAddress),
-            ]
+            vec![(Method::LiquidAddress, Method::Bolt11)]
         );
     }
 
@@ -2234,6 +2266,31 @@ mod tests {
         // Some other asset.
         let usdt = elements::AssetId::from_slice(&[9u8; 32]).unwrap();
         assert!(lockup_value(&tx(vec![out(60_000, usdt, &spk)]), &spk, key, lbtc).is_err());
+    }
+
+    #[test]
+    fn boltz_outage_is_explained() {
+        use boltz_client::error::Error as B;
+        use boltz_client::reqwest::StatusCode;
+        for e in [
+            B::HTTP("error sending request: connection refused".into()),
+            B::HTTPStatusNotSuccess(StatusCode::SERVICE_UNAVAILABLE, serde_json::Value::Null),
+            B::HTTPStatusNotSuccess(StatusCode::BAD_GATEWAY, serde_json::json!("x")),
+        ] {
+            let mapped = boltz_api(e);
+            assert!(matches!(mapped, Error::Invalid(_)));
+            assert_eq!(mapped.to_string(), BOLTZ_PAUSED);
+        }
+        // Boltz answering "no" is not an outage.
+        let e = boltz_api(B::HTTPStatusNotSuccess(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "invalid pair"}),
+        ));
+        assert!(matches!(e, Error::Rail { .. }), "{e}");
+        assert!(matches!(
+            boltz_api(B::Generic("x".into())),
+            Error::Rail { .. }
+        ));
     }
 
     #[test]
