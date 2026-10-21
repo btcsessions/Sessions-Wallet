@@ -8,6 +8,7 @@ import { CopyButton, Sheet, useBusy } from "../components/ui";
 import { DeviceIcon, deviceFor } from "../hw/devices";
 import { isMobile, trezorSign } from "../hw/trezor";
 import { errorText } from "../format";
+import { JadeQrUnlock } from "../hw/JadeUnlock";
 import { useWallet } from "../state/store";
 
 /** A signed PSBT from whatever the device showed: UR, base64 or hex. */
@@ -25,6 +26,7 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
   const { refresh, accounts } = useWallet();
   const [signed, setSigned] = useState("");
   const [showManual, setShowManual] = useState(false);
+  const [unlock, setUnlock] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
   const quote = paused.awaitingSignature;
@@ -83,8 +85,24 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
             {busy ? "Waiting for Trezor…" : "Sign with Trezor"}
           </button>
         </>
+      ) : def?.connect === "jade" && unlock ? (
+        <>
+          <JadeQrUnlock onDone={() => setUnlock(false)} />
+          <p style={{ textAlign: "center", margin: "14px 0 0" }}>
+            <button className="text-button" onClick={() => setUnlock(false)}>
+              Back to signing
+            </button>
+          </p>
+        </>
       ) : (
         <>
+          {def?.connect === "jade" && (
+            <p style={{ textAlign: "center", margin: "0 0 10px" }}>
+              <button className="text-button" onClick={() => setUnlock(true)}>
+                Jade locked? Unlock it with QR first
+              </button>
+            </p>
+          )}
           <p className="notice">
             Scan this with {name}
             {more}. Check the amount and address on its screen, then scan the signed transaction it shows.
@@ -130,7 +148,13 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
       </p>
       {showManual && (
         <>
-          <div style={{ display: "flex", justifyContent: "center", margin: "8px 0 18px" }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              margin: "8px 0 18px",
+            }}
+          >
             <CopyButton text={ns.psbtBase64} label="Copy PSBT" />
           </div>
           <p className="group-label">Signed transaction</p>

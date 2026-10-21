@@ -48,6 +48,7 @@ export const tauriApi: WalletApi = {
   renameAccount: (id, name) => invoke("rename_account", { id, name }),
   discoverHotAccounts: () => invoke("discover_hot_accounts"),
   scanDescriptors: (descriptors) => invoke("scan_descriptors", { descriptors }),
+  jadeQrPin: async (request) => new Uint8Array(await invoke<number[]>("jade_qr_pin", { request: Array.from(request) })),
   syncAccount: (id) => invoke("sync_account", { id }),
   txDetails: (account, txid) => invoke("tx_details", { account, txid }),
   prepareBump: (account, txid, action, fee) => invoke("prepare_bump", { account, txid, action, fee }),
@@ -57,5 +58,16 @@ export const tauriApi: WalletApi = {
   inspectDescriptor: (descriptor) => invoke("inspect_descriptor", { descriptor }),
   trezorSignRequest: (psbt) => invoke("trezor_sign_request", { psbt }),
   trezorMerge: (psbt, signedTx) => invoke("trezor_merge", { psbt, signedTx }),
+  bitboxDescriptors: (script, accounts) => invoke("bitbox_descriptors", { script, accounts }),
+  bitboxSign: (psbt) => invoke("bitbox_sign", { psbt }),
+  bitboxShowAddress: (account, index) => invoke("bitbox_show_address", { account, index }),
+  onBitbox: async (cb) => {
+    const offs = await Promise.all([
+      listen<{ state: "connecting" | "unlock" | "confirm" }>("bitbox://status", (e) => cb({ kind: "status", state: e.payload.state })),
+      listen<{ code: string }>("bitbox://pairing", (e) => cb({ kind: "pairing", code: e.payload.code })),
+      listen("bitbox://paired", () => cb({ kind: "paired" })),
+    ]);
+    return () => offs.forEach((off) => off());
+  },
   onChange: (cb) => listen("wallet-changed", () => cb()),
 };

@@ -1,5 +1,6 @@
 import type {
   AccountInfo,
+  BitboxEvent,
   BumpAction,
   DescriptorPreview,
   SendQuote,
@@ -60,6 +61,8 @@ export interface WalletApi {
   discoverHotAccounts(): Promise<FoundAccount[]>;
   /** Which of these descriptors (e.g. accounts 1…n from a hardware wallet) have history. */
   scanDescriptors(descriptors: string[]): Promise<FoundAccount[]>;
+  /** Jade QR unlock: CBOR of Jade's `jade-pin` QR in, CBOR of the reply QR out (relayed via Jade's PIN server). */
+  jadeQrPin(request: Uint8Array): Promise<Uint8Array>;
   /** Sync one account now (the Receive screen polls this while it waits). */
   syncAccount(id: string): Promise<void>;
   /** On-chain transaction details; null for other rails. */
@@ -78,6 +81,14 @@ export interface WalletApi {
   trezorSignRequest(psbt: string): Promise<Record<string, unknown>>;
   /** Fold a Trezor-signed raw transaction back into the PSBT. */
   trezorMerge(psbt: string, signedTx: string): Promise<string>;
+  /** BitBox02 over USB: one descriptor per account number, `wpkh([fp/84h/0h/{n}h]xpub…/<0;1>/*)` (`tr`/86h for Taproot). Unlocks and pairs first if needed. */
+  bitboxDescriptors(script: "wpkh" | "tr", accounts: number[]): Promise<string[]>;
+  /** Sign an unsigned PSBT (base64) on a BitBox02 over USB; returns the signed PSBT for `resume`. */
+  bitboxSign(psbt: string): Promise<string>;
+  /** Show receive address `index` of a BitBox02 account on the device (checked against ours); returns it. */
+  bitboxShowAddress(account: string, index: number): Promise<string>;
+  /** BitBox02 progress (status, pairing code, paired). Returns an unsubscribe. */
+  onBitbox(cb: (e: BitboxEvent) => void): Promise<() => void>;
   /** Our own cosigner key to share when setting up a multisig. */
   cosignerKey(): Promise<string>;
   sync(): Promise<void>;

@@ -247,3 +247,12 @@ export interface ReceiveQuote {
   /** What arrives for the requested amount, when one was given. */
   receiveSat: number | null;
 }
+
+/** Progress from a BitBox02 over USB (Tauri events `bitbox://status`, `bitbox://pairing`, `bitbox://paired`). */
+export type BitboxEvent =
+  /** "connecting": opening the USB device; "unlock": enter the password on the BitBox02; "confirm": check and confirm on its screen. */
+  | { kind: "status"; state: "connecting" | "unlock" | "confirm" }
+  /** First connection to this BitBox02: show the code; the user confirms on the device if it matches. */
+  | { kind: "pairing"; code: string }
+  /** Connected, unlocked and paired. */
+  | { kind: "paired" };

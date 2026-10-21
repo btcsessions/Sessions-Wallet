@@ -2,9 +2,11 @@
 // reviewed without a native build. Never ships in the Tauri app.
 
 import type { WalletApi } from "./index";
-import type { AccountInfo, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Settings } from "./types";
+import type { AccountInfo, BitboxEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const bitboxListeners = new Set<(e: BitboxEvent) => void>();
+const mockBitbox = (e: BitboxEvent) => bitboxListeners.forEach((cb) => cb(e));
 const now = () => Math.floor(Date.now() / 1000);
 
 const DEMO_PHRASE =
@@ -31,7 +33,7 @@ function seedDemo() {
       id: "hw-1",
       name: "Cold storage",
       rail: "onchain",
-      custody: { type: "hardware", device: "Coldcard", fingerprint: "a1b2c3d4" },
+      custody: { type: "hardware", device: "SeedSigner", fingerprint: "a1b2c3d4" },
       balance: { confirmed: 4_250_000, pendingIn: 120_000, pendingOut: 0 },
       receives: ["bitcoinAddress"],
       pays: ["bitcoinAddress"],
@@ -42,7 +44,7 @@ function seedDemo() {
       id: "hw-2",
       name: "Kids' savings",
       rail: "onchain",
-      custody: { type: "hardware", device: "Coldcard", fingerprint: "a1b2c3d4" },
+      custody: { type: "hardware", device: "SeedSigner", fingerprint: "a1b2c3d4" },
       balance: { confirmed: 610_000, pendingIn: 0, pendingOut: 0 },
       receives: ["bitcoinAddress"],
       pays: ["bitcoinAddress"],
@@ -262,6 +264,10 @@ export const mockApi: WalletApi = {
       { index: 1, balanceSat: 0, txCount: 2, descriptor: "wpkh([73c5da0a/84h/0h/1h]xpub…/<0;1>/*)" },
     ].filter((f) => !have.has(f.index));
   },
+  async jadeQrPin(request) {
+    await sleep(700);
+    return request.slice(0, 16);
+  },
   async scanDescriptors(descriptors) {
     await sleep(800);
     return descriptors.slice(0, 1).map((descriptor, i) => ({ index: i + 1, balanceSat: 50_000, txCount: 1, descriptor }));
@@ -358,6 +364,32 @@ export const mockApi: WalletApi = {
   },
   async trezorMerge(psbt) {
     return psbt;
+  },
+  async bitboxDescriptors(script, accounts) {
+    mockBitbox({ kind: "status", state: "connecting" });
+    await sleep(400);
+    mockBitbox({ kind: "status", state: "unlock" });
+    await sleep(800);
+    mockBitbox({ kind: "paired" });
+    // BIP84 test vector key (abandon … about); fake for other accounts and Taproot.
+    const purpose = script === "tr" ? 86 : 84;
+    return accounts.map(
+      (n) => `${script}([73c5da0a/${purpose}h/0h/${n}h]xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V/<0;1>/*)`,
+    );
+  },
+  async bitboxSign(psbt) {
+    mockBitbox({ kind: "status", state: "confirm" });
+    await sleep(1500);
+    return psbt;
+  },
+  async bitboxShowAddress() {
+    mockBitbox({ kind: "status", state: "confirm" });
+    await sleep(1200);
+    return "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+  },
+  async onBitbox(cb) {
+    bitboxListeners.add(cb);
+    return () => bitboxListeners.delete(cb);
   },
   async payjoinReceive(account) {
     return mockPayjoin.has(account);

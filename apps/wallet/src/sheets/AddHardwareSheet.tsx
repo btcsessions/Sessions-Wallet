@@ -7,6 +7,7 @@ import { SelectRow, Sheet, useBusy } from "../components/ui";
 import { DEVICES, DeviceIcon, type DeviceDef } from "../hw/devices";
 import { isMobile, trezorDescriptor, trezorDescriptors, type TrezorScript } from "../hw/trezor";
 import { errorText, formatSats } from "../format";
+import { JadeQrUnlock } from "../hw/JadeUnlock";
 import { switchMode } from "../state/mode";
 import { useWallet } from "../state/store";
 import { walletHasCard } from "../modules/AccountModule";
@@ -33,8 +34,12 @@ export function AddHardwareSheet() {
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
   // After adding a Trezor: its other used accounts (null = still looking).
-  const [more, setMore] = useState<{ name: string; found: FoundAccount[] | null } | null>(null);
+  const [more, setMore] = useState<{
+    name: string;
+    found: FoundAccount[] | null;
+  } | null>(null);
   const [adding, setAdding] = useState<number | null>(null);
+  const [unlock, setUnlock] = useState(false);
 
   const inspect = async (text: string) => {
     setError(null);
@@ -59,7 +64,9 @@ export function AddHardwareSheet() {
   const add = () =>
     run(async () => {
       if (!device || !preview) return;
-      const account = await (await api()).addAccount({
+      const account = await (
+        await api()
+      ).addAccount({
         kind: "hardware",
         name: label.trim() || device.name,
         descriptor: preview.descriptor,
@@ -91,7 +98,14 @@ export function AddHardwareSheet() {
     setAdding(f.index);
     try {
       if (!useWallet.getState().layout?.advanced) await switchMode(true);
-      const a = await (await api()).addAccount({ kind: "hardware", name: `${more.name} ${f.index + 1}`, descriptor: f.descriptor, device: device.name });
+      const a = await (
+        await api()
+      ).addAccount({
+        kind: "hardware",
+        name: `${more.name} ${f.index + 1}`,
+        descriptor: f.descriptor,
+        device: device.name,
+      });
       await refresh();
       notify("ok", `Added ${a.name}`);
       setMore((m) => (m && m.found ? { ...m, found: m.found.filter((x) => x.index !== f.index) } : m));
@@ -125,7 +139,8 @@ export function AddHardwareSheet() {
                   <span className="grow">
                     <div>Account {f.index + 1}</div>
                     <div className="row-sub num">
-                      {formatSats(f.balanceSat)} sats · {f.txCount} transaction{f.txCount === 1 ? "" : "s"}
+                      {formatSats(f.balanceSat)} sats · {f.txCount} transaction
+                      {f.txCount === 1 ? "" : "s"}
                     </div>
                   </span>
                   <button className="btn small primary" disabled={adding !== null} onClick={() => void addMore(f)}>
@@ -158,7 +173,6 @@ export function AddHardwareSheet() {
 
   // Step 1: which device?
   if (!device) {
-    const [featured, others] = [DEVICES.filter((d) => d.connect !== "import"), DEVICES.filter((d) => d.connect === "import")];
     return (
       <Sheet
         title="Add hardware wallet"
@@ -170,7 +184,7 @@ export function AddHardwareSheet() {
       >
         <p className="notice">Your keys stay on the device. This wallet only sees balances and prepares transactions for the device to sign.</p>
         <div className="device-grid">
-          {featured.map((d) => (
+          {DEVICES.map((d) => (
             <button
               key={d.id}
               className="device-card featured"
@@ -181,27 +195,10 @@ export function AddHardwareSheet() {
             >
               <DeviceIcon device={d.name} size={40} />
               <strong>{d.name}</strong>
-              <span>{d.connect === "trezor" ? "USB or Bluetooth, via Trezor Suite" : "Air-gapped, by QR code"}</span>
+              <span>{d.via}</span>
             </button>
           ))}
         </div>
-        <p className="group-label">Other devices</p>
-        <div className="device-grid small">
-          {others.map((d) => (
-            <button
-              key={d.id}
-              className="device-card"
-              onClick={() => {
-                setDevice(d);
-                setLabel(d.id === "other" ? "Cold storage" : d.name);
-              }}
-            >
-              <DeviceIcon device={d.name} size={28} />
-              <span>{d.name}</span>
-            </button>
-          ))}
-        </div>
-        <p className="group-note">These import by QR code, file or copy-paste and sign by QR or PSBT file. Direct support is coming.</p>
       </Sheet>
     );
   }
@@ -275,23 +272,26 @@ export function AddHardwareSheet() {
               : "Open Trezor Suite on this computer and unlock your Trezor. Suite will ask you to allow Sessions Wallet."}
           </p>
           {advanced && (
-          <div className="group">
-            <SelectRow
-              label="Address type"
-              value={script}
-              onChange={(v) => setScript(v as TrezorScript)}
-              options={[
-                { value: "wpkh", label: "Native SegWit (bc1q)" },
-                { value: "tr", label: "Taproot (bc1p)" },
-              ]}
-            />
-            <SelectRow
-              label="Account"
-              value={accountNo}
-              onChange={setAccountNo}
-              options={Array.from({ length: 10 }, (_, i) => ({ value: String(i), label: `Account ${i + 1}` }))}
-            />
-          </div>
+            <div className="group">
+              <SelectRow
+                label="Address type"
+                value={script}
+                onChange={(v) => setScript(v as TrezorScript)}
+                options={[
+                  { value: "wpkh", label: "Native SegWit (bc1q)" },
+                  { value: "tr", label: "Taproot (bc1p)" },
+                ]}
+              />
+              <SelectRow
+                label="Account"
+                value={accountNo}
+                onChange={setAccountNo}
+                options={Array.from({ length: 10 }, (_, i) => ({
+                  value: String(i),
+                  label: `Account ${i + 1}`,
+                }))}
+              />
+            </div>
           )}
           <button className="btn primary block" disabled={busy} onClick={fromTrezor}>
             {busy ? "Waiting for Trezor…" : "Connect Trezor"}
@@ -300,45 +300,65 @@ export function AddHardwareSheet() {
         </>
       ) : (
         <>
-          <p className="notice">{device.exportHint}</p>
-          <ScanButton
-            className="btn primary block"
-            label="Scan wallet QR"
-            title={`Scan from ${device.name}`}
-            hint="Hold steady. Animated codes fill in as you scan."
-            onResult={(r) =>
-              exportText(r)
-                .then(inspect)
-                .catch((e) => setError(errorText(e)))
-            }
-          />
-          {!showPaste ? (
-            <p style={{ textAlign: "center", margin: "14px 0 0" }}>
-              <button className="text-button" onClick={() => setShowPaste(true)}>
-                Paste instead
-              </button>
-            </p>
+          {device.connect === "jade" && unlock ? (
+            <>
+              <JadeQrUnlock onDone={() => setUnlock(false)} />
+              <p style={{ textAlign: "center", margin: "14px 0 0" }}>
+                <button className="text-button" onClick={() => setUnlock(false)}>
+                  Back to export
+                </button>
+              </p>
+            </>
           ) : (
             <>
-              <p className="group-label" style={{ marginTop: 20 }}>
-                Wallet export
-              </p>
-              <div className="group">
-                <label className="cell">
-                  <span className="visually-hidden">Descriptor or xpub</span>
-                  <textarea
-                    value={paste}
-                    onChange={(e) => setPaste(e.target.value)}
-                    placeholder="wpkh([fingerprint/84h/0h/0h]xpub…/<0;1>/*) or [fingerprint/84h/0h/0h]zpub…"
-                    spellCheck={false}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                  />
-                </label>
-              </div>
-              <button className="btn block" disabled={paste.trim().length < 20 || busy} onClick={() => run(() => inspect(paste))}>
-                Continue
-              </button>
+              <p className="notice">{device.exportHint}</p>
+              <ScanButton
+                className="btn primary block"
+                label="Scan wallet QR"
+                title={`Scan from ${device.name}`}
+                hint="Hold steady. Animated codes fill in as you scan."
+                onResult={(r) =>
+                  exportText(r)
+                    .then(inspect)
+                    .catch((e) => setError(errorText(e)))
+                }
+              />
+              {!showPaste ? (
+                <p style={{ textAlign: "center", margin: "14px 0 0" }}>
+                  <button className="text-button" onClick={() => setShowPaste(true)}>
+                    Paste instead
+                  </button>
+                </p>
+              ) : (
+                <>
+                  <p className="group-label" style={{ marginTop: 20 }}>
+                    Wallet export
+                  </p>
+                  <div className="group">
+                    <label className="cell">
+                      <span className="visually-hidden">Descriptor or xpub</span>
+                      <textarea
+                        value={paste}
+                        onChange={(e) => setPaste(e.target.value)}
+                        placeholder="wpkh([fingerprint/84h/0h/0h]xpub…/<0;1>/*) or [fingerprint/84h/0h/0h]zpub…"
+                        spellCheck={false}
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                      />
+                    </label>
+                  </div>
+                  <button className="btn block" disabled={paste.trim().length < 20 || busy} onClick={() => run(() => inspect(paste))}>
+                    Continue
+                  </button>
+                </>
+              )}
+              {device.connect === "jade" && (
+                <p style={{ textAlign: "center", margin: "6px 0 0" }}>
+                  <button className="text-button" onClick={() => setUnlock(true)}>
+                    Jade locked? Unlock it with QR
+                  </button>
+                </p>
+              )}
             </>
           )}
         </>

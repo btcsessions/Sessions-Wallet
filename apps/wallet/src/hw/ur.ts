@@ -1,5 +1,5 @@
 // Uniform Resources (BCR-2020-005): the animated-QR format SeedSigner, Jade,
-// Keystone, Passport and Sparrow use for PSBTs and account exports.
+// and other wallets use for PSBTs and account exports.
 import "./ur-polyfill";
 import { URDecoder, UREncoder, UR } from "@ngraveio/bc-ur";
 import { CryptoAccount, CryptoHDKey, CryptoOutput, CryptoPSBT } from "@keystonehq/bc-ur-registry";
@@ -99,6 +99,12 @@ export function descriptorFromUr(type: string, cbor: Buffer): string {
 export function psbtFrames(psbtBase64: string, maxFragment = 120): { next: () => string; count: number } {
   const ur = new CryptoPSBT(Buffer.from(psbtBase64, "base64")).toUR();
   const enc = new UREncoder(ur, maxFragment);
+  return { next: () => enc.nextPart().toUpperCase(), count: enc.fragmentsLength };
+}
+
+/** Frames of any UR, given its type and raw CBOR payload. */
+export function urFrames(type: string, cbor: Uint8Array, maxFragment = 400): { next: () => string; count: number } {
+  const enc = new UREncoder(new UR(Buffer.from(cbor), type), maxFragment);
   return { next: () => enc.nextPart().toUpperCase(), count: enc.fragmentsLength };
 }
 
