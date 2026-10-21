@@ -1134,6 +1134,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a8241f3ebb85c056b509d4327ad0358fbbba6ffb340bf388f26350aeda225b1"
 
 [[package]]
+name = "bhttp"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16fc24bc615b9fd63148f59b218ea58a444b55762f8845da910e23aca686398b"
+dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1232,6 +1241,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitcoin-hpke"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b82f6af50f93d6dcda676e622840c128044cd0ba7771aab00aed5fa8208adee3"
+dependencies = [
+ "aead",
+ "bitcoin_hashes 0.14.101",
+ "chacha20-poly1305",
+ "generic-array",
+ "rand_core 0.6.4",
+ "secp256k1 0.29.1",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "bitcoin-internals"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1250,6 +1275,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb5de036369d1ac59d3c1819ebc4d850f89466f5401c571a285b6ed564a4cb78"
 dependencies = [
  "bitcoin-consensus-encoding",
+]
+
+[[package]]
+name = "bitcoin-ohttp"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea931154237aee3527fc6bc529cf2c8e3b045f81044ee2215b760df2a722c38b"
+dependencies = [
+ "bitcoin-hpke",
+ "bitcoin_hashes 0.14.101",
+ "byteorder",
+ "chacha20-poly1305",
+ "hex",
+ "lazy_static",
+ "log",
+ "rand 0.8.8",
+ "serde",
+ "serde_derive",
+ "thiserror 1.0.69",
+ "toml 0.5.11",
 ]
 
 [[package]]
@@ -1298,6 +1343,16 @@ checksum = "5304e53726dbe5f93141535e102ed97b5bf4714fbecefdda8f9fb98d7fdaff0e"
 dependencies = [
  "bitcoin-consensus-encoding",
  "bitcoin-internals 0.6.0",
+]
+
+[[package]]
+name = "bitcoin_uri"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e0a228e083d1702f83389b0ac71eb70078dc8d7fcbb6cde864d1cbca145f5cc"
+dependencies = [
+ "bitcoin",
+ "percent-encoding-rfc3986",
 ]
 
 [[package]]
@@ -1987,6 +2042,12 @@ dependencies = [
  "cpufeatures 0.3.1",
  "rand_core 0.10.1",
 ]
+
+[[package]]
+name = "chacha20-poly1305"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50844998c477072ba2cb2a63fa1dfca81b1368133f38084916bccd5710a374e1"
 
 [[package]]
 name = "chacha20poly1305"
@@ -5430,6 +5491,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "payjoin"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18e76ccf869704cc4830eb1b527a7fc08ced2006b37a8ee29e3417d4ef13cb50"
+dependencies = [
+ "bhttp",
+ "bitcoin",
+ "bitcoin-hpke",
+ "bitcoin-ohttp",
+ "bitcoin-units",
+ "bitcoin_uri",
+ "hkdf",
+ "http",
+ "percent-encoding-rfc3986",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
 name = "pbkdf2"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5454,6 +5537,12 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "percent-encoding-rfc3986"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3637c05577168127568a64e9dc5a6887da720efef07b3d9472d45f63ab191166"
 
 [[package]]
 name = "pest"
@@ -6094,6 +6183,8 @@ dependencies = [
  "bdk_esplora",
  "bdk_wallet",
  "esplora-client",
+ "payjoin",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sessions-core",
@@ -8202,6 +8293,15 @@ checksum = "d01145a2c788d6aae4cd653afec1e8332534d7d783d01897cefcafe4428de992"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "toml"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
