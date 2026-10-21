@@ -158,7 +158,11 @@ function PayjoinSwitch({ account }: { account: string }) {
 }
 
 /** Technical details, one tap away so they don't crowd the account. */
+/** Rows only shown in Advanced mode. */
+const TECHNICAL = new Set(["Address type", "Fingerprint", "Derivation path", "Extended public key", "Descriptor", "Receives with", "Account id", "Policy"]);
+
 function WalletDetails({ id, children }: { id: string; children?: ReactNode }) {
+  const advanced = useWallet((s) => s.layout?.advanced ?? false);
   const [rows, setRows] = useState<DetailRow[] | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -187,7 +191,7 @@ function WalletDetails({ id, children }: { id: string; children?: ReactNode }) {
         <div className="group details">
           {error && <div className="cell field-error">{error}</div>}
           {!rows && !error && <div className="cell empty">Loading…</div>}
-          {rows?.map((r, i) => (
+          {rows?.filter((r) => advanced || !TECHNICAL.has(r.label)).map((r, i) => (
             <div className="cell detail-row" key={`${r.label}-${i}`}>
               <span className="detail-label">{r.label}</span>
               <span className={`detail-value${r.mono ? " mono" : ""}`}>{r.value}</span>

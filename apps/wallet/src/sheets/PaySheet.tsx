@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { AccountInfo, Execution, FeePriority, Leg, PaymentRequest, Plan, Prepared, SpendStyle } from "../api/types";
 import { Icon } from "../components/Icon";
 import { ScanButton, scanText } from "../components/Scanner";
-import { AmountInput, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
-import { METHOD_LABEL, accountColor, errorText, formatFiat, formatSats, held } from "../format";
+import { AmountInput, FeePicker, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, feeEta, useBusy, useFeeRates } from "../components/ui";
+import { Dropdown, accountOptions } from "../components/Dropdown";
+import { METHOD_LABEL, errorText, formatFiat, formatSats, held } from "../format";
 import { useWallet } from "../state/store";
 import { RoutePreview } from "./RoutePreview";
 import { activeAccounts } from "../modules/AccountModule";
@@ -52,7 +53,17 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
   const [amount, setAmount] = useState<number | null>(null);
   const [from, setFrom] = useState<string | null>(initialFrom ?? null);
   const [fee, setFee] = useState<FeePriority>("normal");
-  const [style, setStyle] = useState<SpendStyle>(useWallet.getState().layout?.spendStyle ?? "efficient");
+  const advanced = useWallet((s) => s.layout?.advanced ?? false);
+  // Basic mode is always Efficient; advanced starts from the user's default.
+  const [style, setStyle] = useState<SpendStyle>(advanced ? (useWallet.getState().layout?.spendStyle ?? "efficient") : "efficient");
+  /** Why Private can't be used for this payment, once we've found out. */
+  const [privateBlocked, setPrivateBlocked] = useState<string | null>(null);
+  /** "All": fees come out of the amount, which is tuned once fees are known. */
+  const [all, setAll] = useState(false);
+  const allRef = useRef(false);
+  allRef.current = all;
+  const tunes = useRef(0);
+  const rates = useFeeRates();
   const [plan, setPlan] = useState<Plan | null>(null);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -91,13 +102,49 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         const prep = await a.prepare(p, fee, style);
         if (alive) setPrepared(prep);
       } catch (e) {
-        if (alive) setPlanError(errorText(e));
+        if (!alive) return;
+        if (style === "private") {
+          // Private isn't possible here: fall back to Efficient and say why on tap.
+          setPrivateBlocked(errorText(e));
+          setStyle("efficient");
+          return;
+        }
+        const payer = accounts.find((x) => x.id === from);
+        if (allRef.current && payer && tunes.current < 5) {
+          tunes.current += 1;
+          const need = /need ([\d,]+)/i.exec(errorText(e))?.[1];
+          const over = need ? Number(need.replace(/,/g, "")) - held(payer) : Math.ceil(amount * 0.01);
+          setAmount(Math.max(1, amount - Math.max(1, over)));
+          return;
+        }
+        setPlanError(errorText(e));
       }
     })();
     return () => {
       alive = false;
     };
-  }, [step, input, amount, from, fee, style]);
+  }, [step, input, amount, from, fee, style]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sending everything: shrink the amount until amount + fees is exactly the balance.
+  useEffect(() => {
+    const payer = accounts.find((x) => x.id === from);
+    if (!all || !prepared || !payer || !amount) return;
+    const over = prepared.quote.amountSat + prepared.quote.feeSat - held(payer);
+    if ((over > 0 || over < -3) && tunes.current < 5) {
+      tunes.current += 1;
+      setAmount(Math.max(1, amount - over));
+    }
+  }, [all, prepared, from, amount]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A new speed or account re-fits "All".
+  useEffect(() => {
+    tunes.current = 0;
+  }, [fee, from, style]);
+
+  // Privacy only matters per account.
+  useEffect(() => {
+    setPrivateBlocked(null);
+  }, [from]);
 
   const layout = useWallet((s) => s.layout);
   const payers = useMemo(() => activeAccounts(accounts, layout).filter((a) => a.pays.length > 0 || a.id === initialFrom), [accounts, layout, initialFrom]);
@@ -179,14 +226,30 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           </button>
         }
       >
-        <AmountInput value={amount || null} onChange={setAmount} autoFocus max={(payer ? held(payer) : undefined)} />
+        <AmountInput value={amount || null} onChange={(v) => (setAll(false), setAmount(v))} autoFocus max={payer ? held(payer) : undefined} />
         <div className="quick-amounts">
-          {[1_000, 10_000, 21_000, 100_000].map((v) => (
-            <button key={v} className="chip num" onClick={() => setAmount(v)}>
+          {[1_000, 10_000, 100_000].map((v) => (
+            <button key={v} className="chip num" onClick={() => (setAll(false), setAmount(v))}>
               {formatSats(v)}
             </button>
           ))}
+          <button
+            className="chip"
+            aria-pressed={all}
+            onClick={() => {
+              // "All" needs a source: the chosen account, else the one holding the most.
+              const src = payer ?? [...payers].sort((x, y) => held(y) - held(x))[0];
+              if (!src) return;
+              tunes.current = 0;
+              setFrom(src.id);
+              setAll(true);
+              setAmount(held(src));
+            }}
+          >
+            All
+          </button>
         </div>
+        {all && payer && <p className="group-note" style={{ textAlign: "center", margin: "-6px 0 16px" }}>Everything in {payer.name}. Fees are taken from this amount.</p>}
         <button className="btn primary block" disabled={!amount} onClick={() => setStep("review")}>
           Review
         </button>
@@ -218,18 +281,23 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           <div className="balance-sub">to {describe(request)}</div>
         </div>
 
-        <p className="group-label">Send from</p>
-        <div className="chips">
-          <button className="chip" aria-pressed={from === null} onClick={() => setFrom(null)}>
-            Best account
-          </button>
-          {payers.map((a) => (
-            <button key={a.id} className="chip" aria-pressed={from === a.id} onClick={() => setFrom(a.id)}>
-              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: accountColor(a), marginRight: 6 }} />
-              {a.name}
-            </button>
-          ))}
+        <div className="group">
+          <Dropdown
+            label="Send from"
+            value={from ?? "auto"}
+            onChange={(v) => {
+              tunes.current = 0;
+              if (all && v !== "auto") {
+                const src = accounts.find((a) => a.id === v);
+                if (src) setAmount(held(src));
+              }
+              if (v === "auto") setAll(false);
+              setFrom(v === "auto" ? null : v);
+            }}
+            options={[{ value: "auto", label: "Best account", detail: "Cheapest way to pay", color: "var(--label-2)", icon: <Icon name="bolt" size={14} /> }, ...accountOptions(payers)]}
+          />
         </div>
+        {all && <p className="group-note" style={{ margin: "-12px 16px 16px" }}>Sending everything. Fees are taken from the amount.</p>}
 
         {planError ? (
           <p className="notice">{planError}</p>
@@ -239,20 +307,9 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           <p className="empty">Finding the best route…</p>
         )}
 
-        {showFees && (
-          <>
-            <p className="group-label">Speed</p>
-            <div className="segmented">
-              {(["slow", "normal", "fast"] as const).map((f) => (
-                <button key={f} aria-pressed={fee === f} onClick={() => setFee(f)}>
-                  {f === "slow" ? "No rush" : f === "normal" ? "About an hour" : "Next block"}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
+        {showFees && <FeePicker value={fee} onChange={setFee} rates={rates} />}
 
-        {plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} />}
+        {advanced && plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} unavailable={privateBlocked} />}
 
         {prepared && <QuoteNotes notes={prepared.quote.notes} payjoin={prepared.quote.payjoin} />}
 
@@ -260,7 +317,9 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           <div className="group">
             <div className="cell">
               <span className="grow">Fee</span>
-              <span className="value num">{formatSats(prepared.quote.feeSat)} sats</span>
+              <span className="value num">
+                {formatSats(prepared.quote.feeSat)} sats{showFees && feeEta(fee, rates) ? ` · ${feeEta(fee, rates)}` : ""}
+              </span>
             </div>
             {prepared.swapFeeSat > 0 && (
               <div className="cell">

@@ -1035,6 +1035,7 @@ button {
   width: 84px;
   height: 84px;
   margin-bottom: 28px;
+  border-radius: 20px;
 }
 
 .welcome-title {
@@ -2103,4 +2104,77 @@ button {
 
 .big-stat.in {
   color: var(--green);
+}
+
+/* An option that can't be used right now (with an info dot that says why). */
+.segmented button.unavailable,
+.segmented button:disabled {
+  color: var(--label-3);
+}
+
+.segmented button.unavailable {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: help;
+}
+
+.segmented button:disabled.unavailable {
+  pointer-events: auto;
+}
+
+.info-dot {
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent-ink);
+}
+
+/* ───────── Basic / Advanced ───────── */
+
+.mode-switch {
+  margin-bottom: 22px;
+}
+
+.mode-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.mode-options button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  text-align: left;
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--separator);
+}
+
+.mode-options button strong {
+  font-size: 17px;
+}
+
+.mode-options button span {
+  font-size: 13px;
+  color: var(--label-2);
+}
+
+.mode-options button[aria-checked="true"] {
+  box-shadow: inset 0 0 0 2.5px var(--accent);
+}
+
+.mode-options button[aria-checked="true"] strong {
+  color: var(--accent-ink);
+}
+
+.mode-switch.compact .mode-options button {
+  padding: 10px 14px;
+}
+
+[data-skin="sessions"] .mode-options button {
+  border-radius: var(--r-control);
 }

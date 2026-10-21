@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import QRCode from "qrcode";
 import { Icon } from "./Icon";
+import { api } from "../api";
+import type { FeePriority, FeeRates } from "../api/types";
 import { Dropdown } from "./Dropdown";
 import { useWallet } from "../state/store";
 import { formatFiat, formatSats } from "../format";
@@ -221,8 +223,17 @@ export function SelectRow<T extends string>({
   return <Dropdown label={label} value={value} onChange={onChange} options={options.map((o) => (o.value === value && dot && !o.color ? { ...o, color: dot } : o))} />;
 }
 
-/** Efficient / Private choice for on-chain sends. */
-export function SpendStyleSwitch({ value, onChange }: { value: "efficient" | "private"; onChange: (v: "efficient" | "private") => void }) {
+/** Efficient / Private choice for on-chain sends. `unavailable` greys out Private and says why. */
+export function SpendStyleSwitch({
+  value,
+  onChange,
+  unavailable,
+}: {
+  value: "efficient" | "private";
+  onChange: (v: "efficient" | "private") => void;
+  unavailable?: string | null;
+}) {
+  const [why, setWhy] = useState(false);
   return (
     <>
       <p className="group-label">Privacy</p>
@@ -230,15 +241,119 @@ export function SpendStyleSwitch({ value, onChange }: { value: "efficient" | "pr
         <button aria-pressed={value === "efficient"} onClick={() => onChange("efficient")}>
           Efficient
         </button>
-        <button aria-pressed={value === "private"} onClick={() => onChange("private")}>
+        <button aria-pressed={value === "private"} disabled={!!unavailable} onClick={() => (unavailable ? setWhy(!why) : onChange("private"))} className={unavailable ? "unavailable" : undefined}>
           Private
+          {unavailable && (
+            <span
+              className="info-dot"
+              role="button"
+              tabIndex={0}
+              aria-label="Why Private isn't available"
+              onClick={(e) => (e.stopPropagation(), setWhy(!why))}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setWhy(!why)}
+            >
+              <Icon name="info" size={13} stroke={2.2} />
+            </span>
+          )}
         </button>
       </div>
       <p className="group-note" style={{ margin: "0 16px 18px" }}>
-        {value === "private"
-          ? "Looks like a two-person coinjoin, so observers can't tell which output is the payment. Uses more coins and costs about 2–3× the fee."
-          : "Fewest coins and the lowest fee."}
+        {unavailable && why
+          ? unavailable
+          : value === "private"
+            ? "Looks like a two-person coinjoin, so observers can't tell which output is the payment. Uses more coins and costs about 2–3× the fee."
+            : "Fewest coins and the lowest fee."}
       </p>
+    </>
+  );
+}
+
+const SPEEDS: { id: "slow" | "normal" | "fast"; label: string }[] = [
+  { id: "slow", label: "Slow" },
+  { id: "normal", label: "Medium" },
+  { id: "fast", label: "Fast" },
+];
+
+/** Rough time to confirm for a fee choice, given current rates. */
+export function feeEta(fee: FeePriority, rates: FeeRates | null): string {
+  if (fee === "fast") return "~10 min";
+  if (fee === "normal") return "~1 hour";
+  if (fee === "slow") return "~1 day";
+  if (!rates) return "";
+  if (fee >= rates.fast) return "~10 min";
+  if (fee >= rates.normal) return "~1 hour";
+  if (fee >= rates.slow) return "~1 day";
+  return "Could take days";
+}
+
+/** Live fee rates, fetched once per screen. */
+export function useFeeRates(): FeeRates | null {
+  const [rates, setRates] = useState<FeeRates | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api()
+      .then((a) => a.feeRates())
+      .then((r) => alive && setRates(r))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return rates;
+}
+
+/** Slow / Medium / Fast, plus a custom sat/vB rate in advanced mode. */
+export function FeePicker({ value, onChange, rates }: { value: FeePriority; onChange: (v: FeePriority) => void; rates: FeeRates | null }) {
+  const advanced = useWallet((s) => s.layout?.advanced ?? false);
+  const custom = typeof value === "number";
+  const [draft, setDraft] = useState(custom ? String(value) : "");
+  return (
+    <>
+      <p className="group-label">Speed</p>
+      <div className="segmented">
+        {SPEEDS.map((s) => (
+          <button key={s.id} aria-pressed={value === s.id} onClick={() => onChange(s.id)}>
+            {s.label}
+          </button>
+        ))}
+        {advanced && (
+          <button
+            aria-pressed={custom}
+            onClick={() => {
+              const start = draft || String(Math.max(1, Math.round(rates?.normal ?? 2)));
+              setDraft(start);
+              onChange(Number(start));
+            }}
+          >
+            Custom
+          </button>
+        )}
+      </div>
+      {advanced && custom && (
+        <div className="group" style={{ marginTop: -8 }}>
+          <label className="cell">
+            <span className="grow">Fee rate</span>
+            <input
+              className="num"
+              inputMode="decimal"
+              value={draft}
+              style={{ textAlign: "right", maxWidth: 90 }}
+              onChange={(e) => {
+                const v = e.target.value.replace(/[^\d.]/g, "");
+                setDraft(v);
+                const n = Number(v);
+                if (n >= 1) onChange(Math.round(n * 10) / 10);
+              }}
+            />
+            <span className="value">sat/vB</span>
+          </label>
+          {rates && (
+            <div className="cell" style={{ fontSize: 13, color: "var(--label-2)" }}>
+              Now: {rates.slow} slow · {rates.normal} medium · {rates.fast} fast sat/vB
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }

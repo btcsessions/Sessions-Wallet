@@ -57,7 +57,7 @@ interface State {
   removeModule(id: string): Promise<void>;
   resizeModule(id: string, sizes: InstalledModule["size"][]): Promise<void>;
   reorder(ids: string[]): Promise<void>;
-  setAdvanced(v: boolean): Promise<void>;
+  setAdvanced(v: boolean, keep?: (moduleId: string) => boolean): Promise<void>;
   setSpendStyle(v: SpendStyle): Promise<void>;
 }
 
@@ -241,10 +241,12 @@ export const useWallet = create<State>((set, get) => {
       if (!layout) return;
       await persistLayout({ ...layout, spendStyle });
     },
-    async setAdvanced(advanced) {
+    async setAdvanced(advanced, keep) {
       const layout = get().layout;
       if (!layout) return;
-      await persistLayout({ ...layout, advanced });
+      // Leaving Advanced: only the modules the caller keeps, and sends go back to Efficient.
+      const modules = keep ? layout.modules.filter((m) => keep(m.id)) : layout.modules;
+      await persistLayout({ ...layout, advanced, modules, spendStyle: advanced ? layout.spendStyle : "efficient" });
     },
   };
 });

@@ -187,6 +187,13 @@ export interface TxDetails {
   speedUpKind: "rbf" | "cpfp" | null;
 }
 
+/** Per-send extras (advanced): a label only you see, and coin control. */
+export interface SpendOptions {
+  label?: string | null;
+  /** Outpoints ("txid:vout") to spend, exactly these. */
+  coins?: string[] | null;
+}
+
 export type BumpAction = "speedUp" | "cancel";
 
 export interface DetailRow {

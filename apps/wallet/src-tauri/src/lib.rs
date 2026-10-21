@@ -105,6 +105,9 @@ pub fn run() {
             commands::sync_account,
             commands::prepare_bump,
             commands::confirm_quote,
+            commands::list_utxos,
+            commands::set_label,
+            commands::set_frozen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

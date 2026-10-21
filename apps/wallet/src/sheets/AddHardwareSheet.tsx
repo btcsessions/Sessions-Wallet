@@ -20,6 +20,7 @@ async function exportText(r: ScanResult): Promise<string> {
 /** Pick a device → connect or scan → name it and check the first address. */
 export function AddHardwareSheet() {
   const { addModule, refresh, notify, close } = useWallet();
+  const advanced = useWallet((s) => s.layout?.advanced ?? false);
   const [device, setDevice] = useState<DeviceDef | null>(null);
   const [preview, setPreview] = useState<DescriptorPreview | null>(null);
   const [label, setLabel] = useState("");
@@ -156,14 +157,18 @@ export function AddHardwareSheet() {
             <span className="grow">Device</span>
             <span className="value">{device.name}</span>
           </div>
-          <div className="cell">
-            <span className="grow">Fingerprint</span>
-            <span className="value mono">{preview.fingerprint}</span>
-          </div>
-          <div className="cell">
-            <span className="grow">Address type</span>
-            <span className="value">{preview.scriptType}</span>
-          </div>
+          {advanced && (
+            <>
+              <div className="cell">
+                <span className="grow">Fingerprint</span>
+                <span className="value mono">{preview.fingerprint}</span>
+              </div>
+              <div className="cell">
+                <span className="grow">Address type</span>
+                <span className="value">{preview.scriptType}</span>
+              </div>
+            </>
+          )}
         </div>
         <p className="group-label">First receive address</p>
         <div className="group">
@@ -193,6 +198,7 @@ export function AddHardwareSheet() {
               ? "This opens the Trezor Suite app. Unlock your Trezor there and approve sharing the wallet, and you'll be brought back here."
               : "Open Trezor Suite on this computer and unlock your Trezor. Suite will ask you to allow Sessions Wallet."}
           </p>
+          {advanced && (
           <div className="group">
             <SelectRow
               label="Address type"
@@ -204,6 +210,7 @@ export function AddHardwareSheet() {
               ]}
             />
           </div>
+          )}
           <button className="btn primary block" disabled={busy} onClick={fromTrezor}>
             {busy ? "Waiting for Trezor…" : "Connect Trezor"}
           </button>

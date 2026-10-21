@@ -2,9 +2,10 @@ import { Icon } from "../components/Icon";
 import { Sheet } from "../components/ui";
 import { CATALOG, SECTIONS, moduleType } from "../modules/catalog";
 import { useWallet } from "../state/store";
+import { ModeSwitch } from "../components/ModeSwitch";
 
 export function GallerySheet() {
-  const { layout, addModule, open, notify, setAdvanced } = useWallet();
+  const { layout, addModule, open, notify } = useWallet();
   const installed = new Set(layout?.modules.map((m) => moduleType(m.id)));
   const advanced = layout?.advanced ?? false;
 
@@ -54,15 +55,8 @@ export function GallerySheet() {
         );
       })}
 
-      <div className="group">
-        <label className="cell">
-          <span className="grow">
-            <div>Advanced mode</div>
-            <div className="row-sub">Shows watch-only accounts and extra detail like descriptors.</div>
-          </span>
-          <input type="checkbox" role="switch" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} style={{ flex: "none", width: 22, height: 22, accentColor: "var(--accent)" }} />
-        </label>
-      </div>
+      <p className="group-label">More modules in Advanced mode</p>
+      <ModeSwitch compact />
     </Sheet>
   );
 }

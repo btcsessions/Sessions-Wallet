@@ -364,9 +364,11 @@ export const mockApi: WalletApi = {
     const rate = typeof fee === "number" ? fee : fee === "fast" ? 6 : fee === "slow" ? 2 : 4;
     const swapFee = leg.type === "viaSwap" ? Math.ceil(plan.amountSat * 0.001) + 120 : 0;
     const isPrivate = onchain && style === "private" && first.rail === "onchain";
+    if (isPrivate && first.custody.type === "hardware") throw "Private send needs coins at two or more different addresses. Use Efficient for this one";
     const feeSat = onchain ? rate * (isPrivate ? 340 : 141) : 3;
     const amountSat = plan.amountSat + swapFee;
-    if (first.balance.confirmed < amountSat + feeSat) throw `Not enough funds: need ${(amountSat + feeSat).toLocaleString()} sats, have ${first.balance.confirmed.toLocaleString()} sats`;
+    const have = first.balance.confirmed + first.balance.pendingIn;
+    if (have < amountSat + feeSat) throw `Not enough funds: need ${(amountSat + feeSat).toLocaleString()} sats, have ${have.toLocaleString()} sats`;
     const hw = first.custody.type === "hardware" || first.custody.type === "multisig";
     return {
       quote: {

@@ -4,11 +4,12 @@ import type { Settings } from "../api/types";
 import { Sheet, useBusy } from "../components/ui";
 import { useWallet } from "../state/store";
 import { THEMES, type Appearance } from "../theme";
+import { ModeSwitch } from "../components/ModeSwitch";
 
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
 
 export function SettingsSheet() {
-  const { currency, layout, setAdvanced, setStatus, close, refresh, setSpendStyle } = useWallet();
+  const { currency, layout, setStatus, close, refresh, setSpendStyle } = useWallet();
   const [phrase, setPhrase] = useState<string | null>(null);
   const [passcode, setPasscode] = useState("");
   const [busy, run] = useBusy();
@@ -43,6 +44,9 @@ export function SettingsSheet() {
 
   return (
     <Sheet title="Settings">
+      <p className="group-label">Mode</p>
+      <ModeSwitch />
+
       <ThemePicker />
 
       <p className="group-label">Currency</p>
@@ -67,16 +71,9 @@ export function SettingsSheet() {
         ))}
       </div>
 
-      <div className="group" style={{ marginTop: 8 }}>
-        <label className="cell">
-          <span className="grow">
-            <div>Advanced mode</div>
-            <div className="row-sub">Extra detail and expert modules.</div>
-          </span>
-          <input type="checkbox" role="switch" checked={layout?.advanced ?? false} onChange={(e) => setAdvanced(e.target.checked)} style={{ width: 22, height: 22, accentColor: "var(--accent)" }} />
-        </label>
-      </div>
-
+      <div style={{ height: 8 }} />
+      {layout?.advanced && (
+      <>
       <p className="group-label">On-chain sends</p>
       <div className="segmented" style={{ marginBottom: 6 }}>
         <button aria-pressed={(layout?.spendStyle ?? "efficient") === "efficient"} onClick={() => setSpendStyle("efficient")}>
@@ -121,6 +118,8 @@ export function SettingsSheet() {
       <button className="btn block" style={{ marginBottom: 22 }} disabled={busy || (server === (settings?.esploraUrl ?? "") && !breezKey.trim())} onClick={saveConnection}>
         Save connection
       </button>
+      </>
+      )}
 
       <p className="group-label">Recovery phrase</p>
       {phrase ? (

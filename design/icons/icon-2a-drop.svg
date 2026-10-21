@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Sessions Wallet</title>
+  <rect width="512" height="512" fill="#0D101C"/>
+  <g fill="#F7931A">
+    <rect x="148" y="72" width="64" height="64" rx="14"/>
+    <rect x="224" y="72" width="64" height="64" rx="14"/>
+    <rect x="148" y="148" width="64" height="64" rx="14"/>
+    <rect x="148" y="224" width="64" height="64" rx="14"/>
+    <rect x="224" y="224" width="64" height="64" rx="14"/>
+    <rect x="300" y="224" width="64" height="64" rx="14"/>
+    <rect x="300" y="300" width="64" height="64" rx="14"/>
+    <rect x="148" y="376" width="64" height="64" rx="14"/>
+    <rect x="224" y="376" width="64" height="64" rx="14"/>
+    <rect x="300" y="376" width="64" height="64" rx="14"/>
+  </g>
+  <rect x="301.5" y="73.5" width="61" height="61" rx="13" fill="none" stroke="#7ED3F2" stroke-opacity="0.35" stroke-width="3" stroke-dasharray="7 6"/>
+  <rect x="322" y="34" width="64" height="64" rx="14" fill="#7ED3F2" transform="rotate(16 354 66)"/>
+</svg>

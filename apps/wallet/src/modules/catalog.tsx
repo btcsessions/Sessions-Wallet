@@ -86,6 +86,7 @@ const defs: ModuleDef[] = [
     component: AccountModule,
     setup: "savings",
     multiple: true,
+    advanced: true,
   },
   {
     type: "vault",
@@ -98,6 +99,7 @@ const defs: ModuleDef[] = [
     component: AccountModule,
     setup: "multisig",
     multiple: true,
+    advanced: true,
   },
   {
     type: "hardware",
@@ -122,6 +124,7 @@ const defs: ModuleDef[] = [
     component: AccountModule,
     setup: "ecash",
     multiple: true,
+    advanced: true,
   },
   {
     type: "move",
@@ -142,6 +145,7 @@ const defs: ModuleDef[] = [
     section: "move",
     sizes: ["small", "medium"],
     component: LiquidModule,
+    advanced: true,
   },
   {
     type: "price",
@@ -162,6 +166,7 @@ const defs: ModuleDef[] = [
     section: "tools",
     sizes: ["small", "medium"],
     component: FeesModule,
+    advanced: true,
   },
   {
     type: "watch",

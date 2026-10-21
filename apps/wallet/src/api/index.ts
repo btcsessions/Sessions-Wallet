@@ -3,6 +3,7 @@ import type {
   BumpAction,
   DescriptorPreview,
   SendQuote,
+  SpendOptions,
   TxDetails,
   DetailRow,
   ReceiveQuote,
@@ -71,7 +72,7 @@ export interface WalletApi {
   planPayment(input: string, amountSat: number | null, from: string | null): Promise<Plan>;
   planMove(from: string, to: string, amountSat: number): Promise<Plan>;
   /** Price the first step; nothing moves yet. */
-  prepare(plan: Plan, fee: FeePriority, style?: SpendStyle): Promise<Prepared>;
+  prepare(plan: Plan, fee: FeePriority, style?: SpendStyle, spend?: SpendOptions): Promise<Prepared>;
   confirm(prepared: Prepared, fee: FeePriority): Promise<Execution>;
   resume(paused: Execution, signedPsbt: string, fee: FeePriority): Promise<Execution>;
 

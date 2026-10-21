@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Sessions Wallet (Block B)</title>
+  <rect width="512" height="512" fill="#0D101C"/>
+  <g fill="#F7931A">
+    <rect x="171" y="34" width="18" height="30" rx="6"/>
+    <rect x="247" y="34" width="18" height="30" rx="6"/>
+    <rect x="148" y="72" width="64" height="64" rx="14"/>
+    <rect x="224" y="72" width="64" height="64" rx="14"/>
+    <rect x="148" y="148" width="64" height="64" rx="14"/>
+    <rect x="300" y="148" width="64" height="64" rx="14"/>
+    <rect x="148" y="224" width="64" height="64" rx="14"/>
+    <rect x="224" y="224" width="64" height="64" rx="14"/>
+    <rect x="148" y="300" width="64" height="64" rx="14"/>
+    <rect x="148" y="376" width="64" height="64" rx="14"/>
+    <rect x="224" y="376" width="64" height="64" rx="14"/>
+    <rect x="171" y="448" width="18" height="30" rx="6"/>
+    <rect x="247" y="448" width="18" height="30" rx="6"/>
+  </g>
+  <rect x="301.5" y="301.5" width="61" height="61" rx="13" fill="none" stroke="#7ED3F2" stroke-opacity="0.35" stroke-width="3" stroke-dasharray="7 6"/>
+  <rect x="334" y="292" width="64" height="64" rx="14" fill="#7ED3F2" transform="rotate(16 366 324)"/>
+</svg>

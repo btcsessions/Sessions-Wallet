@@ -290,10 +290,11 @@ pub async fn prepare(
     plan: Plan,
     fee: FeePriority,
     style: Option<sessions_core::SpendStyle>,
+    spend: Option<sessions_core::SpendOptions>,
 ) -> Result<Prepared> {
     wallet(&state)
         .await?
-        .prepare_styled(plan, fee, style.unwrap_or_default())
+        .prepare_styled(plan, fee, style.unwrap_or_default(), spend)
         .await
 }
 
@@ -863,4 +864,49 @@ pub async fn sync_account(state: State<'_, AppState>, id: AccountId) -> Result<(
         // Slow server: the next poll tries again.
         Err(_) => Ok(()),
     }
+}
+
+/// Unspent coins of an on-chain account, newest first (coin control).
+#[tauri::command]
+pub async fn list_utxos(
+    state: State<'_, AppState>,
+    account: AccountId,
+) -> Result<Vec<sessions_core::Utxo>> {
+    wallet(&state).await?.list_utxos(&account).await
+}
+
+/// Label an on-chain address, transaction or coin. `kind` is `"address"`,
+/// `"tx"` or `"output"`; a `null` or empty label removes it.
+#[tauri::command]
+pub async fn set_label(
+    state: State<'_, AppState>,
+    account: AccountId,
+    kind: String,
+    reference: String,
+    label: Option<String>,
+) -> Result<()> {
+    let kind = match kind.as_str() {
+        "address" | "addr" => sessions_core::LabelKind::Address,
+        "tx" => sessions_core::LabelKind::Tx,
+        "output" => sessions_core::LabelKind::Output,
+        other => return Err(Error::Invalid(format!("Unknown label type: {other}"))),
+    };
+    wallet(&state)
+        .await?
+        .set_label(&account, kind, &reference, label)
+        .await
+}
+
+/// Freeze (never spend automatically) or unfreeze an on-chain coin.
+#[tauri::command]
+pub async fn set_frozen(
+    state: State<'_, AppState>,
+    account: AccountId,
+    outpoint: String,
+    frozen: bool,
+) -> Result<()> {
+    wallet(&state)
+        .await?
+        .set_frozen(&account, &outpoint, frozen)
+        .await
 }

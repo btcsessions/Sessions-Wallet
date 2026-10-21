@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Execution, FeePriority, Plan, Prepared, SpendStyle } from "../api/types";
 import { Icon } from "../components/Icon";
-import { AmountInput, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
+import { AmountInput, FeePicker, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, feeEta, useBusy, useFeeRates } from "../components/ui";
 import { AccountPicker } from "../components/Dropdown";
 import { errorText, formatSats, held } from "../format";
 import { useWallet } from "../state/store";
@@ -25,7 +25,10 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
   const allRef = useRef(false);
   allRef.current = all;
   const [fee, setFee] = useState<FeePriority>("normal");
-  const [style, setStyle] = useState<SpendStyle>(useWallet.getState().layout?.spendStyle ?? "efficient");
+  const advanced = layout?.advanced ?? false;
+  const [style, setStyle] = useState<SpendStyle>(advanced ? (layout?.spendStyle ?? "efficient") : "efficient");
+  const [privateBlocked, setPrivateBlocked] = useState<string | null>(null);
+  const rates = useFeeRates();
   const [plan, setPlan] = useState<Plan | null>(null);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +51,11 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
         if (alive) setPrepared(prep);
       } catch (e) {
         if (!alive) return;
+        if (style === "private") {
+          setPrivateBlocked(errorText(e));
+          setStyle("efficient");
+          return;
+        }
         // Sending everything and it doesn't fit: take the shortfall (or 1%) off and retry.
         const balance = (() => { const x = accounts.find((y) => y.id === from); return x ? held(x) : 0; })();
         if (allRef.current && tunes.current < 5) {
@@ -81,6 +89,10 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
   useEffect(() => {
     tunes.current = 0;
   }, [fee, to, from, style]);
+
+  useEffect(() => {
+    setPrivateBlocked(null);
+  }, [from]);
 
   const pickAmount = (v: number | null, everything = false) => {
     tunes.current = 0;
@@ -156,17 +168,9 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
       {error && <p className="notice">{error}</p>}
       {plan && <RoutePreview plan={plan} />}
 
-      {onchain && (
-        <div className="segmented">
-          {(["slow", "normal", "fast"] as const).map((f) => (
-            <button key={f} aria-pressed={fee === f} onClick={() => setFee(f)}>
-              {f === "slow" ? "No rush" : f === "normal" ? "About an hour" : "Next block"}
-            </button>
-          ))}
-        </div>
-      )}
+      {onchain && <FeePicker value={fee} onChange={setFee} rates={rates} />}
 
-      {plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} />}
+      {advanced && plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} unavailable={privateBlocked} />}
       {prepared && <QuoteNotes notes={prepared.quote.notes} />}
 
       {prepared && (
@@ -175,6 +179,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
             <span className="grow">Fee</span>
             <span className="value num">
               {formatSats(prepared.quote.feeSat + prepared.swapFeeSat)} sats{prepared.hopsAfter > 0 ? " plus a few for the extra hop" : ""}
+              {onchain && feeEta(fee, rates) ? ` · ${feeEta(fee, rates)}` : ""}
             </span>
           </div>
         </div>

@@ -21,6 +21,7 @@ async function openExternal(url: string) {
 /** One transaction: what happened, the on-chain facts, and speed up / cancel while it's pending. */
 export function TxSheet({ id, back }: { id: string; back?: string }) {
   const { activity, accounts, price, currency, open, refresh, notify, close } = useWallet();
+  const advanced = useWallet((s) => s.layout?.advanced ?? false);
   const p = activity.find((x) => x.id === id);
   const account = accounts.find((a) => a.id === p?.account);
   const [details, setDetails] = useState<TxDetails | null>(null);
@@ -152,19 +153,23 @@ export function TxSheet({ id, back }: { id: string; back?: string }) {
         <Row label="Account" value={account?.name ?? p.account} />
         <Row label="When" value={new Date(p.timestamp * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })} />
         <Row label="Network" value={METHOD_LABEL[p.method]} />
-        {p.direction !== "incoming" && <Row label="Fee" value={`${formatSats(details?.feeSat ?? p.feeSat)} sats${details?.feeRate ? ` · ${details.feeRate.toFixed(1)} sat/vB` : ""}`} />}
+        {p.direction !== "incoming" && <Row label="Fee" value={`${formatSats(details?.feeSat ?? p.feeSat)} sats${advanced && details?.feeRate ? ` · ${details.feeRate.toFixed(1)} sat/vB` : ""}`} />}
         {details?.blockHeight != null && <Row label="Block" value={details.blockHeight.toLocaleString()} />}
       </div>
 
       {txid && (
         <>
-          <p className="group-label">Transaction ID</p>
-          <div className="group">
-            <div className="cell detail-row">
-              <span className="detail-value mono">{txid}</span>
-              <CopyButton text={txid} label="" />
-            </div>
-          </div>
+          {advanced && (
+            <>
+              <p className="group-label">Transaction ID</p>
+              <div className="group">
+                <div className="cell detail-row">
+                  <span className="detail-value mono">{txid}</span>
+                  <CopyButton text={txid} label="" />
+                </div>
+              </div>
+            </>
+          )}
           <button className="btn block" style={{ marginBottom: 18 }} onClick={() => void openExternal(`https://mempool.space/tx/${txid}`)}>
             <Icon name="link" size={16} />
             View on mempool.space
