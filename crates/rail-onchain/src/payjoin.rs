@@ -828,7 +828,7 @@ impl OnchainAccount {
         let dir = self.pj.receive_dir.clone()?;
         {
             let inner = self.inner.lock().await;
-            if candidate_inputs(&inner.wallet, &BTreeSet::new()).is_empty() {
+            if candidate_inputs(&inner.wallet, inner.labels.frozen()).is_empty() {
                 tracing::info!("payjoin receive: no confirmed coin to contribute, plain address");
                 return None;
             }
@@ -1237,6 +1237,8 @@ impl OnchainAccount {
                     if let Some(m) = mine {
                         others.remove(&m);
                     }
+                    // Frozen coins are never contributed.
+                    others.extend(inner.labels.frozen().iter().copied());
                     candidate_inputs(&inner.wallet, &others)
                 };
                 // After a restart, re-contribute the same coin if we can.
@@ -1471,6 +1473,7 @@ mod tests {
             fee: FeePriority::Custom(3),
             note: None,
             style: Default::default(),
+            coins: None,
         }
     }
 

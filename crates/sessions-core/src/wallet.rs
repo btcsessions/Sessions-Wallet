@@ -32,6 +32,9 @@ pub struct Prepared {
     pub amount_sat: Sats,
     /// Swap service fee already included in `quote.amount_sat`.
     pub swap_fee_sat: Sats,
+    /// Label / note carried to the later legs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Result of running a plan. Hardware and multisig accounts pause the plan
@@ -45,6 +48,9 @@ pub struct Execution {
     /// Legs still to run after the signature is provided.
     pub remaining: Vec<Leg>,
     pub amount_sat: Sats,
+    /// Label / note carried to the remaining legs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl Wallet {
@@ -205,19 +211,28 @@ impl Wallet {
     /// Price the first leg of a plan so the user sees the real fee before
     /// confirming. Nothing moves until [`Wallet::confirm`].
     pub async fn prepare(&self, plan: Plan, fee: FeePriority) -> Result<Prepared> {
-        self.prepare_styled(plan, fee, SpendStyle::Efficient).await
+        self.prepare_styled(plan, fee, SpendStyle::Efficient, None)
+            .await
     }
 
     /// Like [`Wallet::prepare`], choosing how an on-chain first leg is built.
+    /// `spend` adds a label (every leg) and coin control (first leg only).
     pub async fn prepare_styled(
         &self,
         plan: Plan,
         fee: FeePriority,
         style: SpendStyle,
+        spend: Option<SpendOptions>,
     ) -> Result<Prepared> {
+        let SpendOptions { label, coins } = spend.unwrap_or_default();
+        let label = label
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty());
         let mut legs = plan.legs.into_iter();
         let leg = legs.next().ok_or(Error::NoRoute)?;
-        let (quote, swap_fee_sat) = self.prepare_leg(&leg, plan.amount_sat, fee, style).await?;
+        let (quote, swap_fee_sat) = self
+            .prepare_leg(&leg, plan.amount_sat, fee, style, label.clone(), coins)
+            .await?;
         let remaining: Vec<Leg> = legs.collect();
         Ok(Prepared {
             quote,
@@ -226,6 +241,7 @@ impl Wallet {
             remaining,
             amount_sat: plan.amount_sat,
             swap_fee_sat,
+            label,
         })
     }
 
@@ -239,6 +255,7 @@ impl Wallet {
                 awaiting_signature: Some(prepared.quote),
                 remaining: prepared.remaining,
                 amount_sat: prepared.amount_sat,
+                label: prepared.label,
             });
         }
         let from = self.account(prepared.leg.from()).await?;
@@ -246,8 +263,14 @@ impl Wallet {
         if matches!(prepared.leg, Leg::ToAccount { .. }) {
             p.direction = Direction::Internal;
         }
-        self.run_legs(prepared.remaining, prepared.amount_sat, fee, vec![p])
-            .await
+        self.run_legs(
+            prepared.remaining,
+            prepared.amount_sat,
+            fee,
+            prepared.label,
+            vec![p],
+        )
+        .await
     }
 
     /// Prepare and confirm in one go (no fee preview). Used by automations.
@@ -269,8 +292,14 @@ impl Wallet {
         let rail = self.account(&quote.account).await?;
         let mut payments = paused.payments;
         payments.push(rail.send(quote, Some(signed_psbt)).await?);
-        self.run_legs(paused.remaining, paused.amount_sat, fee, payments)
-            .await
+        self.run_legs(
+            paused.remaining,
+            paused.amount_sat,
+            fee,
+            paused.label,
+            payments,
+        )
+        .await
     }
 
     /// Chain details for an on-chain transaction. `None` when the account
@@ -300,6 +329,39 @@ impl Wallet {
             .await
     }
 
+    /// Unspent coins of an on-chain account, newest first.
+    pub async fn list_utxos(&self, account: &AccountId) -> Result<Vec<Utxo>> {
+        self.account(account).await?.list_utxos().await
+    }
+
+    /// Label an address, transaction or coin of an on-chain account.
+    /// `None` or an empty label removes it.
+    pub async fn set_label(
+        &self,
+        account: &AccountId,
+        kind: LabelKind,
+        reference: &str,
+        label: Option<String>,
+    ) -> Result<()> {
+        self.account(account)
+            .await?
+            .set_label(kind, reference, label)
+            .await
+    }
+
+    /// Freeze (never pick automatically) or unfreeze a coin.
+    pub async fn set_frozen(
+        &self,
+        account: &AccountId,
+        outpoint: &str,
+        frozen: bool,
+    ) -> Result<()> {
+        self.account(account)
+            .await?
+            .set_frozen(outpoint, frozen)
+            .await
+    }
+
     /// Send a standalone quote from an account that signs on this device.
     pub async fn confirm_quote(&self, quote: SendQuote) -> Result<Payment> {
         if quote.needs_signature.is_some() {
@@ -317,6 +379,8 @@ impl Wallet {
         amount: Sats,
         fee: FeePriority,
         style: SpendStyle,
+        note: Option<String>,
+        coins: Option<Vec<String>>,
     ) -> Result<(SendQuote, Sats)> {
         let from = self.account(leg.from()).await?;
         let (request, pay_amount, swap_fee) = match leg {
@@ -367,8 +431,9 @@ impl Wallet {
                 amount_sat: Some(pay_amount),
                 send_max: false,
                 fee,
-                note: None,
+                note,
                 style,
+                coins,
             })
             .await?;
         Ok((quote, swap_fee))
@@ -379,13 +444,22 @@ impl Wallet {
         legs: Vec<Leg>,
         amount: Sats,
         fee: FeePriority,
+        label: Option<String>,
         mut payments: Vec<Payment>,
     ) -> Result<Execution> {
         let mut legs = legs.into_iter();
         while let Some(leg) = legs.next() {
-            // Later legs leave hub accounts (e.g. Spending), so style doesn't apply.
+            // Later legs leave hub accounts (e.g. Spending), so style and
+            // coin control don't apply; the label does.
             let (quote, _) = self
-                .prepare_leg(&leg, amount, fee, SpendStyle::Efficient)
+                .prepare_leg(
+                    &leg,
+                    amount,
+                    fee,
+                    SpendStyle::Efficient,
+                    label.clone(),
+                    None,
+                )
                 .await?;
             if quote.needs_signature.is_some() {
                 return Ok(Execution {
@@ -393,6 +467,7 @@ impl Wallet {
                     awaiting_signature: Some(quote),
                     remaining: legs.collect(),
                     amount_sat: amount,
+                    label,
                 });
             }
             let mut p = self.account(leg.from()).await?.send(quote, None).await?;
@@ -406,6 +481,7 @@ impl Wallet {
             awaiting_signature: None,
             remaining: vec![],
             amount_sat: amount,
+            label,
         })
     }
 
@@ -1145,6 +1221,7 @@ mod tests {
                     awaiting_signature: Some(signed),
                     remaining: vec![],
                     amount_sat: 0,
+                    label: None,
                 },
                 "signed".into(),
                 FeePriority::Normal,
