@@ -1,6 +1,22 @@
 [package]
 name = "rail-onchain"
+description = "On-chain bitcoin accounts for Sessions Wallet: single-sig, multisig, hardware and watch-only (BDK)"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+sessions-core.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+bdk_wallet = { version = "3.2", features = ["rusqlite"] }
+bdk_esplora = { version = "0.22", default-features = false, features = ["std", "async-https-rustls"] }
+# Pulled in directly only to enable its tokio sleeper (needed for build_async).
+esplora-client = { version = "0.12", default-features = false, features = ["async-https-rustls", "tokio"] }
+
+[dev-dependencies]
+tempfile = "3"
