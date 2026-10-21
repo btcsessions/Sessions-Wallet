@@ -119,7 +119,35 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
   }, [account?.id, method, amount, swap]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Watch for the payment landing while this sheet is open.
-  const received = activity.find((p) => p.account === accountId && p.direction === "incoming" && p.timestamp >= openedAt);
+  // Lightning into an on-chain account lands in Spending first; that's the moment it's received.
+  const spendingId = accounts.find((a) => a.rail === "spark")?.id;
+  const received = activity.find(
+    (p) =>
+      p.direction === "incoming" &&
+      p.timestamp >= openedAt &&
+      (p.account === accountId || (swap && ready && p.account === spendingId && (!amount || p.amountSat === amount))),
+  );
+
+  // While a request is on screen, check for the payment every few seconds
+  // (Lightning also pushes an event the moment it lands).
+  useEffect(() => {
+    if (!target || !account || received) return;
+    let alive = true;
+    const watched = swap && spendingId ? [account.id, spendingId] : [account.id];
+    const t = setInterval(async () => {
+      try {
+        const a = await api();
+        await Promise.all(watched.map((id) => a.syncAccount(id)));
+        if (alive) await useWallet.getState().refresh();
+      } catch {
+        /* the next tick tries again */
+      }
+    }, 4000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [target, account?.id, swap, spendingId, received]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setError(null);
@@ -153,7 +181,9 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
           <div className="big-stat num" style={{ fontSize: 44 }}>
             +{formatSats(received.amountSat)} <span className="balance-unit">sats</span>
           </div>
-          <p className="balance-sub">in {account?.name}</p>
+          <p className="balance-sub">
+            {received.account === account?.id ? `in ${account?.name}` : `Sending on-chain to ${account?.name} now.`}
+          </p>
         </div>
         <button className="btn primary block" onClick={() => useWallet.getState().close()}>
           Done

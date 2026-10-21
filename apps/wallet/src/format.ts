@@ -52,6 +52,11 @@ export const METHOD_LABEL: Record<Method, string> = {
   cashuToken: "Ecash",
 };
 
+/** What an account holds, unconfirmed incoming included (it can be spent at 0-conf). */
+export function held(a: AccountInfo): number {
+  return a.balance.confirmed + a.balance.pendingIn;
+}
+
 export function accountColor(a: AccountInfo): string {
   if (a.rail === "spark") return "var(--rail-spark)";
   if (a.rail === "ecash") return "var(--rail-ecash)";

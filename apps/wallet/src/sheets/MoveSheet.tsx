@@ -4,7 +4,7 @@ import type { Execution, FeePriority, Plan, Prepared, SpendStyle } from "../api/
 import { Icon } from "../components/Icon";
 import { AmountInput, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
 import { AccountPicker } from "../components/Dropdown";
-import { errorText, formatSats } from "../format";
+import { errorText, formatSats, held } from "../format";
 import { useWallet } from "../state/store";
 import { onchainAccountLeg } from "./PaySheet";
 import { activeAccounts } from "../modules/AccountModule";
@@ -16,7 +16,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
   const accounts = activeAccounts(everyAccount, layout);
   const [paused, setPaused] = useState<Execution | null>(null);
   const sources = accounts.filter((a) => a.pays.length > 0);
-  const [from, setFrom] = useState(initialFrom ?? sources.find((a) => a.balance.confirmed > 0)?.id ?? sources[0]?.id);
+  const [from, setFrom] = useState(initialFrom ?? sources.find((a) => held(a) > 0)?.id ?? sources[0]?.id);
   const [to, setTo] = useState(initialTo ?? accounts.find((a) => a.id !== from && a.custody.type !== "watchOnly")?.id);
   const [amount, setAmount] = useState<number | null>(null);
   /** "All": fees come out of the amount, so it's tuned once fees are known. */
@@ -49,7 +49,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
       } catch (e) {
         if (!alive) return;
         // Sending everything and it doesn't fit: take the shortfall (or 1%) off and retry.
-        const balance = accounts.find((x) => x.id === from)?.balance.confirmed ?? 0;
+        const balance = (() => { const x = accounts.find((y) => y.id === from); return x ? held(x) : 0; })();
         if (allRef.current && tunes.current < 5) {
           tunes.current += 1;
           const need = /need ([\d,]+)/i.exec(errorText(e))?.[1];
@@ -70,7 +70,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
   useEffect(() => {
     if (!all || !prepared || !source || !amount) return;
     const spend = prepared.quote.amountSat + prepared.quote.feeSat;
-    const over = spend - source.balance.confirmed;
+    const over = spend - held(source);
     if ((over > 0 || over < -3) && tunes.current < 4) {
       tunes.current += 1;
       setAmount(Math.max(1, amount - over));
@@ -127,15 +127,15 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
 
   return (
     <Sheet title="Transfer">
-      <AmountInput value={amount} onChange={(v) => pickAmount(v)} max={source?.balance.confirmed} />
+      <AmountInput value={amount} onChange={(v) => pickAmount(v)} max={(source ? held(source) : undefined)} />
       {source && (
         <div className="quick-amounts">
           {[0.25, 0.5].map((f) => (
-            <button key={f} className="chip" aria-pressed={false} onClick={() => pickAmount(Math.floor(source.balance.confirmed * f))}>
+            <button key={f} className="chip" aria-pressed={false} onClick={() => pickAmount(Math.floor(held(source) * f))}>
               {`${f * 100}%`}
             </button>
           ))}
-          <button className="chip" aria-pressed={all} onClick={() => pickAmount(source.balance.confirmed, true)}>
+          <button className="chip" aria-pressed={all} onClick={() => pickAmount(held(source), true)}>
             All
           </button>
         </div>
@@ -143,7 +143,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
       {all && <p className="group-note" style={{ textAlign: "center", margin: "-6px 0 16px" }}>Fees are taken from this amount, so the whole balance moves.</p>}
 
       <div className="group" style={{ position: "relative" }}>
-        <AccountPicker label="From" accounts={sources} value={from} onChange={(id) => (id === to ? swap() : (setFrom(id), all && pickAmount(accounts.find((a) => a.id === id)?.balance.confirmed ?? null, true)))} />
+        <AccountPicker label="From" accounts={sources} value={from} onChange={(id) => (id === to ? swap() : (setFrom(id), all && pickAmount((() => { const x = accounts.find((a) => a.id === id); return x ? held(x) : null; })(), true)))} />
         <AccountPicker label="To" accounts={accounts.filter((a) => a.custody.type !== "watchOnly" && a.id !== from)} value={to} onChange={(id) => (id === from ? swap() : setTo(id))} />
       </div>
       <div style={{ display: "flex", justifyContent: "center", margin: "-12px 0 12px" }}>

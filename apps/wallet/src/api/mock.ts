@@ -234,6 +234,34 @@ export const mockApi: WalletApi = {
     accounts.push(a);
     return a;
   },
+  async syncAccount() {},
+  async txDetails(account, txid) {
+    const a = accounts.find((x) => x.id === account);
+    const p = activity.find((x) => x.id === txid);
+    if (a?.rail !== "onchain" || !p) return null;
+    const pending = p.status === "pending";
+    return {
+      txid: "4f3c2a91e7b05d68c1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8",
+      confirmations: pending ? 0 : 42,
+      blockHeight: pending ? null : 921_384,
+      blockTime: pending ? null : p.timestamp,
+      feeSat: p.feeSat || 412,
+      feeRate: 2.9,
+      vsize: 141,
+      canSpeedUp: pending,
+      canCancel: pending && p.direction !== "incoming",
+      speedUpKind: pending ? (p.direction === "incoming" ? "cpfp" : "rbf") : null,
+    };
+  },
+  async prepareBump(account, _txid, action) {
+    await sleep(300);
+    const a = find(account);
+    return { account, method: "bitcoinAddress", amountSat: 0, feeSat: action === "cancel" ? 1_240 : 860, handle: "mock-bump", needsSignature: a.custody.type === "hot" ? null : { psbtBase64: "cHNidP8BAHECAAAAAQ==", signaturesNeeded: 1 }, notes: action === "cancel" ? [] : ["This replaces your earlier transaction with a faster one."] };
+  },
+  async confirmQuote(quote) {
+    await sleep(300);
+    return { id: "mock-bump-tx", account: quote.account, direction: "internal", amountSat: 0, feeSat: quote.feeSat, status: "pending", method: "bitcoinAddress", timestamp: now() };
+  },
   async accountDetails(id) {
     const a = accounts.find((x) => x.id === id);
     const onchain = a?.rail === "onchain";

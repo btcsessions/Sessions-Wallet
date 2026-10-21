@@ -1,7 +1,8 @@
 import { Icon } from "../components/Icon";
 import { DeviceIcon, HardwareBadge } from "../hw/devices";
 import { useWallet } from "../state/store";
-import { accountColor, accountKind, amountParts } from "../format";
+import { accountColor, accountKind, amountParts, held } from "../format";
+import { PendingClock } from "../components/PendingClock";
 import type { AccountInfo } from "../api/types";
 import { moduleAccount, moduleDef, moduleType, type ModuleProps } from "./catalog";
 
@@ -50,19 +51,22 @@ export function AccountModule({ module }: ModuleProps) {
     );
   }
 
-  const { value, suffix } = amountParts(account.balance.confirmed, unit, price, currency);
+  const { value, suffix } = amountParts(held(account), unit, price, currency);
   return (
     <>
       <div className="tile-title" style={{ ["--tint" as string]: accountColor(account) }}>
         {account.custody.type === "hardware" ? <DeviceIcon device={account.custody.device} size={17} /> : <Icon name={def.icon} size={16} />}
         {account.name}
       </div>
-      <button style={{ textAlign: "left" }} onClick={() => open({ name: "account", id: account.id })} aria-label={`${account.name}: ${value} ${suffix}`}>
+      <div className="balance-line">
+        <button style={{ textAlign: "left" }} onClick={() => open({ name: "account", id: account.id })} aria-label={`${account.name}: ${value} ${suffix}`}>
         <div className="big-stat num">
           {value}
           {suffix && <span className="balance-unit">{suffix}</span>}
         </div>
       </button>
+        <PendingClock sats={account.balance.pendingIn} />
+      </div>
       <div className="tile-foot" style={{ marginTop: 4 }}>{account.custody.type === "hardware" ? <HardwareBadge device={account.custody.device} compact={module.size === "small"} /> : accountKind(account)}</div>
       <div className="account-actions">
         {account.pays.length > 0 && (

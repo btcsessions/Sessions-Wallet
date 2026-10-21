@@ -4,14 +4,16 @@ import { METHOD_LABEL, relativeTime, signed } from "../format";
 import type { Payment } from "../api/types";
 import type { ModuleProps } from "./catalog";
 
-export function ActivityRow({ p }: { p: Payment }) {
+export function ActivityRow({ p, back }: { p: Payment; back?: string }) {
   const accounts = useWallet((s) => s.accounts);
+  const open = useWallet((s) => s.open);
   const account = accounts.find((a) => a.id === p.account);
   const title =
     p.description ||
     (p.direction === "incoming" ? `Received via ${METHOD_LABEL[p.method]}` : p.direction === "internal" ? "Transferred between accounts" : `Sent via ${METHOD_LABEL[p.method]}`);
   return (
-    <li className="row">
+    <li>
+      <button className="row row-button" onClick={() => open({ name: "tx", id: p.id, back })}>
       <span className={`row-icon ${p.direction === "incoming" ? "in" : ""}`}>
         <Icon name={p.direction === "incoming" ? "down" : p.direction === "internal" ? "swap" : "up"} size={18} />
       </span>
@@ -28,6 +30,7 @@ export function ActivityRow({ p }: { p: Payment }) {
       <span className={`row-amount num ${p.direction === "incoming" ? "in" : ""}`}>
         {signed(p.direction === "outgoing" ? p.amountSat + p.feeSat : p.amountSat, p.direction)}
       </span>
+      </button>
     </li>
   );
 }

@@ -6,7 +6,8 @@ import { Icon } from "../components/Icon";
 import { CopyButton, Sheet, useBusy } from "../components/ui";
 import type { DetailRow } from "../api/types";
 import { DeviceIcon, HardwareBadge } from "../hw/devices";
-import { accountColor, accountKind, amountParts, errorText, formatSats } from "../format";
+import { accountColor, accountKind, amountParts, errorText, formatFiat, held } from "../format";
+import { PendingClock } from "../components/PendingClock";
 import { useWallet } from "../state/store";
 
 export function AccountSheet({ id }: { id: string }) {
@@ -14,7 +15,7 @@ export function AccountSheet({ id }: { id: string }) {
   const [busy, run] = useBusy();
   const a = accounts.find((x) => x.id === id);
   if (!a) return null;
-  const { value, suffix } = amountParts(a.balance.confirmed, unit, price, currency);
+  const { value, suffix } = amountParts(held(a), unit, price, currency);
   const items = activity.filter((p) => p.account === id);
 
   const remove = () =>
@@ -40,11 +41,17 @@ export function AccountSheet({ id }: { id: string }) {
         <div className="big-stat num" style={{ fontSize: 44 }}>
           {value}
           {suffix && <span className="balance-unit">{suffix}</span>}
+          <PendingClock sats={a.balance.pendingIn} size={18} />
         </div>
         <div className="balance-sub">
-          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: accountColor(a), marginRight: 6 }} />
-          {a.custody.type === "hardware" ? `Fingerprint ${a.custody.fingerprint}` : accountKind(a)}
-          {a.balance.pendingIn > 0 && <>, {formatSats(a.balance.pendingIn)} sats on the way</>}
+          {a.custody.type === "hardware" ? (
+            formatFiat(held(a), price, currency)
+          ) : (
+            <>
+              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: accountColor(a), marginRight: 6 }} />
+              {accountKind(a)}
+            </>
+          )}
         </div>
       </div>
 
@@ -99,7 +106,7 @@ export function AccountSheet({ id }: { id: string }) {
       {items.length ? (
         <ul className="list">
           {items.map((p) => (
-            <ActivityRow key={p.id} p={p} />
+            <ActivityRow key={p.id} p={p} back={a.id} />
           ))}
         </ul>
       ) : (

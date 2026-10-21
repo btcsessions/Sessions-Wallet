@@ -1,12 +1,13 @@
 import { useWallet } from "../state/store";
-import { accountColor, amountParts, formatFiat, formatSats } from "../format";
+import { accountColor, amountParts, formatFiat, formatSats, held } from "../format";
+import { PendingClock } from "../components/PendingClock";
 import type { ModuleProps } from "./catalog";
 import { activeAccounts } from "./AccountModule";
 
 export function BalanceModule({ module }: ModuleProps) {
   const { accounts: all, unit, price, currency, cycleUnit, open, layout } = useWallet();
   const accounts = activeAccounts(all, layout);
-  const total = accounts.reduce((s, a) => s + a.balance.confirmed, 0);
+  const total = accounts.reduce((s, a) => s + held(a), 0);
   const incoming = accounts.reduce((s, a) => s + a.balance.pendingIn, 0);
   const { value, suffix } = amountParts(total, unit, price, currency);
   // Shrink long amounts (BTC, big fiat) so they stay on one line.
@@ -17,6 +18,7 @@ export function BalanceModule({ module }: ModuleProps) {
   return (
     <>
       <div className="tile-title">Total balance</div>
+      <div className="balance-line">
       <button
         className="balance-amount num"
         style={{ ["--fit" as string]: fit }}
@@ -26,10 +28,9 @@ export function BalanceModule({ module }: ModuleProps) {
         {value}
         {suffix && <span className="balance-unit">{suffix}</span>}
       </button>
-      <div className="balance-sub num">
-        {unit === "fiat" ? `${formatSats(total)} sats` : formatFiat(total, price, currency)}
-        {incoming > 0 && <> and {formatSats(incoming)} sats on the way</>}
+        <PendingClock sats={incoming} size={18} />
       </div>
+      <div className="balance-sub num">{unit === "fiat" ? `${formatSats(total)} sats` : formatFiat(total, price, currency)}</div>
 
       {/* Colour bar on every size; the named breakdown when there's room. */}
       <div className="split" role="img" aria-label="Where your balance sits, by account" style={large ? undefined : { margin: "14px 0 0" }}>
@@ -48,7 +49,7 @@ export function BalanceModule({ module }: ModuleProps) {
                 <button className="name" style={{ textAlign: "left" }} onClick={() => open({ name: "account", id: a.id })}>
                   {a.name}
                 </button>
-                <span className="amt num">{amountParts(a.balance.confirmed, unit === "fiat" ? "fiat" : "sats", price, currency).value}</span>
+                <span className="amt num">{amountParts(held(a), unit === "fiat" ? "fiat" : "sats", price, currency).value}</span>
               </li>
             ))}
           </ul>

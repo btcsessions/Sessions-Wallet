@@ -182,7 +182,7 @@ export const CATALOG: Record<string, ModuleDef> = Object.fromEntries(defs.map((d
 
 export const SECTIONS: { id: ModuleDef["section"]; title: string; lede: string }[] = [
   { id: "essentials", title: "Essentials", lede: "The basics. Start here." },
-  { id: "accounts", title: "Places for your sats", lede: "Each one is a separate account with its own security." },
+  { id: "accounts", title: "Add accounts", lede: "Different account types to use and store bitcoin." },
   { id: "move", title: "Transfer", lede: "Get sats where they need to be." },
   { id: "tools", title: "Tools", lede: "Handy readouts." },
 ];

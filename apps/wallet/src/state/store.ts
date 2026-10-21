@@ -12,7 +12,8 @@ export type SheetName =
   | { name: "add-account"; kind: "multisig" | "hardware" | "watchOnly" | "ecash" | "savings" }
   | { name: "account"; id: string }
   | { name: "settings" }
-  | { name: "ecash-token"; account: string };
+  | { name: "ecash-token"; account: string }
+  | { name: "tx"; id: string; back?: string };
 
 interface Toast {
   kind: "ok" | "error";

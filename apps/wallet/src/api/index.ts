@@ -1,6 +1,9 @@
 import type {
   AccountInfo,
+  BumpAction,
   DescriptorPreview,
+  SendQuote,
+  TxDetails,
   DetailRow,
   ReceiveQuote,
   Execution,
@@ -41,6 +44,14 @@ export interface WalletApi {
   /** Hot on-chain accounts only. */
   payjoinReceive(account: string): Promise<boolean>;
   setPayjoinReceive(account: string, enabled: boolean): Promise<void>;
+  /** Sync one account now (the Receive screen polls this while it waits). */
+  syncAccount(id: string): Promise<void>;
+  /** On-chain transaction details; null for other rails. */
+  txDetails(account: string, txid: string): Promise<TxDetails | null>;
+  /** Speed up (RBF or CPFP) or cancel (RBF back to ourselves) an unconfirmed transaction. */
+  prepareBump(account: string, txid: string, action: BumpAction, fee: FeePriority): Promise<SendQuote>;
+  /** Send a prepared quote from an account that signs on this device. */
+  confirmQuote(quote: SendQuote): Promise<Payment>;
   /** Technical details (descriptor, xpub, fingerprint…) for an account. */
   accountDetails(id: string): Promise<DetailRow[]>;
   /** Limits and fees when receiving with `method` needs a swap into this account; null when it doesn't. */

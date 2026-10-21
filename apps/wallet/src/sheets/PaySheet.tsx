@@ -4,7 +4,7 @@ import type { AccountInfo, Execution, FeePriority, Leg, PaymentRequest, Plan, Pr
 import { Icon } from "../components/Icon";
 import { ScanButton, scanText } from "../components/Scanner";
 import { AmountInput, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
-import { METHOD_LABEL, accountColor, errorText, formatFiat, formatSats } from "../format";
+import { METHOD_LABEL, accountColor, errorText, formatFiat, formatSats, held } from "../format";
 import { useWallet } from "../state/store";
 import { RoutePreview } from "./RoutePreview";
 import { activeAccounts } from "../modules/AccountModule";
@@ -179,7 +179,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           </button>
         }
       >
-        <AmountInput value={amount || null} onChange={setAmount} autoFocus max={payer?.balance.confirmed} />
+        <AmountInput value={amount || null} onChange={setAmount} autoFocus max={(payer ? held(payer) : undefined)} />
         <div className="quick-amounts">
           {[1_000, 10_000, 21_000, 100_000].map((v) => (
             <button key={v} className="chip num" onClick={() => setAmount(v)}>

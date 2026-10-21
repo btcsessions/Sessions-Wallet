@@ -172,6 +172,23 @@ export interface DescriptorPreview {
   firstAddress: string;
 }
 
+/** On-chain details for one transaction. */
+export interface TxDetails {
+  txid: string;
+  confirmations: number;
+  blockHeight: number | null;
+  blockTime: number | null;
+  feeSat: number | null;
+  /** sat/vB */
+  feeRate: number | null;
+  vsize: number;
+  canSpeedUp: boolean;
+  canCancel: boolean;
+  speedUpKind: "rbf" | "cpfp" | null;
+}
+
+export type BumpAction = "speedUp" | "cancel";
+
 export interface DetailRow {
   label: string;
   value: string;

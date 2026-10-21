@@ -12,6 +12,7 @@ import { MoveSheet } from "./sheets/MoveSheet";
 import { PaySheet } from "./sheets/PaySheet";
 import { ReceiveSheet } from "./sheets/ReceiveSheet";
 import { SettingsSheet } from "./sheets/SettingsSheet";
+import { TxSheet } from "./sheets/TxSheet";
 import { useWallet } from "./state/store";
 
 function ActiveSheet() {
@@ -29,6 +30,8 @@ function ActiveSheet() {
       return <GallerySheet />;
     case "add-account":
       return sheet.kind === "hardware" ? <AddHardwareSheet /> : <AddAccountSheet key={sheet.kind} kind={sheet.kind} />;
+    case "tx":
+      return <TxSheet key={sheet.id} id={sheet.id} back={sheet.back} />;
     case "account":
       return <AccountSheet key={sheet.id} id={sheet.id} />;
     case "settings":
