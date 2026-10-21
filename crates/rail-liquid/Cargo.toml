@@ -1,6 +1,24 @@
 [package]
 name = "rail-liquid"
+description = "Boltz swap provider for Sessions Wallet: pay to and receive from Liquid without holding L-BTC"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+sessions-core = { workspace = true }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+# Pinned to a reviewed trunk commit: it carries the Aug/Sep 2026 swap-validation
+# hardening (timelock + lockup txid checks, address network fix, dust checks)
+# that is not in the 0.4.1 release. Every boltz-client release depends on the
+# yanked secp256k1 0.32.0-beta.2 (MuSig2); it stays selectable only through the
+# workspace Cargo.lock entry, so never run a bare `cargo update` (use `-p`).
+boltz-client = { git = "https://github.com/SatoshiPortal/boltz-rust", rev = "7542d2eeaf8c8198b448e6cd70a1f1f09471ef11", default-features = false, features = ["esplora"] }
+
+[dev-dependencies]
+tempfile = "3"

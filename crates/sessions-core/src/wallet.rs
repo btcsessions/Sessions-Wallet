@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::planner::{self, Bridges, Leg, Plan};
-use crate::rail::{Rail, SwapProvider};
+use crate::rail::{Rail, SwapProvider, SwapStatus};
 use crate::types::*;
 use crate::{parse, Error, Result};
 
@@ -84,6 +84,19 @@ impl Wallet {
         for s in self.swaps.read().await.iter() {
             if let Err(e) = s.tick().await {
                 tracing::warn!(provider = s.name(), "swap tick failed: {e}");
+            }
+        }
+        out
+    }
+
+    /// Drive pending swaps (claims, refunds). Cheap; run every few seconds
+    /// while unlocked so hold invoices settle promptly.
+    pub async fn tick_swaps(&self) -> Vec<SwapStatus> {
+        let mut out = Vec::new();
+        for s in self.swaps.read().await.iter() {
+            match s.tick().await {
+                Ok(v) => out.extend(v),
+                Err(e) => tracing::warn!(provider = s.name(), "swap tick failed: {e}"),
             }
         }
         out
@@ -281,7 +294,7 @@ impl Wallet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rail::{BridgedPayment, SwapStatus};
+    use crate::rail::BridgedPayment;
     use async_trait::async_trait;
     use std::sync::Mutex;
 

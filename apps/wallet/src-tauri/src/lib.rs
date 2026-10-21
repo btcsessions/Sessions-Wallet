@@ -11,6 +11,20 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             app.manage(state::AppState::new(dir));
+
+            // Keep swaps moving in the background: Boltz hold invoices only
+            // settle after we claim, so this can't wait for a manual refresh.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let state = handle.state::<state::AppState>();
+                    let wallet = state.inner.lock().await.as_ref().map(|u| u.wallet.clone());
+                    if let Some(w) = wallet {
+                        w.tick_swaps().await;
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
