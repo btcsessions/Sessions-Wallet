@@ -88,9 +88,9 @@ export type TrezorScript = "wpkh" | "tr";
 const PURPOSE: Record<TrezorScript, number> = { wpkh: 84, tr: 86 };
 
 /** The account's descriptor, read from the device via Trezor Suite. */
-export async function trezorDescriptor(script: TrezorScript, testnet = false): Promise<string> {
+export async function trezorDescriptor(script: TrezorScript, testnet = false, account = 0): Promise<string> {
   const tc = await connect();
-  const path = `m/${PURPOSE[script]}'/${testnet ? 1 : 0}'/0'`;
+  const path = `m/${PURPOSE[script]}'/${testnet ? 1 : 0}'/${account}'`;
   const r = unwrap(
     await tc.getPublicKey({
       path,

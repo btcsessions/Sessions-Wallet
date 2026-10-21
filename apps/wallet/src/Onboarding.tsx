@@ -108,6 +108,7 @@ export function Onboarding() {
         setStep("phrase");
       } else {
         await a.restoreWallet(restorePhrase, passcode);
+        useWallet.setState({ restored: true });
         setStatus("unlocked");
       }
     });

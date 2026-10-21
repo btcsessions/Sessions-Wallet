@@ -33,6 +33,18 @@ export interface AccountInfo {
   balance: Balance;
   receives: Method[];
   pays: Method[];
+  /** Accounts in the same wallet: "hot" (this seed) or "hw:<fingerprint>". */
+  group?: string | null;
+  /** Account number inside its wallet (BIP44 account level). */
+  accountIndex?: number | null;
+}
+
+/** An account with history found while scanning a wallet. */
+export interface FoundAccount {
+  index: number;
+  balanceSat: number;
+  txCount: number;
+  descriptor: string;
 }
 
 export type PaymentRequest =
@@ -136,6 +148,8 @@ export type WalletStatus = "empty" | "locked" | "unlocked";
 
 export interface NewAccount {
   kind: "savings" | "multisig" | "hardware" | "watchOnly" | "ecash";
+  /** savings: add at this exact account number (from discovery). */
+  accountIndex?: number;
   name: string;
   /** multisig: threshold + cosigner key expressions; hardware/watchOnly: descriptor; ecash: mint url */
   threshold?: number;

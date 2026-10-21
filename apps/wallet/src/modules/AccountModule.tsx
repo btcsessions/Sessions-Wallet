@@ -26,7 +26,24 @@ export function resolveAccount(accounts: AccountInfo[], moduleId: string): Accou
  */
 export function activeAccounts(accounts: AccountInfo[], layout: { modules: { id: string }[] } | null | undefined): AccountInfo[] {
   const onHome = new Set((layout?.modules ?? []).map((m) => resolveAccount(accounts, m.id)?.id).filter(Boolean));
-  return accounts.filter((a) => a.rail === "spark" || onHome.has(a.id) || a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut > 0);
+  // Accounts inside a wallet whose card is on the home screen count too.
+  const groups = new Set(accounts.filter((a) => onHome.has(a.id) && a.group).map((a) => a.group));
+  return accounts.filter((a) => a.rail === "spark" || onHome.has(a.id) || (a.group && groups.has(a.group)) || a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut > 0);
+}
+
+/** Is this account's wallet already shown by a card on the home screen? */
+export function walletHasCard(accounts: AccountInfo[], layout: { modules: { id: string }[] } | null | undefined, a: AccountInfo): boolean {
+  if (!a.group) return false;
+  return (layout?.modules ?? []).some((m) => {
+    const shown = resolveAccount(accounts, m.id);
+    return !!shown && shown.id !== a.id && shown.group === a.group;
+  });
+}
+
+/** The accounts in the same wallet as `a` (itself included), in account-number order. */
+export function walletAccounts(accounts: AccountInfo[], a: AccountInfo): AccountInfo[] {
+  if (!a.group) return [a];
+  return accounts.filter((x) => x.group === a.group).sort((x, y) => (x.accountIndex ?? 0) - (y.accountIndex ?? 0));
 }
 
 export function AccountModule({ module }: ModuleProps) {
@@ -51,23 +68,38 @@ export function AccountModule({ module }: ModuleProps) {
     );
   }
 
-  const { value, suffix } = amountParts(held(account), unit, price, currency);
+  // A wallet holding several accounts shows them as one card with their total.
+  const siblings = walletAccounts(accounts, account);
+  const multi = siblings.length > 1;
+  const total = siblings.reduce((s, a) => s + held(a), 0);
+  const pending = siblings.reduce((s, a) => s + a.balance.pendingIn, 0);
+  const title = multi ? (account.custody.type === "hardware" ? account.custody.device : "Hot wallet") : account.name;
+  const { value, suffix } = amountParts(total, unit, price, currency);
   return (
     <>
+      {multi && <span className="stack-edge" aria-hidden />}
       <div className="tile-title" style={{ ["--tint" as string]: accountColor(account) }}>
         {account.custody.type === "hardware" ? <DeviceIcon device={account.custody.device} size={17} /> : <Icon name={def.icon} size={16} />}
-        {account.name}
+        {title}
       </div>
       <div className="balance-line">
-        <button style={{ textAlign: "left" }} onClick={() => open({ name: "account", id: account.id })} aria-label={`${account.name}: ${value} ${suffix}`}>
+        <button style={{ textAlign: "left" }} onClick={() => open({ name: "account", id: account.id })} aria-label={`${title}: ${value} ${suffix}${multi ? `, ${siblings.length} accounts` : ""}`}>
         <div className="big-stat num">
           {value}
           {suffix && <span className="balance-unit">{suffix}</span>}
         </div>
       </button>
-        <PendingClock sats={account.balance.pendingIn} />
+        <PendingClock sats={pending} />
       </div>
-      <div className="tile-foot" style={{ marginTop: 4 }}>{account.custody.type === "hardware" ? <HardwareBadge device={account.custody.device} compact={module.size === "small"} /> : accountKind(account)}</div>
+      <div className="tile-foot" style={{ marginTop: 4, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        {multi && (
+          <button className="accounts-chip" onClick={() => open({ name: "account", id: account.id })}>
+            <Icon name="stack" size={13} stroke={2.2} />
+            {siblings.length} accounts
+          </button>
+        )}
+        {account.custody.type === "hardware" ? <HardwareBadge device={account.custody.device} compact={module.size === "small" || multi} /> : !multi && accountKind(account)}
+      </div>
       <div className="account-actions">
         {account.pays.length > 0 && (
           <button className="round-action" aria-label={`Send from ${account.name}`} title="Send" onClick={() => open({ name: "pay", from: account.id })}>

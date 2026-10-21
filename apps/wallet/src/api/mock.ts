@@ -35,6 +35,19 @@ function seedDemo() {
       balance: { confirmed: 4_250_000, pendingIn: 120_000, pendingOut: 0 },
       receives: ["bitcoinAddress"],
       pays: ["bitcoinAddress"],
+      group: "hw:a1b2c3d4",
+      accountIndex: 0,
+    },
+    {
+      id: "hw-2",
+      name: "Kids' savings",
+      rail: "onchain",
+      custody: { type: "hardware", device: "Coldcard", fingerprint: "a1b2c3d4" },
+      balance: { confirmed: 610_000, pendingIn: 0, pendingOut: 0 },
+      receives: ["bitcoinAddress"],
+      pays: ["bitcoinAddress"],
+      group: "hw:a1b2c3d4",
+      accountIndex: 1,
     },
   ];
   const t = now();
@@ -224,18 +237,35 @@ export const mockApi: WalletApi = {
         };
         break;
       case "hardware":
-        a = { ...base, id, name: spec.name, rail: "onchain", custody: { type: "hardware", device: spec.device ?? "Hardware wallet", fingerprint: "a1b2c3d4" }, receives: ["bitcoinAddress"], pays: ["bitcoinAddress"] };
+        a = { ...base, id, name: spec.name, rail: "onchain", custody: { type: "hardware", device: spec.device ?? "Hardware wallet", fingerprint: "a1b2c3d4" }, receives: ["bitcoinAddress"], pays: ["bitcoinAddress"], group: "hw:a1b2c3d4", accountIndex: accounts.filter((x) => x.group === "hw:a1b2c3d4").length };
         break;
       case "watchOnly":
         a = { ...base, id, name: spec.name, rail: "onchain", custody: { type: "watchOnly" }, receives: ["bitcoinAddress"], pays: [] };
         break;
       default:
-        a = { ...base, id, name: spec.name, rail: "onchain", custody: { type: "hot" }, receives: ["bitcoinAddress"], pays: ["bitcoinAddress"] };
+        a = { ...base, id, name: spec.name, rail: "onchain", custody: { type: "hot" }, receives: ["bitcoinAddress"], pays: ["bitcoinAddress"], group: "hot", accountIndex: spec.accountIndex ?? accounts.filter((x) => x.group === "hot").length };
     }
     accounts.push(a);
     return a;
   },
   async syncAccount() {},
+  async renameAccount(id, name) {
+    const a = find(id);
+    a.name = name.trim();
+    return a;
+  },
+  async discoverHotAccounts() {
+    await sleep(1200);
+    const have = new Set(accounts.filter((a) => a.group === "hot").map((a) => a.accountIndex));
+    return [
+      { index: 0, balanceSat: 312_000, txCount: 4, descriptor: "wpkh([73c5da0a/84h/0h/0h]xpub…/<0;1>/*)" },
+      { index: 1, balanceSat: 0, txCount: 2, descriptor: "wpkh([73c5da0a/84h/0h/1h]xpub…/<0;1>/*)" },
+    ].filter((f) => !have.has(f.index));
+  },
+  async scanDescriptors(descriptors) {
+    await sleep(800);
+    return descriptors.slice(0, 1).map((descriptor, i) => ({ index: i + 1, balanceSat: 50_000, txCount: 1, descriptor }));
+  },
   async listUtxos(account) {
     const a = accounts.find((x) => x.id === account);
     if (a?.rail !== "onchain") return [];

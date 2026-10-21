@@ -1,4 +1,7 @@
 import { ActivityRow } from "../modules/ActivityModule";
+import { walletAccounts } from "../modules/AccountModule";
+import { Dropdown, accountOptions } from "../components/Dropdown";
+import { DiscoverHot } from "../components/Discover";
 import { LightningAddressCard } from "./LightningAddressCard";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
@@ -18,6 +21,7 @@ export function AccountSheet({ id }: { id: string }) {
   if (!a) return null;
   const { value, suffix } = amountParts(held(a), unit, price, currency);
   const items = activity.filter((p) => p.account === id);
+  const siblings = walletAccounts(accounts, a);
 
   const remove = () =>
     run(async () => {
@@ -36,6 +40,19 @@ export function AccountSheet({ id }: { id: string }) {
             <DeviceIcon device={a.custody.device} size={44} />
           </div>
           <HardwareBadge device={a.custody.device} />
+        </div>
+      )}
+      {(siblings.length > 1 || (advanced && a.group)) && (
+        <div className="group" style={{ margin: "14px 0 6px" }}>
+          <Dropdown
+            label="Account"
+            value={a.id}
+            options={[
+              ...accountOptions(siblings).map((o, i) => ({ ...o, detail: `Account ${(siblings[i].accountIndex ?? i) + 1} · ${o.detail?.split(" · ").pop()}` })),
+              ...(advanced ? [{ value: "__add", label: "Add an account", detail: a.group === "hot" ? "Another account from your recovery phrase" : "Another account from this device", color: "var(--accent)", icon: <Icon name="plus" size={14} stroke={2.5} /> }] : []),
+            ]}
+            onChange={(v) => (v === "__add" ? open({ name: "add-account", kind: a.group === "hot" ? "savings" : "hardware" }) : open({ name: "account", id: v }))}
+          />
         </div>
       )}
       <div className="amount-entry" style={{ paddingTop: 4 }}>
@@ -101,7 +118,14 @@ export function AccountSheet({ id }: { id: string }) {
           Coins and labels
         </button>
       )}
-      <WalletDetails id={a.id}>
+      {advanced && a.group === "hot" && (
+        <>
+          <p className="group-label">Other accounts</p>
+          <DiscoverHot />
+          <div style={{ height: 18 }} />
+        </>
+      )}
+      <WalletDetails id={a.id} name={a.name}>
         {a.id !== "spending" && a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut === 0 && (
           <button className="btn block" style={{ color: "var(--red)", marginBottom: 22 }} disabled={busy} onClick={remove}>
             Remove {a.name}
@@ -168,7 +192,7 @@ function PayjoinSwitch({ account }: { account: string }) {
 /** Rows only shown in Advanced mode. */
 const TECHNICAL = new Set(["Address type", "Fingerprint", "Derivation path", "Extended public key", "Descriptor", "Receives with", "Account id", "Policy"]);
 
-function WalletDetails({ id, children }: { id: string; children?: ReactNode }) {
+function WalletDetails({ id, name, children }: { id: string; name: string; children?: ReactNode }) {
   const advanced = useWallet((s) => s.layout?.advanced ?? false);
   const [rows, setRows] = useState<DetailRow[] | null>(null);
   const [open, setOpen] = useState(false);
@@ -194,6 +218,7 @@ function WalletDetails({ id, children }: { id: string; children?: ReactNode }) {
           {open ? "Hide wallet details" : "Wallet details"}
         </button>
       </p>
+      {open && <RenameRow id={id} name={name} />}
       {open && (
         <div className="group details">
           {error && <div className="cell field-error">{error}</div>}
@@ -209,5 +234,32 @@ function WalletDetails({ id, children }: { id: string; children?: ReactNode }) {
       )}
       {open && children}
     </>
+  );
+}
+
+/** Every account can be labelled. */
+function RenameRow({ id, name }: { id: string; name: string }) {
+  const { refresh, notify } = useWallet();
+  const [value, setValue] = useState(name);
+  useEffect(() => setValue(name), [name]);
+  const save = async () => {
+    const v = value.trim();
+    if (!v || v === name) return setValue(name);
+    try {
+      await (await api()).renameAccount(id, v);
+      await refresh();
+      notify("ok", "Renamed");
+    } catch (e) {
+      notify("error", errorText(e));
+      setValue(name);
+    }
+  };
+  return (
+    <div className="group">
+      <label className="cell">
+        <span className="grow">Name</span>
+        <input value={value} maxLength={32} style={{ textAlign: "right" }} onChange={(e) => setValue(e.target.value)} onBlur={() => void save()} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
+      </label>
+    </div>
   );
 }

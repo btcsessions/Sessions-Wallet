@@ -2299,3 +2299,31 @@ button {
 .coin-main {
   flex: 1;
 }
+
+/* ───────── Wallets with several accounts ───────── */
+
+/* Two card edges peeking out below: "there's more in here". */
+.tile:has(.stack-edge) {
+  margin-bottom: 10px;
+  box-shadow:
+    0 6px 0 -2px color-mix(in srgb, var(--card) 75%, var(--bg)),
+    0 6px 0 -1.5px var(--separator),
+    0 12px 0 -5px color-mix(in srgb, var(--card) 45%, var(--bg)),
+    0 12px 0 -4.5px var(--separator);
+}
+
+.stack-edge {
+  display: none;
+}
+
+.accounts-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--label);
+  background: var(--fill);
+}

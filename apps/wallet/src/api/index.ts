@@ -3,6 +3,7 @@ import type {
   BumpAction,
   DescriptorPreview,
   SendQuote,
+  FoundAccount,
   Utxo,
   LabelKind,
   SpendOptions,
@@ -53,6 +54,12 @@ export interface WalletApi {
   setLabel(account: string, kind: LabelKind, reference: string, label: string | null): Promise<void>;
   /** Frozen coins are never picked automatically. */
   setFrozen(account: string, outpoint: string, frozen: boolean): Promise<void>;
+  /** Rename (label) an account. */
+  renameAccount(id: string, name: string): Promise<AccountInfo>;
+  /** Hot on-chain accounts from this seed that have history but aren't added. */
+  discoverHotAccounts(): Promise<FoundAccount[]>;
+  /** Which of these descriptors (e.g. accounts 1…n from a hardware wallet) have history. */
+  scanDescriptors(descriptors: string[]): Promise<FoundAccount[]>;
   /** Sync one account now (the Receive screen polls this while it waits). */
   syncAccount(id: string): Promise<void>;
   /** On-chain transaction details; null for other rails. */

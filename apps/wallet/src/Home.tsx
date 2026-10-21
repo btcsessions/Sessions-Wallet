@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { InstalledModule } from "./api/types";
 import { Icon } from "./components/Icon";
 import { Scanner, scanText } from "./components/Scanner";
+import { api } from "./api";
 import { moduleDef } from "./modules/catalog";
 import { useWallet } from "./state/store";
 
@@ -89,6 +90,19 @@ export function Home() {
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+
+  // Just restored: quietly look for on-chain accounts this phrase used before.
+  useEffect(() => {
+    if (!useWallet.getState().restored) return;
+    useWallet.setState({ restored: false });
+    api()
+      .then((a) => a.discoverHotAccounts())
+      .then((found) => {
+        const used = found.filter((f) => f.txCount > 0);
+        if (used.length) open({ name: "discover", found: used });
+      })
+      .catch(() => {});
+  }, [open]);
 
   useEffect(() => {
     void sync();

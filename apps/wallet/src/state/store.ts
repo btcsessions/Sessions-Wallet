@@ -14,7 +14,8 @@ export type SheetName =
   | { name: "settings" }
   | { name: "ecash-token"; account: string }
   | { name: "tx"; id: string; back?: string }
-  | { name: "coins"; account: string };
+  | { name: "coins"; account: string }
+  | { name: "discover"; found: import("../api/types").FoundAccount[] };
 
 interface Toast {
   kind: "ok" | "error";
@@ -47,6 +48,8 @@ interface State {
   /** `manual`: the user asked, so say if it fails. Background syncs stay quiet. */
   sync(manual?: boolean): Promise<void>;
   setStatus(s: WalletStatus): void;
+  /** Set right after restoring from a phrase: look for accounts with history. */
+  restored: boolean;
   cycleUnit(): void;
   setEditing(v: boolean): void;
   open(s: SheetName): void;
@@ -99,8 +102,9 @@ export const useWallet = create<State>((set, get) => {
     layout: null,
     unit: loadPref<Unit>("unit", "sats"),
     currency: loadPref("currency", "CAD"),
-    theme: loadPref<ThemeId>("theme", "classic"),
-    appearance: loadPref<Appearance>("appearance", "auto"),
+    restored: false,
+    theme: loadPref<ThemeId>("theme", "sessions"),
+    appearance: loadPref<Appearance>("appearance", "dark"),
     setTheme(theme) {
       const def = THEMES.find((t) => t.id === theme) ?? THEMES[0];
       const appearance = def.preferred;

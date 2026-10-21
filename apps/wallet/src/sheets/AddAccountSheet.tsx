@@ -4,6 +4,7 @@ import type { NewAccount } from "../api/types";
 import { Icon } from "../components/Icon";
 import { CopyButton, QR, SelectRow, Sheet, useBusy } from "../components/ui";
 import { useWallet } from "../state/store";
+import { walletHasCard } from "../modules/AccountModule";
 import { ScanButton, scanKey } from "../components/Scanner";
 import { errorText } from "../format";
 
@@ -80,7 +81,9 @@ export function AddAccountSheet({ kind }: { kind: Kind }) {
             ? { kind, name: name.trim() }
             : { kind, name: name.trim(), descriptor: descriptor.trim() };
       const account = await (await api()).addAccount(spec);
-      await addModule({ id: `${MODULE_FOR[kind]}:${account.id}`, size: "small" });
+      // A new account in a wallet that already has a card joins that card.
+      const { accounts: all, layout } = useWallet.getState();
+      if (!walletHasCard([...all, account], layout, account)) await addModule({ id: `${MODULE_FOR[kind]}:${account.id}`, size: "small" });
       await refresh();
       notify("ok", `Added ${account.name}`);
       close();

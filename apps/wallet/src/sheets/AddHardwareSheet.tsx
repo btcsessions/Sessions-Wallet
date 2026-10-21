@@ -8,6 +8,7 @@ import { DEVICES, DeviceIcon, type DeviceDef } from "../hw/devices";
 import { isMobile, trezorDescriptor, type TrezorScript } from "../hw/trezor";
 import { errorText } from "../format";
 import { useWallet } from "../state/store";
+import { walletHasCard } from "../modules/AccountModule";
 
 /** Turn whatever the device showed into text the import understands. */
 async function exportText(r: ScanResult): Promise<string> {
@@ -27,6 +28,7 @@ export function AddHardwareSheet() {
   const [paste, setPaste] = useState("");
   const [showPaste, setShowPaste] = useState(false);
   const [script, setScript] = useState<TrezorScript>("wpkh");
+  const [accountNo, setAccountNo] = useState("0");
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
 
@@ -44,7 +46,7 @@ export function AddHardwareSheet() {
     run(async () => {
       setError(null);
       try {
-        await inspect(await trezorDescriptor(script));
+        await inspect(await trezorDescriptor(script, false, Number(accountNo)));
       } catch (e) {
         setError(errorText(e));
       }
@@ -59,7 +61,8 @@ export function AddHardwareSheet() {
         descriptor: preview.descriptor,
         device: device.name,
       });
-      await addModule({ id: `hardware:${account.id}`, size: "small" });
+      const { accounts: all, layout } = useWallet.getState();
+      if (!walletHasCard([...all, account], layout, account)) await addModule({ id: `hardware:${account.id}`, size: "small" });
       await refresh();
       notify("ok", `Added ${account.name}`);
       close();
@@ -208,6 +211,12 @@ export function AddHardwareSheet() {
                 { value: "wpkh", label: "Native SegWit (bc1q)" },
                 { value: "tr", label: "Taproot (bc1p)" },
               ]}
+            />
+            <SelectRow
+              label="Account"
+              value={accountNo}
+              onChange={setAccountNo}
+              options={Array.from({ length: 10 }, (_, i) => ({ value: String(i), label: `Account ${i + 1}` }))}
             />
           </div>
           )}
