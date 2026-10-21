@@ -4,6 +4,9 @@ dist/
 .DS_Store
 *.sqlite
 *.sqlite-*
-apps/wallet/src-tauri/gen/
+apps/wallet/src-tauri/gen/schemas/
+*.jks
+*.keystore
+keystore.properties
 .env
 .env.*

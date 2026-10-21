@@ -76,3 +76,47 @@ jobs:
         with:
           name: sessions-wallet-${{ matrix.os }}
           path: target/release/bundle/
+
+  android:
+    # Signed arm64 APK (Pixel / GrapheneOS and most modern phones).
+    # Needs secrets ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD;
+    # without them the APK is unsigned and won't install.
+    if: github.event_name == 'push'
+    needs: [rust, ui]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager --install "ndk;28.2.13676358" "platforms;android-37.0" "build-tools;36.0.0"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Write signing config
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        if: env.KEYSTORE_B64 != ''
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          printf 'storeFile=%s\nkeyAlias=sessions-wallet\npassword=%s\n' "$RUNNER_TEMP/release.jks" "$KEYSTORE_PASSWORD" \
+            > apps/wallet/src-tauri/gen/android/keystore.properties
+      - working-directory: apps/wallet
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+          BREEZ_API_KEY: ${{ secrets.BREEZ_API_KEY }}
+        run: npm ci && npx tauri android build --apk --target aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sessions-wallet-android
+          path: apps/wallet/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
