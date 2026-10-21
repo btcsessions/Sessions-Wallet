@@ -21,7 +21,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/btcsessions/sessions-wallet"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.dependencies]
 sessions-core = { path = "crates/sessions-core" }

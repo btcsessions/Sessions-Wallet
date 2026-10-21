@@ -1,6 +1,29 @@
 [package]
 name = "rail-ecash"
+description = "Cashu ecash account (one per mint) for Sessions Wallet, built on CDK"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+# cdk-redb 0.18.2 declares rust-version 1.89 (the workspace says 1.85).
+rust-version = "1.89"
 
 [dependencies]
+sessions-core = { workspace = true }
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+bip39.workspace = true
+zeroize = "1"
+# Pinned exactly: CDK is pre-1.0 and its wallet API moves between minor releases.
+# No `mint` feature: it pulls cdk-signatory -> cdk-sqlite -> rusqlite, which
+# clashes with the Spark SDK's libsqlite3-sys.
+cdk = { version = "=0.18.2", default-features = false, features = ["wallet"] }
+cdk-redb = { version = "=0.18.2", default-features = false, features = ["wallet"] }
+# Same major as cdk-redb's own redb; used only to pre-create a table cdk-redb
+# 0.18.2 forgets to create (see `ensure_redb_tables`).
+redb = "3.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# Only for building fake BOLT11 invoices in tests.
+bitcoin.workspace = true
