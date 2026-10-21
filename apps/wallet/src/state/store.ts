@@ -31,6 +31,7 @@ interface State {
   toast: Toast | null;
   syncing: boolean;
   isMock: boolean;
+  unavailable: { id: string; reason: string }[];
 
   boot(): Promise<void>;
   refresh(): Promise<void>;
@@ -91,6 +92,7 @@ export const useWallet = create<State>((set, get) => {
     toast: null,
     syncing: false,
     isMock: false,
+    unavailable: [],
 
     async boot() {
       const a = await api();
@@ -101,13 +103,14 @@ export const useWallet = create<State>((set, get) => {
     async refresh() {
       const a = await api();
       try {
-        const [accounts, activity, layout, price] = await Promise.all([
+        const [accounts, activity, layout, price, unavailable] = await Promise.all([
           a.accounts(),
           a.activity(50),
           a.layout(),
           a.btcPrice(get().currency).catch(() => null),
+          a.unavailableAccounts().catch(() => []),
         ]);
-        set({ accounts, activity, layout, price });
+        set({ accounts, activity, layout, price, unavailable });
       } catch (e) {
         get().fail(e);
       }

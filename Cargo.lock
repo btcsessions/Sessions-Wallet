@@ -7116,6 +7116,7 @@ dependencies = [
  "sessions-core",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
  "tracing",
  "zeroize",

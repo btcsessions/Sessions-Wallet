@@ -314,3 +314,17 @@ pub async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Re
     }
     u.config.save(&state.paths.config())
 }
+
+#[derive(Serialize)]
+pub struct Unavailable {
+    id: AccountId,
+    reason: String,
+}
+
+/// Accounts that couldn't be opened at unlock (offline, missing key…).
+#[tauri::command]
+pub async fn unavailable_accounts(state: State<'_, AppState>) -> Result<Vec<Unavailable>> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    Ok(u.unavailable.iter().map(|(id, reason)| Unavailable { id: id.clone(), reason: reason.clone() }).collect())
+}

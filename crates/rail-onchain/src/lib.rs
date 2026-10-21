@@ -18,7 +18,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bdk_esplora::esplora_client::{self, AsyncClient};
 use bdk_esplora::EsploraAsyncExt;
-use bdk_wallet::bitcoin::bip32::Xpriv;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, Psbt};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::file_store::Store;
@@ -279,7 +278,7 @@ impl Rail for OnchainAccount {
             return Err(Error::Unsupported("spend from a watch-only account".into()));
         }
         let address = Address::from_str(address)
-            .map_err(|e| err(e))?
+            .map_err(err)?
             .require_network(self.network.to_bitcoin())
             .map_err(|_| Error::Network("that address is for a different network".into()))?;
         let fee_rate = self.fee_rate(req.fee).await?;
@@ -409,7 +408,7 @@ impl Rail for OnchainAccount {
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        out.sort_by_key(|p| std::cmp::Reverse(p.timestamp));
         out.truncate(limit);
         Ok(out)
     }

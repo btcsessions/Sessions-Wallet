@@ -34,4 +34,5 @@ export const tauriApi: WalletApi = {
   feeRates: () => invoke("fee_rates"),
   settings: () => invoke("settings"),
   saveSettings: (settings) => invoke("save_settings", { settings }),
+  unavailableAccounts: () => invoke("unavailable_accounts"),
 };

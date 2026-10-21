@@ -54,6 +54,7 @@ pub fn run() {
             commands::btc_price,
             commands::settings,
             commands::save_settings,
+            commands::unavailable_accounts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

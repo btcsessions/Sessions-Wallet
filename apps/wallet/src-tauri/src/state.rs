@@ -253,3 +253,58 @@ enum Opened {
     Onchain(Arc<OnchainAccount>),
     Other(Arc<dyn sessions_core::Rail>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sessions_core::{Method, ReceiveRequest};
+
+    const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    #[tokio::test]
+    async fn create_lock_unlock_and_rate_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(dir.path().to_path_buf());
+        assert!(!state.has_vault());
+
+        state.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();
+        assert!(state.has_vault());
+        // A second wallet can't overwrite the first.
+        assert!(state.create(Seed::generate(12).unwrap(), "654321").await.is_err());
+
+        {
+            let guard = state.inner.lock().await;
+            let u = guard.as_ref().unwrap();
+            // Savings opens offline with the BIP84 vector address.
+            let savings = u.wallet.account(&"savings".into()).await.unwrap();
+            let r = savings
+                .receive(ReceiveRequest { method: Method::BitcoinAddress, amount_sat: None, description: None })
+                .await
+                .unwrap();
+            assert_eq!(r.request, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+            // Without a Breez key, Spending is reported, not fatal (unless one was baked in).
+            if BUILT_IN_BREEZ_KEY.is_none() {
+                assert!(u.unavailable.iter().any(|(id, _)| id.0 == "spending"));
+            }
+            // Config on disk holds no secrets.
+            let cfg = std::fs::read_to_string(state.paths.config()).unwrap();
+            assert!(!cfg.contains("abandon") && !cfg.contains("xprv"));
+        }
+
+        state.lock().await;
+        assert!(state.inner.lock().await.is_none());
+
+        // Three wrong guesses trigger a lockout, even for the right passcode.
+        for _ in 0..3 {
+            assert!(matches!(state.open_vault("000000").await, Err(Error::WrongPasscode)));
+        }
+        assert!(matches!(state.open_vault("123456").await, Err(Error::TooManyAttempts { .. })));
+
+        // After the lockout the right passcode works and resets the counter.
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        let seed = state.open_vault("123456").await.unwrap();
+        assert_eq!(seed.phrase().as_str(), ABANDON);
+        state.unlock_with(seed).await.unwrap();
+        assert!(state.inner.lock().await.is_some());
+    }
+}

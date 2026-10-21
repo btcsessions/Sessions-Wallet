@@ -55,6 +55,8 @@ export interface WalletApi {
   settings(): Promise<Settings>;
   /** Applied the next time the wallet unlocks. */
   saveSettings(s: Settings): Promise<void>;
+  /** Accounts that couldn't open at unlock, with the reason. */
+  unavailableAccounts(): Promise<{ id: string; reason: string }[]>;
 }
 
 function inTauri(): boolean {

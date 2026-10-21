@@ -357,6 +357,9 @@ export const mockApi: WalletApi = {
   async saveSettings(s) {
     mockSettings = { esploraUrl: s.esploraUrl, hasBreezKey: mockSettings.hasBreezKey || !!s.breezApiKey };
   },
+  async unavailableAccounts() {
+    return [];
+  },
   async feeRates() {
     await sleep(300);
     return { fast: 6, normal: 4, slow: 2 };

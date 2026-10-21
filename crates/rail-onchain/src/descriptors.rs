@@ -177,7 +177,7 @@ mod tests {
         let p2 = multisig(2, &[c, a.clone(), b]).unwrap();
         assert_eq!(p1, p2);
         assert!(p1.external.starts_with("wsh(sortedmulti(2,"));
-        assert!(multisig(4, &[a.clone()]).is_err());
+        assert!(multisig(4, std::slice::from_ref(&a)).is_err());
         assert!(multisig(1, &[a.clone(), a]).is_err());
     }
 
