@@ -1,15 +1,27 @@
 import { ActivityRow } from "../modules/ActivityModule";
 import { LightningAddressCard } from "./LightningAddressCard";
-import { Sheet } from "../components/ui";
+import { api } from "../api";
+import { Icon } from "../components/Icon";
+import { Sheet, useBusy } from "../components/ui";
 import { accountColor, accountKind, amountParts, formatSats } from "../format";
 import { useWallet } from "../state/store";
 
 export function AccountSheet({ id }: { id: string }) {
-  const { accounts, activity, unit, price, currency, open, layout } = useWallet();
+  const { accounts, activity, unit, price, currency, open, layout, refresh, notify, close } = useWallet();
+  const [busy, run] = useBusy();
   const a = accounts.find((x) => x.id === id);
   if (!a) return null;
   const { value, suffix } = amountParts(a.balance.confirmed, unit, price, currency);
   const items = activity.filter((p) => p.account === id);
+
+  const remove = () =>
+    run(async () => {
+      if (!window.confirm(`Remove ${a.name}? It's empty. Its keys come from your recovery phrase, so you can add it back any time.`)) return;
+      await (await api()).removeAccount(a.id);
+      await refresh();
+      notify("ok", `Removed ${a.name}`);
+      close();
+    });
 
   return (
     <Sheet title={a.name}>
@@ -25,15 +37,23 @@ export function AccountSheet({ id }: { id: string }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, margin: "8px 0 24px" }}>
+      <div className="three-actions" style={{ margin: "8px 0 24px", gridTemplateColumns: `repeat(${a.pays.length > 0 ? 3 : 1}, 1fr)` }}>
         {a.pays.length > 0 && (
-          <button className="btn" onClick={() => open({ name: "move", from: a.id })}>
-            Move out
+          <button className="btn primary" onClick={() => open({ name: "pay", from: a.id })}>
+            <Icon name="up" size={20} />
+            Send
           </button>
         )}
         <button className="btn" onClick={() => open({ name: "receive", account: a.id })}>
+          <Icon name="down" size={20} />
           Receive
         </button>
+        {a.pays.length > 0 && accounts.length > 1 && (
+          <button className="btn" onClick={() => open({ name: "move", from: a.id })}>
+            <Icon name="swap" size={20} />
+            Move
+          </button>
+        )}
       </div>
 
       {a.rail === "spark" && (
@@ -45,7 +65,7 @@ export function AccountSheet({ id }: { id: string }) {
 
       {a.custody.type === "mint" && (
         <p className="notice">
-          Held by the mint at {a.custody.url}. Move larger amounts to Spending or Savings.
+          Held by the mint at {a.custody.url}. Keep amounts small and move larger ones to Spending or a vault.
         </p>
       )}
       {a.custody.type === "multisig" && (
@@ -68,6 +88,12 @@ export function AccountSheet({ id }: { id: string }) {
             </div>
           </div>
         </>
+      )}
+
+      {a.id !== "spending" && a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut === 0 && (
+        <button className="btn block" style={{ color: "var(--red)", marginBottom: 22 }} disabled={busy} onClick={remove}>
+          Remove {a.name}
+        </button>
       )}
 
       <p className="group-label">Activity</p>

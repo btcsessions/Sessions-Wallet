@@ -14,6 +14,7 @@ export const tauriApi: WalletApi = {
 
   accounts: () => invoke("accounts"),
   addAccount: (spec) => invoke("add_account", { spec }),
+  removeAccount: (id) => invoke("remove_account", { id }),
   cosignerKey: () => invoke("cosigner_key"),
   sync: () => invoke("sync"),
   activity: (limit) => invoke("activity", { limit }),

@@ -133,6 +133,25 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                     AccountSpec::WatchOnly { id: u.config.fresh_id("watch"), name, descriptors: d }
                 }
             }
+            "savings" => {
+                // Hot on-chain wallet (BIP84). Opt-in only.
+                let used: Vec<u32> = u
+                    .config
+                    .accounts
+                    .iter()
+                    .filter_map(|a| match a {
+                        AccountSpec::Savings { account_index, .. } => Some(*account_index),
+                        _ => None,
+                    })
+                    .collect();
+                let account_index = (0..).find(|i| !used.contains(i)).unwrap_or(0);
+                let id = if account_index == 0 && !u.config.accounts.iter().any(|a| a.id().0 == "savings") {
+                    AccountId("savings".into())
+                } else {
+                    u.config.fresh_id("savings")
+                };
+                AccountSpec::Savings { id, name, account_index }
+            }
             "ecash" => {
                 let mint_url = spec.mint_url.unwrap_or_default();
                 if !mint_url.starts_with("https://") {
@@ -251,13 +270,36 @@ pub struct FeeRates {
 
 #[tauri::command]
 pub async fn fee_rates(state: State<'_, AppState>) -> Result<FeeRates> {
-    let account = {
+    let (account, base) = {
         let guard = state.inner.lock().await;
         let u = guard.as_ref().ok_or(Error::Locked)?;
-        u.onchain.values().next().cloned().ok_or(Error::NoRoute)?
+        let base = u.config.esplora_url.clone().unwrap_or_else(|| rail_onchain::default_esplora(u.config.network).to_string());
+        (u.onchain.values().next().cloned(), base)
     };
-    let (fast, normal, slow) = account.fee_rates().await?;
-    Ok(FeeRates { fast, normal, slow })
+    if let Some(account) = account {
+        let (fast, normal, slow) = account.fee_rates().await?;
+        return Ok(FeeRates { fast, normal, slow });
+    }
+    // No on-chain account: ask the chain server directly (Esplora fee-estimates,
+    // keyed by confirmation target in blocks).
+    let est: std::collections::HashMap<String, f32> = reqwest::Client::new()
+        .get(format!("{}/fee-estimates", base.trim_end_matches('/')))
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| Error::rail("fees", e))?
+        .json()
+        .await
+        .map_err(|e| Error::rail("fees", e))?;
+    let at = |target: u32| {
+        est.iter()
+            .filter_map(|(k, v)| k.parse::<u32>().ok().filter(|t| *t <= target).map(|t| (t, *v)))
+            .max_by_key(|(t, _)| *t)
+            .map(|(_, v)| v.max(1.0))
+            .unwrap_or(1.0)
+    };
+    Ok(FeeRates { fast: at(1), normal: at(6), slow: at(144) })
 }
 
 /// Spot price from mempool.space (or the user's own mempool instance).
@@ -359,4 +401,28 @@ pub async fn lightning_address_available(state: State<'_, AppState>, account: Ac
 pub async fn register_lightning_address(state: State<'_, AppState>, account: AccountId, username: String) -> Result<rail_spark::LightningAddress> {
     let username = check_username(&username)?;
     spark_account(&state, &account).await?.register_lightning_address(&username).await
+}
+
+/// Remove an account that holds nothing. Spending can't be removed.
+/// Its keys still derive from the recovery phrase, so adding it back later
+/// recovers any funds that arrive in the meantime.
+#[tauri::command]
+pub async fn remove_account(state: State<'_, AppState>, id: AccountId) -> Result<()> {
+    if id.0 == "spending" {
+        return Err(Error::Invalid("Spending can't be removed".into()));
+    }
+    let w = wallet(&state).await?;
+    let info = w.account(&id).await?.info().await?;
+    let b = info.balance;
+    if b.confirmed + b.pending_in + b.pending_out > 0 {
+        return Err(Error::Invalid("Move the funds out first. Only empty accounts can be removed".into()));
+    }
+    w.remove_account(&id).await;
+    let mut guard = state.inner.lock().await;
+    let u = guard.as_mut().ok_or(Error::Locked)?;
+    u.config.accounts.retain(|a| a.id() != &id);
+    u.onchain.remove(&id);
+    u.spark.remove(&id);
+    u.config.layout.modules.retain(|m| !m.id.ends_with(&format!(":{}", id.0)));
+    u.config.save(&state.paths.config())
 }

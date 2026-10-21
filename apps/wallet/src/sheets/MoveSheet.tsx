@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Execution, FeePriority, Plan, Prepared } from "../api/types";
 import { Icon } from "../components/Icon";
-import { AmountInput, HoldButton, Sheet, useBusy } from "../components/ui";
-import { accountColor, accountKind, errorText, formatSats } from "../format";
+import { AmountInput, HoldButton, SelectRow, Sheet, useBusy } from "../components/ui";
+import { accountColor, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 import { RoutePreview } from "./RoutePreview";
 import { SignStep } from "./SignStep";
@@ -82,23 +82,8 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
     );
   }
 
-  const Picker = ({ value, onPick, options, label }: { value?: string; onPick: (id: string) => void; options: typeof accounts; label: string }) => (
-    <div className="group" role="radiogroup" aria-label={label}>
-      {options.map((a) => (
-        <button key={a.id} className={`cell ${a.id === value ? "selected" : ""}`} role="radio" aria-checked={a.id === value} onClick={() => onPick(a.id)}>
-          <span style={{ width: 10, height: 10, borderRadius: 3, background: accountColor(a), flex: "none" }} />
-          <span className="grow">
-            <div>{a.name}</div>
-            <div className="row-sub">{accountKind(a)}</div>
-          </span>
-          <span className="value num">{formatSats(a.balance.confirmed)}</span>
-          <span className="check" style={{ width: 20 }}>
-            {a.id === value && <Icon name="check" size={18} stroke={2.5} />}
-          </span>
-        </button>
-      ))}
-    </div>
-  );
+  const opt = (a: (typeof accounts)[number]) => ({ value: a.id, label: `${a.name} (${formatSats(a.balance.confirmed)})` });
+  const target = accounts.find((a) => a.id === to);
 
   return (
     <Sheet title="Move">
@@ -113,17 +98,22 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
         </div>
       )}
 
-      <p className="group-label">From</p>
-      <Picker value={from} onPick={(id) => (id === to ? swap() : setFrom(id))} options={sources} label="From account" />
-
-      <div style={{ display: "flex", justifyContent: "center", margin: "-12px 0 10px" }}>
-        <button className="icon-button filled" onClick={swap} aria-label="Swap from and to">
-          <Icon name="swap" size={18} />
+      <div className="group" style={{ position: "relative" }}>
+        <SelectRow label="From" value={from} onChange={(id) => (id === to ? swap() : setFrom(id))} options={sources.map(opt)} dot={source && accountColor(source)} />
+        <SelectRow
+          label="To"
+          value={to}
+          onChange={(id) => (id === from ? swap() : setTo(id))}
+          options={accounts.filter((a) => a.custody.type !== "watchOnly" && a.id !== from).map(opt)}
+          dot={target && accountColor(target)}
+        />
+      </div>
+      <div style={{ display: "flex", justifyContent: "center", margin: "-12px 0 12px" }}>
+        <button className="btn small" onClick={swap} aria-label="Swap from and to">
+          <Icon name="swap" size={16} />
+          Swap
         </button>
       </div>
-
-      <p className="group-label">To</p>
-      <Picker value={to} onPick={(id) => (id === from ? swap() : setTo(id))} options={accounts.filter((a) => a.custody.type !== "watchOnly" || a.id === to)} label="To account" />
 
       {error && <p className="notice">{error}</p>}
       {plan && <RoutePreview plan={plan} />}

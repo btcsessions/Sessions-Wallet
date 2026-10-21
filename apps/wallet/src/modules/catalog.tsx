@@ -14,7 +14,7 @@ export interface ModuleProps {
   module: InstalledModule;
 }
 
-export type SetupFlow = "multisig" | "hardware" | "watchOnly" | "ecash";
+export type SetupFlow = "multisig" | "hardware" | "watchOnly" | "ecash" | "savings";
 
 export interface ModuleDef {
   type: string;
@@ -47,8 +47,8 @@ const defs: ModuleDef[] = [
   },
   {
     type: "pay-receive",
-    name: "Pay & Receive",
-    blurb: "Scan, paste or share a request. The wallet picks the cheapest way.",
+    name: "Send & Receive",
+    blurb: "Send, receive and move between accounts. The wallet picks the cheapest way.",
     icon: "swap",
     tint: "#FF9500",
     section: "essentials",
@@ -77,13 +77,15 @@ const defs: ModuleDef[] = [
   },
   {
     type: "savings",
-    name: "Savings",
-    blurb: "Plain on-chain bitcoin. Restores in any BIP84 wallet.",
+    name: "Hot on-chain wallet",
+    blurb: "On-chain bitcoin with keys on this phone. Off by default; hardware wallets and vaults are safer for savings.",
     icon: "key",
     tint: "#5856D6",
     section: "accounts",
     sizes: ["small", "medium"],
     component: AccountModule,
+    setup: "savings",
+    multiple: true,
   },
   {
     type: "vault",
@@ -134,7 +136,7 @@ const defs: ModuleDef[] = [
   {
     type: "liquid",
     name: "Liquid",
-    blurb: "Pay or get paid by a Liquid address. Swapped automatically, no L-BTC to manage.",
+    blurb: "Send to or receive from a Liquid address. Swapped automatically, no L-BTC to manage.",
     icon: "drop",
     tint: "#32ADE6",
     section: "move",

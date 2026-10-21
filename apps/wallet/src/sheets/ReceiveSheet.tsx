@@ -8,7 +8,8 @@ import { useWallet } from "../state/store";
 
 /** Methods to offer for an account, best first. Liquid comes via swaps. */
 function methodsFor(a: AccountInfo): Method[] {
-  const order: Method[] = ["bolt11", "sparkAddress", "bitcoinAddress"];
+  // Spark addresses only work between Spark wallets, so they aren't offered.
+  const order: Method[] = ["bolt11", "bitcoinAddress"];
   const out = order.filter((m) => a.receives.includes(m));
   if (a.receives.includes("bolt11")) out.push("liquidAddress");
   return out;
@@ -39,7 +40,8 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
   const [lnAddress, setLnAddress] = useState<LightningAddress | null>(null);
   const [preferId, preferMethod] = (initial ?? "").split("#");
   const receivable = accounts.filter((a) => a.receives.length > 0);
-  const [accountId, setAccountId] = useState(preferId || receivable[0]?.id || "");
+  // Default to Spending: everything can arrive there, including on-chain.
+  const [accountId, setAccountId] = useState(preferId || receivable.find((a) => a.rail === "spark")?.id || receivable[0]?.id || "");
   const account = accounts.find((a) => a.id === accountId);
   const isSpark = account?.rail === "spark";
   const methods = useMemo(() => {
@@ -194,7 +196,9 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
             )}
           </div>
           <p className="group-note" style={{ margin: "0 0 8px", textAlign: "center" }}>
-            {EXPLAIN[method]}
+            {method === "bitcoinAddress" && isSpark
+              ? "Send from any bitcoin wallet. It lands in Spending after 3 confirmations, ready to spend over Lightning."
+              : EXPLAIN[method]}
             {target.feeSat ? ` Swap fee about ${formatSats(target.feeSat)} sats.` : ""}
           </p>
           {isSpark && !lnAddress && (

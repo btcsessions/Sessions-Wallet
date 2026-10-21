@@ -202,3 +202,33 @@ export function useBusy() {
   };
   return [busy, run] as const;
 }
+
+/** iOS-style pop-up button: a row with a label and a native dropdown. */
+export function SelectRow<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+  dot,
+}: {
+  label: string;
+  value: T | undefined;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+  dot?: string;
+}) {
+  return (
+    <label className="cell select-row">
+      <span className="grow">{label}</span>
+      {dot && <span className="select-dot" style={{ background: dot }} />}
+      <select value={value} onChange={(e) => onChange(e.target.value as T)}>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <Icon name="chevron" size={14} stroke={2.5} />
+    </label>
+  );
+}

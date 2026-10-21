@@ -34,7 +34,7 @@ function onchainLeg(l: Leg): boolean {
   );
 }
 
-export function PaySheet({ prefill }: { prefill?: string }) {
+export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; from?: string }) {
   const { accounts, close, notify, refresh, price, currency } = useWallet();
   const [step, setStep] = useState<Step>("input");
   const [input, setInput] = useState(prefill ?? "");
@@ -42,7 +42,7 @@ export function PaySheet({ prefill }: { prefill?: string }) {
   const [fixedAmount, setFixedAmount] = useState<number | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [amount, setAmount] = useState<number | null>(null);
-  const [from, setFrom] = useState<string | null>(null);
+  const [from, setFrom] = useState<string | null>(initialFrom ?? null);
   const [fee, setFee] = useState<FeePriority>("normal");
   const [plan, setPlan] = useState<Plan | null>(null);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
@@ -208,7 +208,7 @@ export function PaySheet({ prefill }: { prefill?: string }) {
           <div className="balance-sub">to {describe(request)}</div>
         </div>
 
-        <p className="group-label">Pay from</p>
+        <p className="group-label">Send from</p>
         <div className="chips">
           <button className="chip" aria-pressed={from === null} onClick={() => setFrom(null)}>
             Best account
@@ -281,7 +281,7 @@ export function PaySheet({ prefill }: { prefill?: string }) {
 
   // Step: input
   return (
-    <Sheet title="Pay">
+    <Sheet title="Send">
       <p className="group-label">Send to</p>
       <div className="group">
         <label className="cell">

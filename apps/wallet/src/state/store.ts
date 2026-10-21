@@ -4,11 +4,11 @@ import type { AccountInfo, InstalledModule, Layout, Payment, WalletStatus } from
 import { errorText, type Unit } from "../format";
 
 export type SheetName =
-  | { name: "pay"; prefill?: string }
+  | { name: "pay"; prefill?: string; from?: string }
   | { name: "receive"; account?: string }
   | { name: "move"; from?: string; to?: string }
   | { name: "gallery" }
-  | { name: "add-account"; kind: "multisig" | "hardware" | "watchOnly" | "ecash" }
+  | { name: "add-account"; kind: "multisig" | "hardware" | "watchOnly" | "ecash" | "savings" }
   | { name: "account"; id: string }
   | { name: "settings" }
   | { name: "ecash-token"; account: string };

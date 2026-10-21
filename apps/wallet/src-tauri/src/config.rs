@@ -66,10 +66,9 @@ impl Config {
             network,
             esplora_url: None,
             breez_api_key: None,
-            accounts: vec![
-                AccountSpec::Spending { id: "spending".into(), name: "Spending".into() },
-                AccountSpec::Savings { id: "savings".into(), name: "Savings".into(), account_index: 0 },
-            ],
+            // Spending only. On-chain is for hardware wallets and vaults; a hot
+            // on-chain wallet is something the user turns on themselves.
+            accounts: vec![AccountSpec::Spending { id: "spending".into(), name: "Spending".into() }],
             layout: Layout::default(),
             next_multisig_account: 0,
             next_id: 1,

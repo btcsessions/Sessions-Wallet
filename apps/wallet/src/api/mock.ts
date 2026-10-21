@@ -27,10 +27,10 @@ function seedDemo() {
       pays: ["sparkAddress", "bolt11", "bolt12", "lightningAddress", "lnurl", "bitcoinAddress"],
     },
     {
-      id: "savings",
-      name: "Savings",
+      id: "hw-1",
+      name: "Cold storage",
       rail: "onchain",
-      custody: { type: "hot" },
+      custody: { type: "hardware", device: "Coldcard", fingerprint: "a1b2c3d4" },
       balance: { confirmed: 4_250_000, pendingIn: 120_000, pendingOut: 0 },
       receives: ["bitcoinAddress"],
       pays: ["bitcoinAddress"],
@@ -39,9 +39,9 @@ function seedDemo() {
   const t = now();
   activity = [
     p("a1", "spending", "outgoing", 4_800, 0, "bolt11", t - 3_600, "Coffee at Analog"),
-    p("a2", "savings", "incoming", 120_000, 0, "bitcoinAddress", t - 7_200, null, "pending"),
+    p("a2", "hw-1", "incoming", 120_000, 0, "bitcoinAddress", t - 7_200, null, "pending"),
     p("a3", "spending", "incoming", 21_000, 0, "lightningAddress", t - 86_400, "Zap from Bitcast listener"),
-    p("a4", "savings", "internal", 150_000, 412, "bitcoinAddress", t - 3 * 86_400, "Moved to Spending"),
+    p("a4", "hw-1", "internal", 150_000, 412, "bitcoinAddress", t - 3 * 86_400, "Moved to Spending"),
     p("a5", "spending", "outgoing", 63_000, 12, "bolt11", t - 6 * 86_400, "Sat Market vendor"),
   ];
 }
@@ -175,6 +175,8 @@ export const mockApi: WalletApi = {
   async createWallet() {
     await sleep(400);
     seedDemo();
+    // A new wallet starts with Spending only.
+    accounts = accounts.filter((a) => a.rail === "spark");
     accounts.forEach((a) => (a.balance = { confirmed: 0, pendingIn: 0, pendingOut: 0 }));
     activity = [];
     status = "unlocked";
@@ -224,10 +226,14 @@ export const mockApi: WalletApi = {
         a = { ...base, id, name: spec.name, rail: "onchain", custody: { type: "watchOnly" }, receives: ["bitcoinAddress"], pays: [] };
         break;
       default:
-        a = { ...base, id, name: spec.name, rail: spec.kind === "spark" ? "spark" : "onchain", custody: { type: "hot" }, receives: ["bitcoinAddress"], pays: ["bitcoinAddress"] };
+        a = { ...base, id, name: spec.name, rail: "onchain", custody: { type: "hot" }, receives: ["bitcoinAddress"], pays: ["bitcoinAddress"] };
     }
     accounts.push(a);
     return a;
+  },
+  async removeAccount(id) {
+    accounts = accounts.filter((a) => a.id !== id);
+    layout = { ...layout, modules: layout.modules.filter((m) => !m.id.endsWith(`:${id}`)) };
   },
   async cosignerKey() {
     const account = 0;

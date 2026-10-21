@@ -19,7 +19,7 @@ function ActiveSheet() {
   // Keyed so each opening starts fresh.
   switch (sheet.name) {
     case "pay":
-      return <PaySheet key="pay" prefill={sheet.prefill} />;
+      return <PaySheet key={`pay-${sheet.from}`} prefill={sheet.prefill} from={sheet.from} />;
     case "receive":
       return <ReceiveSheet key={`r-${sheet.account}`} account={sheet.account} />;
     case "move":

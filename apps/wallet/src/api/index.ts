@@ -32,6 +32,8 @@ export interface WalletApi {
 
   accounts(): Promise<AccountInfo[]>;
   addAccount(spec: NewAccount): Promise<AccountInfo>;
+  /** Only empty accounts can be removed. */
+  removeAccount(id: string): Promise<void>;
   /** Our own cosigner key to share when setting up a multisig. */
   cosignerKey(): Promise<string>;
   sync(): Promise<void>;

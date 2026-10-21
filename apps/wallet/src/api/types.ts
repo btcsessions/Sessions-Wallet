@@ -126,7 +126,7 @@ export interface Layout {
 export type WalletStatus = "empty" | "locked" | "unlocked";
 
 export interface NewAccount {
-  kind: "spark" | "savings" | "multisig" | "hardware" | "watchOnly" | "ecash";
+  kind: "savings" | "multisig" | "hardware" | "watchOnly" | "ecash";
   name: string;
   /** multisig: threshold + cosigner key expressions; hardware/watchOnly: descriptor; ecash: mint url */
   threshold?: number;

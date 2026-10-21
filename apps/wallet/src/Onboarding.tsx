@@ -143,7 +143,7 @@ export function Onboarding() {
           Enter your recovery phrase
         </h1>
         <p className="welcome-copy" style={{ marginBottom: 20 }}>
-          12 or 24 words, separated by spaces. Restores your savings, spending and ecash accounts.
+          12 or 24 words, separated by spaces. Restores your spending, ecash and on-chain accounts.
         </p>
         <div className="group">
           <label className="cell">

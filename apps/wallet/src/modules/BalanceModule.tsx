@@ -12,6 +12,7 @@ export function BalanceModule({ module }: ModuleProps) {
 
   return (
     <>
+      <div className="tile-title">Total balance</div>
       <button
         className="balance-amount num"
         onClick={cycleUnit}
@@ -25,16 +26,19 @@ export function BalanceModule({ module }: ModuleProps) {
         {incoming > 0 && <> and {formatSats(incoming)} sats on the way</>}
       </div>
 
+      {/* Colour bar on every size; the named breakdown when there's room. */}
+      <div className="split" role="img" aria-label="Where your balance sits, by account" style={large ? undefined : { margin: "14px 0 0" }}>
+        {funded.map((a) => (
+          <span key={a.id} title={a.name} style={{ flexGrow: a.balance.confirmed + a.balance.pendingIn, background: accountColor(a) }} />
+        ))}
+      </div>
       {large && (
         <>
-          <div className="split" role="img" aria-label="How your balance is split across accounts">
-            {funded.map((a) => (
-              <span key={a.id} style={{ flexGrow: a.balance.confirmed + a.balance.pendingIn, background: accountColor(a) }} />
-            ))}
-          </div>
           <ul className="split-legend">
-            {accounts.map((a) => (
-              <li key={a.id}>
+            {[...accounts]
+              .sort((x, y) => y.balance.confirmed + y.balance.pendingIn - (x.balance.confirmed + x.balance.pendingIn))
+              .map((a) => (
+              <li key={a.id} style={a.balance.confirmed + a.balance.pendingIn === 0 ? { opacity: 0.5 } : undefined}>
                 <span className="dot" style={{ background: accountColor(a) }} />
                 <button className="name" style={{ textAlign: "left" }} onClick={() => open({ name: "account", id: a.id })}>
                   {a.name}

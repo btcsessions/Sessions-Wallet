@@ -291,13 +291,8 @@ mod tests {
         {
             let guard = state.inner.lock().await;
             let u = guard.as_ref().unwrap();
-            // Savings opens offline with the BIP84 vector address.
-            let savings = u.wallet.account(&"savings".into()).await.unwrap();
-            let r = savings
-                .receive(ReceiveRequest { method: Method::BitcoinAddress, amount_sat: None, description: None })
-                .await
-                .unwrap();
-            assert_eq!(r.request, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+            // No hot on-chain account by default.
+            assert!(u.wallet.account(&"savings".into()).await.is_err());
             // Without a Breez key, Spending is reported, not fatal (unless one was baked in).
             if BUILT_IN_BREEZ_KEY.is_none() {
                 assert!(u.unavailable.iter().any(|(id, _)| id.0 == "spending"));
@@ -322,5 +317,17 @@ mod tests {
         assert_eq!(seed.phrase().as_str(), ABANDON);
         state.unlock_with(seed).await.unwrap();
         assert!(state.inner.lock().await.is_some());
+
+        // Opting in to a hot on-chain account gives the BIP84 vector address, offline.
+        let id = state
+            .add_account(AccountSpec::Savings { id: "savings".into(), name: "Savings".into(), account_index: 0 })
+            .await
+            .unwrap();
+        let savings = state.inner.lock().await.as_ref().unwrap().wallet.account(&id).await.unwrap();
+        let r = savings
+            .receive(ReceiveRequest { method: Method::BitcoinAddress, amount_sat: None, description: None })
+            .await
+            .unwrap();
+        assert_eq!(r.request, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
     }
 }

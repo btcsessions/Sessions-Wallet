@@ -65,6 +65,7 @@ pub fn run() {
             commands::lightning_address,
             commands::lightning_address_available,
             commands::register_lightning_address,
+            commands::remove_account,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");
