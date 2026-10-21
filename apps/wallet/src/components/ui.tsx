@@ -232,3 +232,41 @@ export function SelectRow<T extends string>({
     </label>
   );
 }
+
+/** Efficient / Private choice for on-chain sends. */
+export function SpendStyleSwitch({ value, onChange }: { value: "efficient" | "private"; onChange: (v: "efficient" | "private") => void }) {
+  return (
+    <>
+      <p className="group-label">Privacy</p>
+      <div className="segmented" style={{ marginBottom: 6 }}>
+        <button aria-pressed={value === "efficient"} onClick={() => onChange("efficient")}>
+          Efficient
+        </button>
+        <button aria-pressed={value === "private"} onClick={() => onChange("private")}>
+          Private
+        </button>
+      </div>
+      <p className="group-note" style={{ margin: "0 16px 18px" }}>
+        {value === "private"
+          ? "Looks like a two-person coinjoin, so observers can't tell which output is the payment. Uses more coins and costs about 2–3× the fee."
+          : "Fewest coins and the lowest fee."}
+      </p>
+    </>
+  );
+}
+
+/** Caveats attached to a quote (privacy, payjoin). */
+export function QuoteNotes({ notes, payjoin }: { notes?: string[]; payjoin?: boolean }) {
+  if (!notes?.length) return null;
+  return (
+    <div className="notice" role="note">
+      {payjoin && <strong>Payjoin. </strong>}
+      {notes.map((n, i) => (
+        <span key={i}>
+          {n}
+          {i < notes.length - 1 ? " " : ""}
+        </span>
+      ))}
+    </div>
+  );
+}

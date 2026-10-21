@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { Execution, FeePriority, Leg, PaymentRequest, Plan, Prepared } from "../api/types";
+import type { AccountInfo, Execution, FeePriority, Leg, PaymentRequest, Plan, Prepared, SpendStyle } from "../api/types";
 import { Icon } from "../components/Icon";
-import { AmountInput, HoldButton, Sheet, useBusy } from "../components/ui";
+import { AmountInput, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
 import { METHOD_LABEL, accountColor, errorText, formatFiat, formatSats } from "../format";
 import { useWallet } from "../state/store";
 import { RoutePreview } from "./RoutePreview";
@@ -25,8 +25,14 @@ function describe(r: PaymentRequest): string {
   }
 }
 
+/** First step is an on-chain send from an on-chain account? Then privacy style applies. */
+export function onchainAccountLeg(plan: Plan, accounts: AccountInfo[]): boolean {
+  const first = plan.legs[0];
+  return onchainLeg(first) && accounts.find((a) => a.id === first.from)?.rail === "onchain" && first.type !== "viaSwap";
+}
+
 /** Leg on-chain? Then fee choice matters. */
-function onchainLeg(l: Leg): boolean {
+export function onchainLeg(l: Leg): boolean {
   return (
     (l.type === "toExternal" && l.request.type === "bitcoinAddress") ||
     (l.type === "toAccount" && l.method === "bitcoinAddress") ||
@@ -44,6 +50,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
   const [amount, setAmount] = useState<number | null>(null);
   const [from, setFrom] = useState<string | null>(initialFrom ?? null);
   const [fee, setFee] = useState<FeePriority>("normal");
+  const [style, setStyle] = useState<SpendStyle>(useWallet.getState().layout?.spendStyle ?? "efficient");
   const [plan, setPlan] = useState<Plan | null>(null);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -79,7 +86,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         const p = await a.planPayment(input, amount, from);
         if (!alive) return;
         setPlan(p);
-        const prep = await a.prepare(p, fee);
+        const prep = await a.prepare(p, fee, style);
         if (alive) setPrepared(prep);
       } catch (e) {
         if (alive) setPlanError(errorText(e));
@@ -88,7 +95,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
     return () => {
       alive = false;
     };
-  }, [step, input, amount, from, fee]);
+  }, [step, input, amount, from, fee, style]);
 
   const payers = useMemo(() => accounts.filter((a) => a.pays.length > 0), [accounts]);
   const isToken = request?.type === "cashuToken";
@@ -241,6 +248,10 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
             </div>
           </>
         )}
+
+        {plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} />}
+
+        {prepared && <QuoteNotes notes={prepared.quote.notes} payjoin={prepared.quote.payjoin} />}
 
         {prepared && (
           <div className="group">

@@ -275,14 +275,15 @@ export const mockApi: WalletApi = {
     }
     throw "No route between these accounts";
   },
-  async prepare(plan, fee) {
+  async prepare(plan, fee, style) {
     await sleep(500);
     const first = find(legFrom(plan.legs[0]));
     const leg = plan.legs[0];
     const onchain = (leg.type === "toAccount" && leg.method === "bitcoinAddress") || (leg.type === "toExternal" && leg.request.type === "bitcoinAddress") || (leg.type === "viaSwap" && leg.payMethod === "bitcoinAddress");
     const rate = typeof fee === "number" ? fee : fee === "fast" ? 6 : fee === "slow" ? 2 : 4;
     const swapFee = leg.type === "viaSwap" ? Math.ceil(plan.amountSat * 0.001) + 120 : 0;
-    const feeSat = onchain ? rate * 141 : 3;
+    const isPrivate = onchain && style === "private" && first.rail === "onchain";
+    const feeSat = onchain ? rate * (isPrivate ? 340 : 141) : 3;
     const amountSat = plan.amountSat + swapFee;
     if (first.balance.confirmed < amountSat + feeSat) throw `Not enough funds: need ${(amountSat + feeSat).toLocaleString()} sats, have ${first.balance.confirmed.toLocaleString()} sats`;
     const hw = first.custody.type === "hardware" || first.custody.type === "multisig";
@@ -294,6 +295,9 @@ export const mockApi: WalletApi = {
         feeSat,
         handle: "mock",
         needsSignature: hw ? { psbtBase64: "cHNidP8BAHECAAAAAWZtb2NrcHNidG1vY2twc2J0bW9ja3BzYnRtb2NrcHNidG1vY2s=", signaturesNeeded: 1 } : null,
+        private: isPrivate,
+        payjoin: false,
+        notes: isPrivate ? [] : [],
       },
       leg,
       remaining: plan.legs.slice(1),

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Execution, FeePriority, Plan, Prepared } from "../api/types";
+import type { Execution, FeePriority, Plan, Prepared, SpendStyle } from "../api/types";
 import { Icon } from "../components/Icon";
-import { AmountInput, HoldButton, SelectRow, Sheet, useBusy } from "../components/ui";
+import { AmountInput, HoldButton, QuoteNotes, SelectRow, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
 import { accountColor, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
+import { onchainAccountLeg } from "./PaySheet";
 import { RoutePreview } from "./RoutePreview";
 import { SignStep } from "./SignStep";
 
@@ -16,6 +17,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
   const [to, setTo] = useState(initialTo ?? accounts.find((a) => a.id !== from && a.custody.type !== "watchOnly")?.id);
   const [amount, setAmount] = useState<number | null>(null);
   const [fee, setFee] = useState<FeePriority>("normal");
+  const [style, setStyle] = useState<SpendStyle>(useWallet.getState().layout?.spendStyle ?? "efficient");
   const [plan, setPlan] = useState<Plan | null>(null);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -34,7 +36,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
         const p = await a.planMove(from, to, amount);
         if (!alive) return;
         setPlan(p);
-        const prep = await a.prepare(p, fee);
+        const prep = await a.prepare(p, fee, style);
         if (alive) setPrepared(prep);
       } catch (e) {
         if (alive) setError(errorText(e));
@@ -44,7 +46,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
       alive = false;
       clearTimeout(t);
     };
-  }, [from, to, amount, fee]);
+  }, [from, to, amount, fee, style]);
 
   const swap = () => {
     if (!to) return;
@@ -127,6 +129,9 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
           ))}
         </div>
       )}
+
+      {plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} />}
+      {prepared && <QuoteNotes notes={prepared.quote.notes} />}
 
       {prepared && (
         <div className="group">

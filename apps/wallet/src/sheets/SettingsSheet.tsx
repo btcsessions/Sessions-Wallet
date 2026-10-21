@@ -7,7 +7,7 @@ import { useWallet } from "../state/store";
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
 
 export function SettingsSheet() {
-  const { currency, layout, setAdvanced, setStatus, close, refresh } = useWallet();
+  const { currency, layout, setAdvanced, setStatus, close, refresh, setSpendStyle } = useWallet();
   const [phrase, setPhrase] = useState<string | null>(null);
   const [passcode, setPasscode] = useState("");
   const [busy, run] = useBusy();
@@ -73,6 +73,19 @@ export function SettingsSheet() {
           <input type="checkbox" role="switch" checked={layout?.advanced ?? false} onChange={(e) => setAdvanced(e.target.checked)} style={{ width: 22, height: 22, accentColor: "var(--accent)" }} />
         </label>
       </div>
+
+      <p className="group-label">On-chain sends</p>
+      <div className="segmented" style={{ marginBottom: 6 }}>
+        <button aria-pressed={(layout?.spendStyle ?? "efficient") === "efficient"} onClick={() => setSpendStyle("efficient")}>
+          Efficient
+        </button>
+        <button aria-pressed={layout?.spendStyle === "private"} onClick={() => setSpendStyle("private")}>
+          Private
+        </button>
+      </div>
+      <p className="group-note" style={{ margin: "0 16px 22px" }}>
+        The default for sends from on-chain accounts. You can switch on each send. Private looks like a coinjoin and costs more in fees.
+      </p>
 
       <p className="group-label">Connection</p>
       <div className="group">

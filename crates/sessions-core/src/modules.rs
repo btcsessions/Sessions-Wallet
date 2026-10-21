@@ -25,6 +25,9 @@ pub struct Layout {
     /// Shows advanced detail (fees, UTXOs, descriptors) everywhere.
     pub advanced: bool,
     pub modules: Vec<InstalledModule>,
+    /// Default for on-chain sends; can be changed on each send.
+    #[serde(default)]
+    pub spend_style: crate::SpendStyle,
 }
 
 impl Default for Layout {
@@ -38,6 +41,7 @@ impl Default for Layout {
         Layout {
             version: 1,
             advanced: false,
+            spend_style: crate::SpendStyle::Efficient,
             modules: vec![
                 m("balance", "large"),
                 m("pay-receive", "medium"),

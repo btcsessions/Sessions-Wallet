@@ -22,7 +22,7 @@ export const tauriApi: WalletApi = {
   parse: (input) => invoke("parse", { input }),
   planPayment: (input, amountSat, from) => invoke("plan_payment", { input, amountSat, from }),
   planMove: (from, to, amountSat) => invoke("plan_move", { from, to, amountSat }),
-  prepare: (plan, fee) => invoke("prepare", { plan, fee }),
+  prepare: (plan, fee, style) => invoke("prepare", { plan, fee, style: style ?? null }),
   confirm: (prepared, fee) => invoke("confirm", { prepared, fee }),
   resume: (paused, signedPsbt, fee) => invoke("resume", { paused, signedPsbt, fee }),
 

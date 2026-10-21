@@ -80,6 +80,11 @@ export interface SendQuote {
   feeSat: number;
   handle: string;
   needsSignature?: { psbtBase64: string; signaturesNeeded: number } | null;
+  /** Built as a private (fake coinjoin) transaction. */
+  private?: boolean;
+  /** Will try payjoin first, with this transaction as the fallback. */
+  payjoin?: boolean;
+  notes?: string[];
 }
 
 export interface Prepared {
@@ -117,10 +122,14 @@ export interface InstalledModule {
   config?: unknown;
 }
 
+export type SpendStyle = "efficient" | "private";
+
 export interface Layout {
   version: number;
   advanced: boolean;
   modules: InstalledModule[];
+  /** Default for on-chain sends. */
+  spendStyle?: SpendStyle;
 }
 
 export type WalletStatus = "empty" | "locked" | "unlocked";

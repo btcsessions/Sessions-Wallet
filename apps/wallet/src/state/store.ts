@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api } from "../api";
-import type { AccountInfo, InstalledModule, Layout, Payment, WalletStatus } from "../api/types";
+import type { AccountInfo, InstalledModule, Layout, Payment, SpendStyle, WalletStatus } from "../api/types";
 import { errorText, type Unit } from "../format";
 
 export type SheetName =
@@ -51,6 +51,7 @@ interface State {
   resizeModule(id: string, sizes: InstalledModule["size"][]): Promise<void>;
   reorder(ids: string[]): Promise<void>;
   setAdvanced(v: boolean): Promise<void>;
+  setSpendStyle(v: SpendStyle): Promise<void>;
 }
 
 const UNITS: Unit[] = ["sats", "btc", "fiat"];
@@ -211,6 +212,11 @@ export const useWallet = create<State>((set, get) => {
       if (!layout) return;
       const byId = new Map(layout.modules.map((m) => [m.id, m]));
       await persistLayout({ ...layout, modules: ids.map((id) => byId.get(id)!).filter(Boolean) });
+    },
+    async setSpendStyle(spendStyle) {
+      const layout = get().layout;
+      if (!layout) return;
+      await persistLayout({ ...layout, spendStyle });
     },
     async setAdvanced(advanced) {
       const layout = get().layout;
