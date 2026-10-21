@@ -27,6 +27,22 @@ use sessions_core::{
 };
 
 pub use map::{PAYS, RECEIVES};
+
+/// A claimed Lightning address.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LightningAddress {
+    pub address: String,
+    pub username: String,
+    /// bech32 LNURL for wallets that don't support Lightning addresses.
+    pub lnurl: String,
+}
+
+impl From<breez_sdk_spark::LightningAddressInfo> for LightningAddress {
+    fn from(i: breez_sdk_spark::LightningAddressInfo) -> Self {
+        LightningAddress { address: i.lightning_address, username: i.username, lnurl: i.lnurl.bech32 }
+    }
+}
 use map::{QuoteHandle, RAIL};
 
 /// Quotes older than this are dropped from memory (the SDK's own fee quotes
@@ -116,6 +132,53 @@ impl SparkAccount {
     /// address registration, manual deposit claims, refunds).
     pub fn sdk(&self) -> &BreezSdk {
         &self.sdk
+    }
+
+    /// The account's Lightning address (e.g. `ben@breez.tips`), if claimed.
+    /// Recovered from the server on a new device.
+    pub async fn lightning_address(&self) -> Result<Option<LightningAddress>> {
+        Ok(self.sdk.get_lightning_address().await.map_err(rail_err)?.map(LightningAddress::from))
+    }
+
+    /// Whether `username` is free on the Lightning address server.
+    pub async fn lightning_address_available(&self, username: &str) -> Result<bool> {
+        self.sdk
+            .check_lightning_address_available(breez_sdk_spark::CheckLightningAddressRequest { username: username.to_string() })
+            .await
+            .map_err(rail_err)
+    }
+
+    /// Claim `username@<domain>`. Payments to it arrive in this account,
+    /// even while the app is closed.
+    pub async fn register_lightning_address(&self, username: &str) -> Result<LightningAddress> {
+        let info = self
+            .sdk
+            .register_lightning_address(breez_sdk_spark::RegisterLightningAddressRequest {
+                username: username.to_string(),
+                description: None,
+            })
+            .await
+            .map_err(rail_err)?;
+        Ok(LightningAddress::from(info))
+    }
+
+    /// Call `f` whenever a payment or balance changes, so the UI can update
+    /// immediately instead of waiting for the next sync. Returns a listener id.
+    pub async fn on_change(&self, f: impl Fn() + Send + Sync + 'static) -> String {
+        struct Listener<F>(F);
+        #[async_trait]
+        impl<F: Fn() + Send + Sync> breez_sdk_spark::EventListener for Listener<F> {
+            async fn on_event(&self, event: breez_sdk_spark::SdkEvent) {
+                use breez_sdk_spark::SdkEvent::*;
+                if matches!(
+                    event,
+                    Synced | PaymentSucceeded { .. } | PaymentPending { .. } | PaymentFailed { .. } | ClaimedDeposits { .. }
+                ) {
+                    (self.0)();
+                }
+            }
+        }
+        self.sdk.add_event_listener(Box::new(Listener(f))).await
     }
 
     async fn balance_sat(&self, ensure_synced: bool) -> Result<Sats> {

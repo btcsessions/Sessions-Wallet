@@ -263,6 +263,10 @@ button {
 .editing .tile {
   animation: jiggle 0.28s ease-in-out infinite alternate;
   cursor: grab;
+  /* Let a finger drag the tile instead of scrolling the page. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .editing .tile:nth-child(2n) {

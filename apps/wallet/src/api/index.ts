@@ -4,6 +4,7 @@ import type {
   FeeRates,
   FeePriority,
   Layout,
+  LightningAddress,
   Method,
   NewAccount,
   Parsed,
@@ -57,6 +58,12 @@ export interface WalletApi {
   saveSettings(s: Settings): Promise<void>;
   /** Accounts that couldn't open at unlock, with the reason. */
   unavailableAccounts(): Promise<{ id: string; reason: string }[]>;
+
+  lightningAddress(account: string): Promise<LightningAddress | null>;
+  lightningAddressAvailable(account: string, username: string): Promise<boolean>;
+  registerLightningAddress(account: string, username: string): Promise<LightningAddress>;
+  /** Called when an account changes (payment in or out). Returns an unsubscribe. */
+  onChange(cb: () => void): Promise<() => void>;
 }
 
 function inTauri(): boolean {

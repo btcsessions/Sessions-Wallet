@@ -49,19 +49,22 @@ pub struct Unlocked {
     pub wallet: Arc<Wallet>,
     pub config: Config,
     pub onchain: HashMap<AccountId, Arc<OnchainAccount>>,
+    pub spark: HashMap<AccountId, Arc<SparkAccount>>,
     /// Accounts that failed to open (e.g. offline at startup), with the reason.
     pub unavailable: Vec<(AccountId, String)>,
 }
 
 pub struct AppState {
     pub paths: Paths,
+    /// Called when an account reports a change (e.g. a payment arrived).
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
     pub inner: Mutex<Option<Unlocked>>,
     failures: Mutex<(u32, Option<Instant>)>,
 }
 
 impl AppState {
-    pub fn new(root: PathBuf) -> Self {
-        AppState { paths: Paths { root }, inner: Mutex::new(None), failures: Mutex::new((0, None)) }
+    pub fn new(root: PathBuf, notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+        AppState { paths: Paths { root }, notify, inner: Mutex::new(None), failures: Mutex::new((0, None)) }
     }
 
     pub fn has_vault(&self) -> bool {
@@ -125,6 +128,7 @@ impl AppState {
         let config = Config::load(&self.paths.config())?.unwrap_or_else(|| Config::new(NETWORK));
         let wallet = Arc::new(Wallet::new());
         let mut onchain = HashMap::new();
+        let mut spark = HashMap::new();
         let mut unavailable = Vec::new();
 
         let master = seed.master_xpriv(config.network)?;
@@ -135,6 +139,10 @@ impl AppState {
                     wallet.add_account(a).await;
                 }
                 Ok(Opened::Other(r)) => wallet.add_account(r).await,
+                Ok(Opened::Spark(a)) => {
+                    spark.insert(spec.id().clone(), a.clone());
+                    wallet.add_account(a).await;
+                }
                 Err(e) => {
                     tracing::warn!(account = %spec.id(), "couldn't open account: {e}");
                     unavailable.push((spec.id().clone(), e.to_string()));
@@ -153,7 +161,7 @@ impl AppState {
             Err(e) => tracing::warn!("Liquid swaps unavailable: {e}"),
         }
 
-        *self.inner.lock().await = Some(Unlocked { seed, wallet, config, onchain, unavailable });
+        *self.inner.lock().await = Some(Unlocked { seed, wallet, config, onchain, spark, unavailable });
         Ok(())
     }
 
@@ -208,7 +216,10 @@ impl AppState {
                     api_key,
                 })
                 .await?;
-                Ok(Opened::Other(Arc::new(account)))
+                if let Some(notify) = self.notify.clone() {
+                    account.on_change(move || notify()).await;
+                }
+                Ok(Opened::Spark(Arc::new(account)))
             }
             AccountSpec::Ecash { id, name, mint_url } => {
                 let account = EcashAccount::open(EcashConfig {
@@ -237,6 +248,10 @@ impl AppState {
                 u.wallet.add_account(a).await;
             }
             Opened::Other(r) => u.wallet.add_account(r).await,
+            Opened::Spark(a) => {
+                u.spark.insert(id.clone(), a.clone());
+                u.wallet.add_account(a).await;
+            }
         }
         u.config.accounts.push(spec);
         u.config.save(&self.paths.config())?;
@@ -251,6 +266,7 @@ impl AppState {
 
 enum Opened {
     Onchain(Arc<OnchainAccount>),
+    Spark(Arc<SparkAccount>),
     Other(Arc<dyn sessions_core::Rail>),
 }
 
@@ -264,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn create_lock_unlock_and_rate_limit() {
         let dir = tempfile::tempdir().unwrap();
-        let state = AppState::new(dir.path().to_path_buf());
+        let state = AppState::new(dir.path().to_path_buf(), None);
         assert!(!state.has_vault());
 
         state.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();

@@ -149,3 +149,9 @@ export interface Settings {
   /** Write-only. */
   breezApiKey?: string | null;
 }
+
+export interface LightningAddress {
+  address: string;
+  username: string;
+  lnurl: string;
+}

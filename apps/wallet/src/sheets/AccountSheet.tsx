@@ -1,4 +1,5 @@
 import { ActivityRow } from "../modules/ActivityModule";
+import { LightningAddressCard } from "./LightningAddressCard";
 import { Sheet } from "../components/ui";
 import { accountColor, accountKind, amountParts, formatSats } from "../format";
 import { useWallet } from "../state/store";
@@ -34,6 +35,13 @@ export function AccountSheet({ id }: { id: string }) {
           Receive
         </button>
       </div>
+
+      {a.rail === "spark" && (
+        <>
+          <p className="group-label">Lightning address</p>
+          <LightningAddressCard account={a.id} />
+        </>
+      )}
 
       {a.custody.type === "mint" && (
         <p className="notice">

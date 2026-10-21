@@ -328,3 +328,35 @@ pub async fn unavailable_accounts(state: State<'_, AppState>) -> Result<Vec<Unav
     let u = guard.as_ref().ok_or(Error::Locked)?;
     Ok(u.unavailable.iter().map(|(id, reason)| Unavailable { id: id.clone(), reason: reason.clone() }).collect())
 }
+
+async fn spark_account(state: &AppState, id: &AccountId) -> Result<Arc<rail_spark::SparkAccount>> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    u.spark.get(id).cloned().ok_or_else(|| Error::Unsupported("have a Lightning address".into()))
+}
+
+#[tauri::command]
+pub async fn lightning_address(state: State<'_, AppState>, account: AccountId) -> Result<Option<rail_spark::LightningAddress>> {
+    spark_account(&state, &account).await?.lightning_address().await
+}
+
+fn check_username(username: &str) -> Result<String> {
+    let u = username.trim().to_lowercase();
+    let ok = (2..=32).contains(&u.len()) && u.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.');
+    if !ok {
+        return Err(Error::Invalid("Use 2 to 32 letters, numbers, dots, dashes or underscores".into()));
+    }
+    Ok(u)
+}
+
+#[tauri::command]
+pub async fn lightning_address_available(state: State<'_, AppState>, account: AccountId, username: String) -> Result<bool> {
+    let username = check_username(&username)?;
+    spark_account(&state, &account).await?.lightning_address_available(&username).await
+}
+
+#[tauri::command]
+pub async fn register_lightning_address(state: State<'_, AppState>, account: AccountId, username: String) -> Result<rail_spark::LightningAddress> {
+    let username = check_username(&username)?;
+    spark_account(&state, &account).await?.register_lightning_address(&username).await
+}

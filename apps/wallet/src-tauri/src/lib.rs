@@ -2,7 +2,9 @@ mod commands;
 mod config;
 mod state;
 
-use tauri::Manager;
+use std::sync::Arc;
+
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10,7 +12,12 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            app.manage(state::AppState::new(dir));
+            // Tell the UI when an account changes so it refreshes at once.
+            let emitter = app.handle().clone();
+            let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                let _ = emitter.emit("wallet-changed", ());
+            });
+            app.manage(state::AppState::new(dir, Some(notify)));
 
             // Keep swaps moving in the background: Boltz hold invoices only
             // settle after we claim, so this can't wait for a manual refresh.
@@ -55,6 +62,9 @@ pub fn run() {
             commands::settings,
             commands::save_settings,
             commands::unavailable_accounts,
+            commands::lightning_address,
+            commands::lightning_address_available,
+            commands::register_lightning_address,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

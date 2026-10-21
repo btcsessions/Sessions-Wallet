@@ -2,7 +2,7 @@
 // reviewed without a native build. Never ships in the Tauri app.
 
 import type { WalletApi } from "./index";
-import type { AccountInfo, Layout, Leg, Method, Payment, PaymentRequest, Plan, Settings } from "./types";
+import type { AccountInfo, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const now = () => Math.floor(Date.now() / 1000);
@@ -59,6 +59,8 @@ function p(
 ): Payment {
   return { id, account, direction, amountSat, feeSat, method, timestamp, description, status };
 }
+
+let mockLnAddress: LightningAddress | null = null;
 
 let mockSettings: Settings = { esploraUrl: null, hasBreezKey: true };
 
@@ -356,6 +358,21 @@ export const mockApi: WalletApi = {
   },
   async saveSettings(s) {
     mockSettings = { esploraUrl: s.esploraUrl, hasBreezKey: mockSettings.hasBreezKey || !!s.breezApiKey };
+  },
+  async lightningAddress(account) {
+    return account === "spending" ? mockLnAddress : null;
+  },
+  async lightningAddressAvailable(_account, username) {
+    await sleep(300);
+    return !["ben", "satoshi", "admin"].includes(username.toLowerCase());
+  },
+  async registerLightningAddress(_account, username) {
+    await sleep(500);
+    mockLnAddress = { address: `${username.toLowerCase()}@breez.tips`, username: username.toLowerCase(), lnurl: "lnurl1dp68gurn8ghj7ctsdyhxgetkd9h8vmmfvdjjuer9wchxvef0wejk" };
+    return mockLnAddress;
+  },
+  async onChange() {
+    return () => {};
   },
   async unavailableAccounts() {
     return [];

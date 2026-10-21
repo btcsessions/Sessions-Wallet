@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { WalletApi } from "./index";
 
 // Command names match apps/wallet/src-tauri/src/commands.rs.
@@ -35,4 +36,8 @@ export const tauriApi: WalletApi = {
   settings: () => invoke("settings"),
   saveSettings: (settings) => invoke("save_settings", { settings }),
   unavailableAccounts: () => invoke("unavailable_accounts"),
+  lightningAddress: (account) => invoke("lightning_address", { account }),
+  lightningAddressAvailable: (account, username) => invoke("lightning_address_available", { account, username }),
+  registerLightningAddress: (account, username) => invoke("register_lightning_address", { account, username }),
+  onChange: (cb) => listen("wallet-changed", () => cb()),
 };

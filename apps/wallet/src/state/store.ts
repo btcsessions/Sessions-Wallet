@@ -74,6 +74,7 @@ function savePref(key: string, v: unknown) {
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+let unlisten: (() => void) | null = null;
 
 export const useWallet = create<State>((set, get) => {
   async function persistLayout(layout: Layout) {
@@ -107,6 +108,16 @@ export const useWallet = create<State>((set, get) => {
         ]);
         set({ isMock: a.isMock, status });
         if (status === "unlocked") await get().refresh();
+        // Refresh as soon as an account reports a change (debounced).
+        if (!unlisten) {
+          let t: ReturnType<typeof setTimeout> | undefined;
+          unlisten = await a.onChange(() => {
+            clearTimeout(t);
+            t = setTimeout(() => {
+              if (get().status === "unlocked") void get().refresh();
+            }, 300);
+          });
+        }
       } catch (e) {
         set({ bootError: errorText(e) });
       }
@@ -131,6 +142,8 @@ export const useWallet = create<State>((set, get) => {
     async sync() {
       if (get().syncing) return;
       set({ syncing: true });
+      // Show what's already known straight away; the network catches up after.
+      void get().refresh();
       try {
         await (await api()).sync();
         await get().refresh();

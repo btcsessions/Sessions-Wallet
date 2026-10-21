@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { AccountInfo, Method, ReceiveTarget } from "../api/types";
+import type { AccountInfo, LightningAddress, Method, ReceiveTarget } from "../api/types";
+import { Icon } from "../components/Icon";
 import { AmountInput, CopyButton, QR, Sheet } from "../components/ui";
 import { METHOD_LABEL, accountColor, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
@@ -15,35 +16,78 @@ function methodsFor(a: AccountInfo): Method[] {
 
 const NEEDS_AMOUNT: Method[] = ["bolt11", "liquidAddress"];
 
+/** Short labels so five options fit on a phone. */
+const SHORT: Partial<Record<Method, string>> = {
+  lightningAddress: "Address",
+  bolt11: "Invoice",
+  sparkAddress: "Spark",
+  bitcoinAddress: "On-chain",
+  liquidAddress: "Liquid",
+};
+
 const EXPLAIN: Partial<Record<Method, string>> = {
   bolt11: "Any Lightning wallet can pay this. It expires, so make a fresh one each time.",
   sparkAddress: "Free and instant from other Spark wallets. Reusable.",
+  lightningAddress: "Your permanent address. Works with any Lightning wallet, any amount, any time.",
   bitcoinAddress: "Works with every bitcoin wallet. Takes about 10 to 60 minutes to confirm.",
   liquidAddress: "For someone paying from a Liquid wallet. It's swapped into your bitcoin automatically.",
 };
 
 export function ReceiveSheet({ account: initial }: { account?: string }) {
-  const accounts = useWallet((s) => s.accounts);
+  const { accounts, activity, open } = useWallet();
+  const [openedAt] = useState(() => Math.floor(Date.now() / 1000) - 5);
+  const [lnAddress, setLnAddress] = useState<LightningAddress | null>(null);
   const [preferId, preferMethod] = (initial ?? "").split("#");
   const receivable = accounts.filter((a) => a.receives.length > 0);
   const [accountId, setAccountId] = useState(preferId || receivable[0]?.id || "");
   const account = accounts.find((a) => a.id === accountId);
-  const methods = useMemo(() => (account ? methodsFor(account) : []), [account]);
+  const isSpark = account?.rail === "spark";
+  const methods = useMemo(() => {
+    const m = account ? methodsFor(account) : [];
+    return lnAddress && isSpark ? (["lightningAddress", ...m] as Method[]) : m;
+  }, [account?.id, lnAddress, isSpark]); // eslint-disable-line react-hooks/exhaustive-deps
   const [method, setMethod] = useState<Method>(preferMethod === "liquid" ? "liquidAddress" : methods[0] ?? "bitcoinAddress");
   const [amount, setAmount] = useState<number | null>(null);
   const [target, setTarget] = useState<ReceiveTarget | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingAmount, setEditingAmount] = useState(false);
 
+  // A claimed Lightning address is the simplest thing to share, so lead with it.
+  useEffect(() => {
+    setLnAddress(null);
+    if (!isSpark || !account) return;
+    let alive = true;
+    api()
+      .then((a) => a.lightningAddress(account.id))
+      .then((l) => {
+        if (alive && l) {
+          setLnAddress(l);
+          if (preferMethod !== "liquid") setMethod("lightningAddress");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [account?.id, isSpark]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (account && !methods.includes(method)) setMethod(methods[0]);
-  }, [account, methods, method]);
+  }, [account?.id, methods, method]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Watch for the payment landing while this sheet is open.
+  const received = activity.find((p) => p.account === accountId && p.direction === "incoming" && p.timestamp >= openedAt);
 
   const needsAmount = NEEDS_AMOUNT.includes(method) && !amount;
 
   useEffect(() => {
     if (!account || needsAmount) {
       setTarget(null);
+      return;
+    }
+    if (method === "lightningAddress") {
+      setError(null);
+      setTarget(lnAddress ? { method, request: lnAddress.address, amountSat: null } : null);
       return;
     }
     let alive = true;
@@ -56,7 +100,27 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     return () => {
       alive = false;
     };
-  }, [account, method, amount, needsAmount]);
+    // Keyed on the account id, not the object: refreshes must not replace an invoice on screen.
+  }, [account?.id, method, amount, needsAmount, lnAddress]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (received) {
+    return (
+      <Sheet title="Received">
+        <div style={{ textAlign: "center", padding: "32px 0 24px" }}>
+          <div style={{ color: "var(--green)", marginBottom: 12, display: "inline-block" }}>
+            <Icon name="check" size={56} stroke={2.5} />
+          </div>
+          <div className="big-stat num" style={{ fontSize: 44 }}>
+            +{formatSats(received.amountSat)} <span className="balance-unit">sats</span>
+          </div>
+          <p className="balance-sub">in {account?.name}</p>
+        </div>
+        <button className="btn primary block" onClick={() => useWallet.getState().close()}>
+          Done
+        </button>
+      </Sheet>
+    );
+  }
 
   if (editingAmount || (needsAmount && account)) {
     return (
@@ -100,8 +164,8 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       {methods.length > 1 && (
         <div className="segmented">
           {methods.map((m) => (
-            <button key={m} aria-pressed={m === method} onClick={() => setMethod(m)}>
-              {METHOD_LABEL[m]}
+            <button key={m} aria-pressed={m === method} onClick={() => setMethod(m)} aria-label={METHOD_LABEL[m]}>
+              {SHORT[m] ?? METHOD_LABEL[m]}
             </button>
           ))}
         </div>
@@ -112,7 +176,8 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       ) : target ? (
         <>
           <div className="qr-wrap">
-            <QR value={target.request} />
+            {/* LNURL in the QR scans in every Lightning wallet; the address shows as text. */}
+            <QR value={method === "lightningAddress" && lnAddress ? `lightning:${lnAddress.lnurl.toUpperCase()}` : target.request} />
           </div>
           <p className="request-text">{target.request}</p>
           <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginBottom: 18 }}>
@@ -122,14 +187,23 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
                 Share
               </button>
             )}
-            <button className="btn small" onClick={() => setEditingAmount(true)}>
-              {amount ? `${formatSats(amount)} sats` : "Add amount"}
-            </button>
+            {method !== "lightningAddress" && (
+              <button className="btn small" onClick={() => setEditingAmount(true)}>
+                {amount ? `${formatSats(amount)} sats` : "Add amount"}
+              </button>
+            )}
           </div>
           <p className="group-note" style={{ margin: "0 0 8px", textAlign: "center" }}>
             {EXPLAIN[method]}
             {target.feeSat ? ` Swap fee about ${formatSats(target.feeSat)} sats.` : ""}
           </p>
+          {isSpark && !lnAddress && (
+            <p style={{ textAlign: "center", margin: "12px 0 0" }}>
+              <button className="text-button" onClick={() => open({ name: "account", id: accountId })}>
+                Get a Lightning address
+              </button>
+            </p>
+          )}
         </>
       ) : (
         <p className="empty">Getting a fresh request…</p>

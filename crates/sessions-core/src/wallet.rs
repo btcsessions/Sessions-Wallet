@@ -11,6 +11,9 @@ use crate::rail::{Rail, SwapProvider, SwapStatus};
 use crate::types::*;
 use crate::{parse, Error, Result};
 
+/// Per-account limit for one sync round.
+pub const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Default)]
 pub struct Wallet {
     accounts: RwLock<BTreeMap<AccountId, Arc<dyn Rail>>>,
@@ -75,15 +78,30 @@ impl Wallet {
     }
 
     /// Sync every account; one failing account doesn't stop the others.
+    /// Sync every account at once, each with its own time limit, so one
+    /// slow server can't hold up the rest. Swaps are driven separately by
+    /// [`Wallet::tick_swaps`].
     pub async fn sync_all(&self) -> Vec<(AccountId, Result<()>)> {
+        self.sync_all_within(SYNC_TIMEOUT).await
+    }
+
+    pub async fn sync_all_within(&self, limit: std::time::Duration) -> Vec<(AccountId, Result<()>)> {
         let rails: Vec<_> = self.accounts.read().await.values().cloned().collect();
-        let mut out = Vec::new();
+        let mut set = tokio::task::JoinSet::new();
         for r in rails {
-            out.push((r.id().clone(), r.sync().await));
+            set.spawn(async move {
+                let id = r.id().clone();
+                let res = match tokio::time::timeout(limit, r.sync()).await {
+                    Ok(res) => res,
+                    Err(_) => Err(Error::Rail { rail: id.0.clone(), message: format!("sync took longer than {} s", limit.as_secs()) }),
+                };
+                (id, res)
+            });
         }
-        for s in self.swaps.read().await.iter() {
-            if let Err(e) = s.tick().await {
-                tracing::warn!(provider = s.name(), "swap tick failed: {e}");
+        let mut out = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            if let Ok(pair) = joined {
+                out.push(pair);
             }
         }
         out
@@ -460,6 +478,48 @@ mod tests {
         assert_eq!(prepared.quote.amount_sat, 20_150);
         w.confirm(prepared, FeePriority::Normal).await.unwrap();
         assert_eq!(*spending.balance.lock().unwrap(), 50_000 - 20_150 - 2);
+    }
+
+    #[tokio::test]
+    async fn slow_account_does_not_block_sync() {
+        struct Slow;
+        #[async_trait]
+        impl Rail for Slow {
+            fn id(&self) -> &AccountId {
+                static ID: std::sync::OnceLock<AccountId> = std::sync::OnceLock::new();
+                ID.get_or_init(|| "slow".into())
+            }
+            fn kind(&self) -> RailKind {
+                RailKind::Onchain
+            }
+            async fn info(&self) -> Result<AccountInfo> {
+                unreachable!()
+            }
+            async fn sync(&self) -> Result<()> {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok(())
+            }
+            async fn receive(&self, _: ReceiveRequest) -> Result<ReceiveTarget> {
+                unreachable!()
+            }
+            async fn prepare_send(&self, _: SendRequest) -> Result<SendQuote> {
+                unreachable!()
+            }
+            async fn send(&self, _: SendQuote, _: Option<String>) -> Result<Payment> {
+                unreachable!()
+            }
+            async fn payments(&self, _: usize) -> Result<Vec<Payment>> {
+                Ok(vec![])
+            }
+        }
+        let (w, _, _) = wallet().await;
+        w.add_account(Arc::new(Slow)).await;
+        let started = std::time::Instant::now();
+        let results = w.sync_all_within(std::time::Duration::from_millis(200)).await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().any(|(id, r)| id.0 == "slow" && r.is_err()));
+        assert!(results.iter().filter(|(_, r)| r.is_ok()).count() == 2);
     }
 
     #[tokio::test]
