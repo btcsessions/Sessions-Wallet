@@ -1,9 +1,13 @@
 import { useWallet } from "../state/store";
 import { accountColor, amountParts, formatFiat, formatSats } from "../format";
 import type { ModuleProps } from "./catalog";
+import { resolveAccount } from "./AccountModule";
 
 export function BalanceModule({ module }: ModuleProps) {
-  const { accounts, unit, price, currency, cycleUnit, open } = useWallet();
+  const { accounts: all, unit, price, currency, cycleUnit, open, layout } = useWallet();
+  // Only accounts in use: holding funds, on the home screen, or Spending.
+  const onHome = new Set((layout?.modules ?? []).map((m) => resolveAccount(all, m.id)?.id).filter(Boolean));
+  const accounts = all.filter((a) => a.rail === "spark" || onHome.has(a.id) || a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut > 0);
   const total = accounts.reduce((s, a) => s + a.balance.confirmed, 0);
   const incoming = accounts.reduce((s, a) => s + a.balance.pendingIn, 0);
   const { value, suffix } = amountParts(total, unit, price, currency);

@@ -1,27 +1,35 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { AccountInfo, LightningAddress, Method, ReceiveTarget } from "../api/types";
+import type { AccountInfo, LightningAddress, Method, ReceiveQuote, ReceiveTarget } from "../api/types";
+import { AccountPicker } from "../components/Dropdown";
 import { Icon } from "../components/Icon";
 import { AmountInput, CopyButton, QR, Sheet } from "../components/ui";
 import { ScanButton, scanText } from "../components/Scanner";
-import { METHOD_LABEL, accountColor, errorText, formatSats } from "../format";
+import { METHOD_LABEL, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 
-/** Methods to offer for an account, best first. Liquid comes via swaps. */
+/**
+ * Methods to offer for an account, best first. Spark addresses only work
+ * between Spark wallets, so they aren't offered. Anything the account can't
+ * take natively comes through a swap: Liquid into Lightning accounts, and
+ * Lightning or Liquid straight into on-chain accounts (hardware included).
+ */
 function methodsFor(a: AccountInfo): Method[] {
-  // Spark addresses only work between Spark wallets, so they aren't offered.
-  const order: Method[] = ["bolt11", "bitcoinAddress"];
-  const out = order.filter((m) => a.receives.includes(m));
+  const out = (["bolt11", "bitcoinAddress"] as Method[]).filter((m) => a.receives.includes(m));
   if (a.receives.includes("bolt11")) out.push("liquidAddress");
+  else if (a.rail === "onchain") out.push("bolt11", "liquidAddress");
   return out;
 }
 
+/** Received through a swap into this account (so: limits and fees apply). */
+const viaSwap = (a: AccountInfo | undefined, m: Method) => !!a && !a.receives.includes(m) && m !== "lightningAddress";
+
 const NEEDS_AMOUNT: Method[] = ["bolt11", "liquidAddress"];
 
-/** Short labels so five options fit on a phone. */
+/** Short labels so the options fit on a phone. */
 const SHORT: Partial<Record<Method, string>> = {
   lightningAddress: "Address",
-  bolt11: "Invoice",
+  bolt11: "Lightning",
   sparkAddress: "Spark",
   bitcoinAddress: "On-chain",
   liquidAddress: "Liquid",
@@ -51,9 +59,13 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
   }, [account?.id, lnAddress, isSpark]); // eslint-disable-line react-hooks/exhaustive-deps
   const [method, setMethod] = useState<Method>(preferMethod === "liquid" ? "liquidAddress" : methods[0] ?? "bitcoinAddress");
   const [amount, setAmount] = useState<number | null>(null);
+  /** The amount is settled and the request can be made (always true for amount-free methods). */
+  const [ready, setReady] = useState(false);
   const [target, setTarget] = useState<ReceiveTarget | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [editingAmount, setEditingAmount] = useState(false);
+  const [quote, setQuote] = useState<ReceiveQuote | null>(null);
+  const swap = viaSwap(account, method);
+  const amountStep = !ready && (NEEDS_AMOUNT.includes(method) || swap);
 
   // A claimed Lightning address is the simplest thing to share, so lead with it.
   useEffect(() => {
@@ -78,23 +90,42 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     if (account && !methods.includes(method)) setMethod(methods[0]);
   }, [account?.id, methods, method]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Switching account or method: methods that need an amount (or a swap) ask first.
+  useEffect(() => {
+    setReady(!(NEEDS_AMOUNT.includes(method) || viaSwap(account, method)));
+  }, [account?.id, method]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Swap limits and fees, before anything is created.
+  useEffect(() => {
+    setQuote(null);
+    if (!account || !swap) return;
+    let alive = true;
+    const t = setTimeout(() => {
+      api()
+        .then((a) => a.receiveQuote(account.id, method, amount))
+        .then((q) => alive && setQuote(q))
+        .catch((e) => alive && setError(errorText(e)));
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [account?.id, method, amount, swap]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Watch for the payment landing while this sheet is open.
   const received = activity.find((p) => p.account === accountId && p.direction === "incoming" && p.timestamp >= openedAt);
 
-  const needsAmount = NEEDS_AMOUNT.includes(method) && !amount;
-
   useEffect(() => {
-    if (!account || needsAmount) {
+    setError(null);
+    if (!account || !ready) {
       setTarget(null);
       return;
     }
     if (method === "lightningAddress") {
-      setError(null);
       setTarget(lnAddress ? { method, request: lnAddress.address, amountSat: null } : null);
       return;
     }
     let alive = true;
-    setError(null);
     setTarget(null);
     api()
       .then((a) => a.receive(account.id, method, amount, null))
@@ -104,7 +135,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       alive = false;
     };
     // Keyed on the account id, not the object: refreshes must not replace an invoice on screen.
-  }, [account?.id, method, amount, needsAmount, lnAddress]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [account?.id, method, ready, lnAddress]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (received) {
     return (
@@ -125,56 +156,44 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     );
   }
 
-  if (editingAmount || (needsAmount && account)) {
-    return (
-      <Sheet
-        title="Request amount"
-        left={
-          editingAmount ? (
-            <button className="text-button" onClick={() => setEditingAmount(false)}>
-              Back
-            </button>
-          ) : undefined
-        }
-      >
-        <AmountInput value={amount} onChange={setAmount} autoFocus />
-        {needsAmount && <p className="group-note" style={{ margin: "0 0 18px", textAlign: "center" }}>{METHOD_LABEL[method]} requests need an amount.</p>}
-        <button className="btn primary block" disabled={!amount} onClick={() => setEditingAmount(false)}>
-          Show request
-        </button>
-        {needsAmount && methods.length > 1 && (
-          <button className="btn block" style={{ marginTop: 10 }} onClick={() => setMethod(methods.find((m) => !NEEDS_AMOUNT.includes(m)) ?? methods[0])}>
-            Use an address instead
-          </button>
-        )}
-      </Sheet>
-    );
-  }
+  const tooSmall = !!(quote && amount && amount < quote.minSat);
+  const tooBig = !!(quote && amount && amount > quote.maxSat);
+  const canContinue = !!amount && (!swap || (!!quote && !tooSmall && !tooBig)) || (!NEEDS_AMOUNT.includes(method) && !swap);
 
   return (
     <Sheet title="Receive">
       {receivable.length > 1 && (
-        <div className="chips">
-          {receivable.map((a) => (
-            <button key={a.id} className="chip" aria-pressed={a.id === accountId} onClick={() => setAccountId(a.id)}>
-              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: accountColor(a), marginRight: 6 }} />
-              {a.name}
-            </button>
-          ))}
+        <div className="group">
+          <AccountPicker label="Receive to" accounts={receivable} value={accountId} onChange={setAccountId} />
         </div>
       )}
 
       {methods.length > 1 && (
-        <div className="segmented">
+        <div className="segmented" role="radiogroup" aria-label="How they pay">
           {methods.map((m) => (
-            <button key={m} aria-pressed={m === method} onClick={() => setMethod(m)} aria-label={METHOD_LABEL[m]}>
+            <button key={m} role="radio" aria-checked={m === method} aria-pressed={m === method} onClick={() => setMethod(m)} aria-label={METHOD_LABEL[m]}>
               {SHORT[m] ?? METHOD_LABEL[m]}
             </button>
           ))}
         </div>
       )}
 
-      {error ? (
+      {amountStep ? (
+        <>
+          <AmountInput value={amount} onChange={setAmount} autoFocus />
+          {swap ? (
+            <SwapTerms quote={quote} amount={amount} method={method} account={account} tooSmall={tooSmall} tooBig={tooBig} />
+          ) : (
+            <p className="group-note" style={{ margin: "0 0 18px", textAlign: "center" }}>
+              {METHOD_LABEL[method]} requests need an amount.
+            </p>
+          )}
+          {error && <p className="notice">{error}</p>}
+          <button className="btn primary block" disabled={!canContinue} onClick={() => setReady(true)}>
+            Continue
+          </button>
+        </>
+      ) : error ? (
         <p className="notice">{error}</p>
       ) : target ? (
         <>
@@ -191,15 +210,17 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
               </button>
             )}
             {method !== "lightningAddress" && (
-              <button className="btn small" onClick={() => setEditingAmount(true)}>
+              <button className="btn small" onClick={() => setReady(false)}>
                 {amount ? `${formatSats(amount)} sats` : "Add amount"}
               </button>
             )}
           </div>
           <p className="group-note" style={{ margin: "0 0 8px", textAlign: "center" }}>
-            {method === "bitcoinAddress" && isSpark
-              ? "Send from any bitcoin wallet. It lands in Spending after 3 confirmations, ready to spend over Lightning."
-              : EXPLAIN[method]}
+            {swap
+              ? `Paid ${method === "bolt11" ? "over Lightning" : "from Liquid"}, swapped by ${quote?.provider ?? "Boltz"} and sent on-chain to ${account?.name}. It completes once the swap confirms, usually 10 to 60 minutes. Keep the wallet open until then.`
+              : method === "bitcoinAddress" && isSpark
+                ? "Send from any bitcoin wallet. It lands in Spending after 3 confirmations, ready to spend over Lightning."
+                : EXPLAIN[method]}
             {target.feeSat ? ` Swap fee about ${formatSats(target.feeSat)} sats.` : ""}
           </p>
           {isSpark && !lnAddress && (
@@ -227,5 +248,54 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
         />
       </p>
     </Sheet>
+  );
+}
+
+/** Limits and costs of a swap into an on-chain account, shown before continuing. */
+function SwapTerms({
+  quote,
+  amount,
+  method,
+  account,
+  tooSmall,
+  tooBig,
+}: {
+  quote: ReceiveQuote | null;
+  amount: number | null;
+  method: Method;
+  account: AccountInfo | undefined;
+  tooSmall: boolean;
+  tooBig: boolean;
+}) {
+  if (!quote) return <p className="group-note" style={{ textAlign: "center" }}>Checking swap limits and fees…</p>;
+  const how = method === "bolt11" ? "Lightning" : "Liquid";
+  return (
+    <>
+      <div className="group swap-terms">
+        <div className="cell">
+          <span className="grow">Minimum</span>
+          <span className={`value num${tooSmall ? " bad" : ""}`}>{formatSats(quote.minSat)} sats</span>
+        </div>
+        <div className="cell">
+          <span className="grow">Fee</span>
+          <span className="value num">
+            {quote.feePercent}% + about {formatSats(quote.networkFeeSat)} sats
+          </span>
+        </div>
+        {quote.receiveSat != null && amount != null && !tooSmall && !tooBig && (
+          <div className="cell">
+            <span className="grow">You receive</span>
+            <span className="value num strong">≈ {formatSats(quote.receiveSat)} sats</span>
+          </div>
+        )}
+      </div>
+      <p className="group-note" style={{ margin: "-12px 4px 18px" }}>
+        {tooSmall
+          ? `Ask for at least ${formatSats(quote.minSat)} sats to swap ${how} into ${account?.name ?? "this account"}.`
+          : tooBig
+            ? `The most ${quote.provider} swaps at once is ${formatSats(quote.maxSat)} sats.`
+            : `${how} payments to ${account?.name ?? "this account"} are swapped to on-chain bitcoin by ${quote.provider}. The amount above is what they pay.`}
+      </p>
+    </>
   );
 }

@@ -222,10 +222,12 @@ pub async fn cosigner_key(state: State<'_, AppState>) -> Result<String> {
 #[tauri::command]
 pub async fn sync(state: State<'_, AppState>) -> Result<()> {
     let results = wallet(&state).await?.sync_all().await;
-    // Report the first failure but don't hide progress made on other accounts.
+    // Report the first real failure but don't hide progress made on other
+    // accounts. A slow server isn't a failure: it finishes next time.
     match results
         .into_iter()
-        .find_map(|(id, r)| r.err().map(|e| (id, e)))
+        .filter_map(|(id, r)| r.err().map(|e| (id, e)))
+        .find(|(_, e)| !e.to_string().contains("sync took longer than"))
     {
         Some((id, e)) => Err(Error::Rail {
             rail: id.0,
@@ -671,4 +673,144 @@ pub async fn trezor_sign_request(
 #[tauri::command]
 pub async fn trezor_merge(psbt: String, signed_tx: String) -> Result<String> {
     rail_onchain::trezor::merge_signed_tx(&psbt, &signed_tx)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailRow {
+    label: String,
+    value: String,
+    /// Something to copy or check: shown in monospace with a copy button.
+    mono: bool,
+}
+
+fn row(label: &str, value: impl Into<String>, mono: bool) -> DetailRow {
+    DetailRow {
+        label: label.into(),
+        value: value.into(),
+        mono,
+    }
+}
+
+/// The xpub(s) in a descriptor, with their origins.
+fn key_rows(descriptor: &str) -> Vec<DetailRow> {
+    let mut out = Vec::new();
+    let mut rest = descriptor;
+    while let Some(start) = rest.find('[') {
+        let tail = &rest[start..];
+        let end = tail.find([',', ')']).unwrap_or(tail.len());
+        let key = &tail[..end];
+        let (origin, xpub) = key.split_once(']').unwrap_or(("", key));
+        let xpub = xpub.split('/').next().unwrap_or(xpub);
+        let origin = origin.trim_start_matches('[');
+        let (fp, path) = origin.split_once('/').unwrap_or((origin, ""));
+        out.push(row("Fingerprint", fp, true));
+        if !path.is_empty() {
+            out.push(row("Derivation path", format!("m/{path}"), true));
+        }
+        out.push(row("Extended public key", xpub, true));
+        rest = &tail[end..];
+    }
+    out
+}
+
+fn descriptor_rows(d: &rail_onchain::DescriptorPair) -> Vec<DetailRow> {
+    let mut out = vec![row("Address type", descriptors::script_label(d), false)];
+    out.extend(key_rows(&d.external));
+    // One line that restores this account in Sparrow, Bitcoin Core and others.
+    out.push(row(
+        "Descriptor",
+        d.external.replacen("/0/*", "/<0;1>/*", usize::MAX),
+        true,
+    ));
+    out
+}
+
+/// The technical details behind an account, for the "Wallet details" view.
+#[tauri::command]
+pub async fn account_details(state: State<'_, AppState>, id: AccountId) -> Result<Vec<DetailRow>> {
+    let (spec, network, master) = {
+        let guard = state.inner.lock().await;
+        let u = guard.as_ref().ok_or(Error::Locked)?;
+        let spec = u
+            .config
+            .accounts
+            .iter()
+            .find(|a| a.id() == &id)
+            .cloned()
+            .ok_or_else(|| Error::AccountNotFound(id.0.clone()))?;
+        let network = u.config.network;
+        (spec, network, u.seed.master_xpriv(network)?)
+    };
+    let info = wallet(&state).await?.account(&id).await?.info().await?;
+    let mut rows = match &spec {
+        AccountSpec::Savings { account_index, .. } => {
+            let mut r = vec![row(
+                "Keys",
+                "On this device, from your recovery phrase",
+                false,
+            )];
+            r.extend(descriptor_rows(&descriptors::hot_single_sig(
+                &master,
+                network,
+                *account_index,
+            )?));
+            r
+        }
+        AccountSpec::Hardware {
+            device,
+            descriptors: d,
+            ..
+        } => {
+            let mut r = vec![row("Device", device.as_str(), false)];
+            r.extend(descriptor_rows(d));
+            r
+        }
+        AccountSpec::Multisig {
+            threshold,
+            total,
+            descriptors: d,
+            ..
+        } => {
+            let mut r = vec![row("Policy", format!("{threshold} of {total} keys"), false)];
+            r.extend(descriptor_rows(d));
+            r
+        }
+        AccountSpec::WatchOnly { descriptors: d, .. } => {
+            let mut r = vec![row("Keys", "None. This account can only watch", false)];
+            r.extend(descriptor_rows(d));
+            r
+        }
+        AccountSpec::Spending { .. } => vec![
+            row("Network", "Lightning and Spark", false),
+            row("Keys", "On this device, from your recovery phrase", false),
+        ],
+        AccountSpec::Ecash { mint_url, .. } => vec![
+            row("Mint", mint_url.as_str(), true),
+            row(
+                "Keys",
+                "Ecash notes held on this device; the mint holds the bitcoin",
+                false,
+            ),
+        ],
+    };
+    let methods: Vec<String> = info.receives.iter().map(|m| format!("{m:?}")).collect();
+    rows.push(row("Receives with", methods.join(", "), false));
+    rows.push(row("Account id", id.0.as_str(), true));
+    Ok(rows)
+}
+
+/// Limits and fees for receiving `method` into `into` through a swap, before
+/// anything is created. `null` when the account receives `method` natively.
+#[tauri::command]
+pub async fn receive_quote(
+    state: State<'_, AppState>,
+    into: AccountId,
+    method: Method,
+    amount_sat: Option<Sats>,
+) -> Result<Option<sessions_core::ReceiveQuote>> {
+    wallet(&state)
+        .await?
+        .receive_quote(&into, method, amount_sat)
+        .await
 }

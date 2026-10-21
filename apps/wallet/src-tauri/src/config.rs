@@ -107,12 +107,25 @@ impl Config {
 
     pub fn load(path: &Path) -> Result<Option<Config>> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
+            Ok(bytes) => serde_json::from_slice::<Config>(&bytes)
+                .map(|c| Some(c.migrated()))
                 .map_err(|e| Error::Storage(format!("config.json: {e}"))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(Error::Storage(e.to_string())),
         }
+    }
+
+    /// Bring older configs up to date. Saved on the next write.
+    fn migrated(mut self) -> Self {
+        for a in &mut self.accounts {
+            // The hot on-chain account was called "Savings" before 0.1.7.
+            if let AccountSpec::Savings { name, .. } = a {
+                if name == "Savings" {
+                    *name = "On-Chain".into();
+                }
+            }
+        }
+        self
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {

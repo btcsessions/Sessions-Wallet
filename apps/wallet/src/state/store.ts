@@ -42,7 +42,8 @@ interface State {
 
   boot(): Promise<void>;
   refresh(): Promise<void>;
-  sync(): Promise<void>;
+  /** `manual`: the user asked, so say if it fails. Background syncs stay quiet. */
+  sync(manual?: boolean): Promise<void>;
   setStatus(s: WalletStatus): void;
   cycleUnit(): void;
   setEditing(v: boolean): void;
@@ -160,7 +161,7 @@ export const useWallet = create<State>((set, get) => {
       }
     },
 
-    async sync() {
+    async sync(manual = false) {
       if (get().syncing) return;
       set({ syncing: true });
       // Show what's already known straight away; the network catches up after.
@@ -169,7 +170,8 @@ export const useWallet = create<State>((set, get) => {
         await (await api()).sync();
         await get().refresh();
       } catch (e) {
-        get().fail(e);
+        if (manual) get().fail(e);
+        else console.warn("background sync:", e);
       } finally {
         set({ syncing: false });
       }

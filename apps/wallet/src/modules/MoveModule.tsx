@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
-import { SelectRow } from "../components/ui";
-import { accountColor, formatSats } from "../format";
+import { AccountPicker } from "../components/Dropdown";
 import { useWallet } from "../state/store";
 import type { ModuleProps } from "./catalog";
 
@@ -23,7 +22,7 @@ export function MoveModule({ module }: ModuleProps) {
   const title = (
     <div className="tile-title" style={{ ["--tint" as string]: "var(--blue)" }}>
       <Icon name="swap" size={16} />
-      Move
+      Transfer
     </div>
   );
 
@@ -31,7 +30,7 @@ export function MoveModule({ module }: ModuleProps) {
     return (
       <>
         {title}
-        <p className="tile-foot" style={{ marginTop: 0 }}>Add a second account, like a hardware wallet or ecash, to move sats between them.</p>
+        <p className="tile-foot" style={{ marginTop: 0 }}>Add a second account, like a hardware wallet or ecash, to transfer sats between them.</p>
       </>
     );
   }
@@ -42,25 +41,22 @@ export function MoveModule({ module }: ModuleProps) {
         {title}
         <p className="tile-foot" style={{ marginTop: 0 }}>Between your accounts.</p>
         <button className="btn small" style={{ marginTop: "auto", alignSelf: "flex-start" }} onClick={() => open({ name: "move" })}>
-          Move sats
+          Transfer
         </button>
       </>
     );
   }
 
-  const opt = (a: (typeof accounts)[number]) => ({ value: a.id, label: `${a.name} (${formatSats(a.balance.confirmed)})` });
-  const fromAcct = accounts.find((a) => a.id === from);
-  const toAcct = accounts.find((a) => a.id === to);
 
   return (
     <div className="move-tile" style={{ display: "contents" }}>
       {title}
       <div className="group">
-        <SelectRow label="From" value={from} onChange={setFrom} options={sources.map(opt)} dot={fromAcct && accountColor(fromAcct)} />
-        <SelectRow label="To" value={to} onChange={setTo} options={targets.filter((a) => a.id !== from).map(opt)} dot={toAcct && accountColor(toAcct)} />
+        <AccountPicker label="From" accounts={sources} value={from} onChange={setFrom} />
+        <AccountPicker label="To" accounts={targets.filter((a) => a.id !== from)} value={to} onChange={setTo} />
       </div>
       <button className="btn small primary" style={{ alignSelf: "flex-start" }} disabled={!from || !to} onClick={() => open({ name: "move", from, to })}>
-        Move sats
+        Transfer
       </button>
     </div>
   );

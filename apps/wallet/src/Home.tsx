@@ -124,7 +124,7 @@ export function Home() {
             </button>
           )}
           {!editing && (
-            <button className="icon-button" aria-label="Refresh" onClick={() => void sync()} disabled={syncing}>
+            <button className="icon-button" aria-label="Refresh" onClick={() => void sync(true)} disabled={syncing}>
               <span style={{ display: "grid", animation: syncing ? "spin 0.9s linear infinite" : undefined }}>
                 <Icon name="refresh" size={20} stroke={1.8} />
               </span>

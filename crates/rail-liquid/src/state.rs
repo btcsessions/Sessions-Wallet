@@ -19,6 +19,9 @@ pub enum Action {
     /// L-BTC from an outside sender is stuck in a lockup we can't refund
     /// automatically (we hold no Liquid wallet).
     Rescue,
+    /// L-BTC -> BTC chain swap: the sender locked the wrong amount; check
+    /// Boltz's new quote against what was actually locked and accept it.
+    Requote,
     Complete,
     /// Ended without any of our funds at stake.
     Fail,
@@ -49,7 +52,9 @@ pub fn plan(kind: SwapKind, status: &str, lockup_was_seen: bool) -> Action {
         // Boltz's lockup confirmed (Liquid blocks are 1 minute), so starting
         // at `transaction.mempool` is safe and doesn't depend on Boltz
         // reporting `transaction.confirmed`.
-        SwapKind::Reverse => match status {
+        // Same for a BTC reverse swap: `claim_btc` waits for Boltz's BTC
+        // lockup to confirm (one block) before revealing the preimage.
+        SwapKind::Reverse | SwapKind::ReverseToBtc => match status {
             "transaction.mempool" | "transaction.confirmed" | "invoice.settled" => Action::Claim,
             "swap.expired" | "invoice.expired" | "transaction.failed" | "transaction.refunded" => {
                 Action::Fail
@@ -66,6 +71,18 @@ pub fn plan(kind: SwapKind, status: &str, lockup_was_seen: bool) -> Action {
             | "swap.expired"
             | "transaction.failed"
             | "transaction.refunded" => Action::Refund,
+            _ => Action::Wait,
+        },
+        // An outside sender locks L-BTC; Boltz locks BTC; we claim the BTC.
+        // A failed / expired swap goes to `on_fail`, which checks whether the
+        // sender's L-BTC is stuck in the lockup (then it needs a rescue).
+        SwapKind::ChainLbtcToBtc => match status {
+            "transaction.server.mempool"
+            | "transaction.server.confirmed"
+            | "transaction.claim.pending"
+            | "transaction.claimed" => Action::Claim,
+            "transaction.lockupFailed" => Action::Requote,
+            "swap.expired" | "transaction.failed" | "transaction.refunded" => Action::Fail,
             _ => Action::Wait,
         },
         // An outside sender locks L-BTC; Boltz pays our invoice and sweeps.
@@ -132,6 +149,59 @@ mod tests {
         ] {
             assert_eq!(plan(ChainBtcToLbtc, s, true), Refund, "{s}");
         }
+    }
+
+    #[test]
+    fn reverse_to_btc_matches_reverse() {
+        for s in [
+            "swap.created",
+            "minerfee.paid",
+            "transaction.mempool",
+            "transaction.confirmed",
+            "invoice.settled",
+            "swap.expired",
+            "invoice.expired",
+            "transaction.failed",
+            "transaction.refunded",
+        ] {
+            assert_eq!(plan(ReverseToBtc, s, true), plan(Reverse, s, true), "{s}");
+        }
+    }
+
+    #[test]
+    fn chain_lbtc_to_btc() {
+        for s in [
+            "swap.created",
+            "transaction.mempool",
+            "transaction.confirmed",
+            "transaction.zeroconf.rejected",
+        ] {
+            assert_eq!(plan(ChainLbtcToBtc, s, false), Wait, "{s}");
+        }
+        for s in [
+            "transaction.server.mempool",
+            "transaction.server.confirmed",
+            "transaction.claim.pending",
+            "transaction.claimed",
+        ] {
+            assert_eq!(plan(ChainLbtcToBtc, s, true), Claim, "{s}");
+        }
+        assert_eq!(
+            plan(ChainLbtcToBtc, "transaction.lockupFailed", true),
+            Requote
+        );
+        for s in ["swap.expired", "transaction.failed", "transaction.refunded"] {
+            assert_eq!(plan(ChainLbtcToBtc, s, true), Fail, "{s}");
+            assert_eq!(plan(ChainLbtcToBtc, s, false), Fail, "{s}");
+        }
+    }
+
+    #[test]
+    fn kinds() {
+        assert!(ReverseToBtc.claims_on_bitcoin() && ChainLbtcToBtc.claims_on_bitcoin());
+        assert!(!Reverse.claims_on_bitcoin() && !ChainBtcToLbtc.claims_on_bitcoin());
+        assert!(Submarine.refunds_on_liquid() && ChainLbtcToBtc.refunds_on_liquid());
+        assert!(!ChainBtcToLbtc.refunds_on_liquid() && !ReverseToBtc.refunds_on_liquid());
     }
 
     #[test]

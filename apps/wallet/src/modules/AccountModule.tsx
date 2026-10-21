@@ -53,24 +53,27 @@ export function AccountModule({ module }: ModuleProps) {
           {suffix && <span className="balance-unit">{suffix}</span>}
         </div>
       </button>
-      <div className="tile-foot">{account.custody.type === "hardware" ? <HardwareBadge device={account.custody.device} compact={module.size === "small"} /> : accountKind(account)}</div>
-      {module.size === "medium" && (
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          {account.pays.length > 0 && (
-            <button className="btn small" onClick={() => open({ name: "move", from: account.id })}>
-              Move out
-            </button>
-          )}
-          <button className="btn small" onClick={() => open({ name: "receive", account: account.id })}>
-            Receive
+      <div className="tile-foot" style={{ marginTop: 4 }}>{account.custody.type === "hardware" ? <HardwareBadge device={account.custody.device} compact={module.size === "small"} /> : accountKind(account)}</div>
+      <div className="account-actions">
+        {account.pays.length > 0 && (
+          <button className="round-action" aria-label={`Send from ${account.name}`} title="Send" onClick={() => open({ name: "pay", from: account.id })}>
+            <Icon name="up" size={18} stroke={2.2} />
           </button>
-          {account.rail === "ecash" && (
-            <button className="btn small" onClick={() => open({ name: "ecash-token", account: account.id })}>
-              Send as link
-            </button>
-          )}
-        </div>
-      )}
+        )}
+        <button className="round-action" aria-label={`Receive to ${account.name}`} title="Receive" onClick={() => open({ name: "receive", account: account.id })}>
+          <Icon name="down" size={18} stroke={2.2} />
+        </button>
+        {account.pays.length > 0 && accounts.length > 1 && (
+          <button className="round-action" aria-label={`Transfer from ${account.name}`} title="Transfer" onClick={() => open({ name: "move", from: account.id })}>
+            <Icon name="swap" size={18} stroke={2.2} />
+          </button>
+        )}
+        {account.rail === "ecash" && (
+          <button className="round-action" aria-label={`Send ${account.name} as a link`} title="Send as link" onClick={() => open({ name: "ecash-token", account: account.id })}>
+            <Icon name="ticket" size={18} stroke={2} />
+          </button>
+        )}
+      </div>
     </>
   );
 }

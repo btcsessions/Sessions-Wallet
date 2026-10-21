@@ -1800,3 +1800,208 @@ button {
   letter-spacing: 0.005em;
   text-transform: uppercase;
 }
+
+/* ───────── Account tile actions ───────── */
+
+.account-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+}
+
+.round-action {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--fill);
+  color: var(--accent-ink);
+  transition: transform 0.12s ease;
+}
+
+.round-action:active {
+  transform: scale(0.92);
+}
+
+[data-skin="sessions"] .round-action {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--control-border);
+  color: var(--label);
+}
+
+/* ───────── Wallet details ───────── */
+
+.text-button.subtle {
+  color: var(--label-2);
+  font-size: 14px;
+}
+
+.details .detail-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 2px 10px;
+}
+
+.detail-label {
+  grid-column: 1;
+  font-size: 13px;
+  color: var(--label-2);
+}
+
+.detail-value {
+  grid-column: 1;
+  font-size: 15px;
+  word-break: break-all;
+}
+
+.detail-value.mono {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.detail-row .copy-button,
+.detail-row > button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+/* ───────── Dropdown ───────── */
+
+.dropdown + .dropdown,
+.dropdown + .cell,
+.cell + .dropdown {
+  border-top: 0.5px solid var(--separator);
+}
+
+.dropdown-button {
+  min-height: 52px;
+}
+
+.dropdown-label {
+  color: var(--label);
+}
+
+.bubble {
+  --bubble: var(--label-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 62%;
+  min-height: 30px;
+  padding: 3px 12px 3px 9px;
+  border-radius: var(--r-pill);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label);
+  background: color-mix(in srgb, var(--bubble) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bubble) 35%, transparent);
+}
+
+.bubble-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bubble-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bubble);
+}
+
+.bubble .device-icon,
+.option-mark .device-icon {
+  color: var(--bubble);
+  flex: none;
+}
+
+.dropdown-chevron {
+  display: grid;
+  color: var(--label-3);
+  transition: transform 0.18s ease;
+}
+
+.dropdown.open .dropdown-chevron {
+  transform: rotate(90deg);
+}
+
+.dropdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 8px 8px;
+  background: var(--card-2);
+  border-top: 0.5px solid var(--separator);
+  animation: drop 0.16s ease-out;
+}
+
+.dropdown-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  text-align: left;
+}
+
+.dropdown-option[aria-selected="true"] {
+  background: var(--card);
+  color: var(--accent-ink);
+}
+
+.dropdown-option[aria-selected="true"] .option-label {
+  color: var(--label);
+}
+
+.option-mark {
+  --bubble: var(--label-2);
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bubble) 18%, transparent);
+}
+
+.option-label {
+  display: block;
+  font-weight: 600;
+}
+
+.option-detail {
+  display: block;
+  font-size: 13px;
+  color: var(--label-2);
+}
+
+@keyframes drop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dropdown-list {
+    animation: none;
+  }
+}
+
+.swap-terms .value.bad {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.swap-terms .value.strong {
+  color: var(--label);
+  font-weight: 700;
+}

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Execution, FeePriority, Plan, Prepared, SpendStyle } from "../api/types";
 import { Icon } from "../components/Icon";
-import { AmountInput, HoldButton, QuoteNotes, SelectRow, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
-import { accountColor, errorText, formatSats } from "../format";
+import { AmountInput, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, useBusy } from "../components/ui";
+import { AccountPicker } from "../components/Dropdown";
+import { errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 import { onchainAccountLeg } from "./PaySheet";
 import { RoutePreview } from "./RoutePreview";
@@ -16,6 +17,11 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
   const [from, setFrom] = useState(initialFrom ?? sources.find((a) => a.balance.confirmed > 0)?.id ?? sources[0]?.id);
   const [to, setTo] = useState(initialTo ?? accounts.find((a) => a.id !== from && a.custody.type !== "watchOnly")?.id);
   const [amount, setAmount] = useState<number | null>(null);
+  /** "All": fees come out of the amount, so it's tuned once fees are known. */
+  const [all, setAll] = useState(false);
+  const tunes = useRef(0);
+  const allRef = useRef(false);
+  allRef.current = all;
   const [fee, setFee] = useState<FeePriority>("normal");
   const [style, setStyle] = useState<SpendStyle>(useWallet.getState().layout?.spendStyle ?? "efficient");
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -39,7 +45,17 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
         const prep = await a.prepare(p, fee, style);
         if (alive) setPrepared(prep);
       } catch (e) {
-        if (alive) setError(errorText(e));
+        if (!alive) return;
+        // Sending everything and it doesn't fit: take the shortfall (or 1%) off and retry.
+        const balance = accounts.find((x) => x.id === from)?.balance.confirmed ?? 0;
+        if (allRef.current && tunes.current < 5) {
+          tunes.current += 1;
+          const need = /need ([\d,]+)/i.exec(errorText(e))?.[1];
+          const over = need ? Number(need.replace(/,/g, "")) - balance : Math.ceil(amount * 0.01);
+          setAmount(Math.max(1, amount - Math.max(1, over)));
+          return;
+        }
+        setError(errorText(e));
       }
     }, 350);
     return () => {
@@ -47,6 +63,28 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
       clearTimeout(t);
     };
   }, [from, to, amount, fee, style]);
+
+  // Sending everything: shrink the amount until amount + fees fits the balance.
+  useEffect(() => {
+    if (!all || !prepared || !source || !amount) return;
+    const spend = prepared.quote.amountSat + prepared.quote.feeSat;
+    const over = spend - source.balance.confirmed;
+    if ((over > 0 || over < -3) && tunes.current < 4) {
+      tunes.current += 1;
+      setAmount(Math.max(1, amount - over));
+    }
+  }, [all, prepared, source, amount]);
+
+  // New fee speed, route or style: let "All" re-fit the amount.
+  useEffect(() => {
+    tunes.current = 0;
+  }, [fee, to, from, style]);
+
+  const pickAmount = (v: number | null, everything = false) => {
+    tunes.current = 0;
+    setAll(everything);
+    setAmount(v);
+  };
 
   const swap = () => {
     if (!to) return;
@@ -67,7 +105,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
         setPaused(ex);
         return;
       }
-      notify("ok", `Moved ${formatSats(amount ?? 0)} sats`);
+      notify("ok", `Transferred ${formatSats(amount ?? 0)} sats`);
       close();
     });
 
@@ -77,38 +115,34 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
         paused={paused}
         fee={fee}
         onDone={() => {
-          notify("ok", `Moved ${formatSats(amount ?? 0)} sats`);
+          notify("ok", `Transferred ${formatSats(amount ?? 0)} sats`);
           close();
         }}
       />
     );
   }
 
-  const opt = (a: (typeof accounts)[number]) => ({ value: a.id, label: `${a.name} (${formatSats(a.balance.confirmed)})` });
-  const target = accounts.find((a) => a.id === to);
 
   return (
-    <Sheet title="Move">
-      <AmountInput value={amount} onChange={setAmount} max={source?.balance.confirmed} />
+    <Sheet title="Transfer">
+      <AmountInput value={amount} onChange={(v) => pickAmount(v)} max={source?.balance.confirmed} />
       {source && (
         <div className="quick-amounts">
-          {[0.25, 0.5, 1].map((f) => (
-            <button key={f} className="chip" onClick={() => setAmount(Math.floor(source.balance.confirmed * f * (f === 1 ? 0.99 : 1)))}>
-              {f === 1 ? "Almost all" : `${f * 100}%`}
+          {[0.25, 0.5].map((f) => (
+            <button key={f} className="chip" aria-pressed={false} onClick={() => pickAmount(Math.floor(source.balance.confirmed * f))}>
+              {`${f * 100}%`}
             </button>
           ))}
+          <button className="chip" aria-pressed={all} onClick={() => pickAmount(source.balance.confirmed, true)}>
+            All
+          </button>
         </div>
       )}
+      {all && <p className="group-note" style={{ textAlign: "center", margin: "-6px 0 16px" }}>Fees are taken from this amount, so the whole balance moves.</p>}
 
       <div className="group" style={{ position: "relative" }}>
-        <SelectRow label="From" value={from} onChange={(id) => (id === to ? swap() : setFrom(id))} options={sources.map(opt)} dot={source && accountColor(source)} />
-        <SelectRow
-          label="To"
-          value={to}
-          onChange={(id) => (id === from ? swap() : setTo(id))}
-          options={accounts.filter((a) => a.custody.type !== "watchOnly" && a.id !== from).map(opt)}
-          dot={target && accountColor(target)}
-        />
+        <AccountPicker label="From" accounts={sources} value={from} onChange={(id) => (id === to ? swap() : (setFrom(id), all && pickAmount(accounts.find((a) => a.id === id)?.balance.confirmed ?? null, true)))} />
+        <AccountPicker label="To" accounts={accounts.filter((a) => a.custody.type !== "watchOnly" && a.id !== from)} value={to} onChange={(id) => (id === from ? swap() : setTo(id))} />
       </div>
       <div style={{ display: "flex", justifyContent: "center", margin: "-12px 0 12px" }}>
         <button className="btn small" onClick={swap} aria-label="Swap from and to">
@@ -145,7 +179,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
       )}
 
       <HoldButton disabled={!prepared || busy} onConfirm={confirm}>
-        {busy ? "Moving…" : "Hold to move"}
+        {busy ? "Transferring…" : "Hold to transfer"}
       </HoldButton>
     </Sheet>
   );

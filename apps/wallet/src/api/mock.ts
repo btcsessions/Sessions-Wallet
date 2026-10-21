@@ -41,7 +41,7 @@ function seedDemo() {
     p("a1", "spending", "outgoing", 4_800, 0, "bolt11", t - 3_600, "Coffee at Analog"),
     p("a2", "hw-1", "incoming", 120_000, 0, "bitcoinAddress", t - 7_200, null, "pending"),
     p("a3", "spending", "incoming", 21_000, 0, "lightningAddress", t - 86_400, "Zap from Bitcast listener"),
-    p("a4", "hw-1", "internal", 150_000, 412, "bitcoinAddress", t - 3 * 86_400, "Moved to Spending"),
+    p("a4", "hw-1", "internal", 150_000, 412, "bitcoinAddress", t - 3 * 86_400, "Transferred to Spending"),
     p("a5", "spending", "outgoing", 63_000, 12, "bolt11", t - 6 * 86_400, "Sat Market vendor"),
   ];
 }
@@ -72,6 +72,8 @@ let layout: Layout = {
     { id: "balance", size: "large" },
     { id: "pay-receive", size: "medium" },
     { id: "activity", size: "large" },
+    { id: "hardware:hw-1", size: "small" },
+    { id: "spending", size: "medium" },
   ],
 };
 
@@ -155,7 +157,7 @@ function settle(first: Leg, rest: Leg[], paid: number, fee: number, amount: numb
     fee,
     first.type === "toAccount" ? first.method : first.type === "viaSwap" ? "liquidAddress" : (method(first.request) ?? "bolt11"),
     now(),
-    last.type === "toAccount" ? `Moved to ${find(last.to).name}` : null,
+    last.type === "toAccount" ? `Transferred to ${find(last.to).name}` : null,
     from.rail === "onchain" ? "pending" : "complete",
   );
   activity.unshift(pay);
@@ -231,6 +233,32 @@ export const mockApi: WalletApi = {
     }
     accounts.push(a);
     return a;
+  },
+  async accountDetails(id) {
+    const a = accounts.find((x) => x.id === id);
+    const onchain = a?.rail === "onchain";
+    return [
+      ...(a?.custody.type === "hardware" ? [{ label: "Device", value: a.custody.device, mono: false }] : []),
+      ...(onchain
+        ? [
+            { label: "Address type", value: "Native SegWit", mono: false },
+            { label: "Fingerprint", value: a?.custody.type === "hardware" ? a.custody.fingerprint : "73c5da0a", mono: true },
+            { label: "Derivation path", value: "m/84h/0h/0h", mono: true },
+            { label: "Extended public key", value: "xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V", mono: true },
+            { label: "Descriptor", value: "wpkh([73c5da0a/84h/0h/0h]xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V/<0;1>/*)", mono: true },
+          ]
+        : [{ label: "Network", value: "Lightning and Spark", mono: false }]),
+      { label: "Receives with", value: (a?.receives ?? []).join(", "), mono: false },
+      { label: "Account id", value: id, mono: true },
+    ];
+  },
+  async receiveQuote(into, method, amountSat) {
+    const a = accounts.find((x) => x.id === into);
+    if (a?.rail !== "onchain" || method === "bitcoinAddress") return null;
+    const pct = method === "bolt11" ? 0.5 : 0.25;
+    const network = method === "bolt11" ? 530 : 1_090;
+    const fee = amountSat ? Math.ceil((amountSat * pct) / 100) + network : null;
+    return { provider: "Boltz", minSat: 25_000, maxSat: 25_000_000, feePercent: pct, networkFeeSat: network, totalFeeSat: fee, receiveSat: amountSat && fee ? amountSat - fee : null };
   },
   async inspectDescriptor(descriptor) {
     const d = descriptor.trim();
@@ -355,12 +383,13 @@ export const mockApi: WalletApi = {
       liquidAddress: "lq1qqvp9g33gw9y05xava3dvcpq8pnkv82yj3tdnzp547eyp9yrztz2lkyxrhscd55ev4p7lj2n72jtkn5u4xnj4v577c42jhf3ww",
     };
     const req = examples[method];
-    if (!req || (!a.receives.includes(method) && method !== "liquidAddress")) throw `This account can't receive via ${method}`;
+    const swapped = a.rail === "onchain" && (method === "bolt11" || method === "liquidAddress");
+    if (!req || (!a.receives.includes(method) && method !== "liquidAddress" && !swapped)) throw `This account can't receive via ${method}`;
     return {
       method,
       request: amountSat && method === "bitcoinAddress" ? `bitcoin:${req.toUpperCase()}?amount=${amountSat / 1e8}` : req,
       amountSat,
-      feeSat: method === "liquidAddress" ? 120 : null,
+      feeSat: swapped && amountSat ? Math.ceil(amountSat * 0.005) + 530 : method === "liquidAddress" ? 120 : null,
       expiresAt: method === "bolt11" || method === "liquidAddress" ? now() + 3600 : null,
     };
   },

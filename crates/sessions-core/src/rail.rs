@@ -64,7 +64,24 @@ pub trait SwapProvider: Send + Sync {
     ) -> Result<BridgedPayment>;
 
     /// Wrap one of our receive targets so an outside payer can use `outside`.
+    ///
+    /// `ours.amount_sat` carries the amount the user entered. When `ours` is
+    /// an on-chain address that is the amount the *payer* pays (fees come
+    /// out of it); when `ours` is an invoice it is the invoice amount.
     async fn bridge_receive(&self, ours: ReceiveTarget, outside: Method) -> Result<ReceiveTarget>;
+
+    /// Limits and fees for receiving `outside` into an account that takes
+    /// `ours`, using live provider data. `amount_sat` has the same meaning as
+    /// `ours.amount_sat` in [`SwapProvider::bridge_receive`]. `None` when this
+    /// provider can't quote that bridge.
+    async fn receive_quote(
+        &self,
+        _outside: Method,
+        _ours: Method,
+        _amount_sat: Option<Sats>,
+    ) -> Result<Option<ReceiveQuote>> {
+        Ok(None)
+    }
 
     /// Drive pending swaps forward (claims, refunds). Call periodically.
     async fn tick(&self) -> Result<Vec<SwapStatus>>;

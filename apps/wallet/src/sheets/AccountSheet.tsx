@@ -3,13 +3,14 @@ import { LightningAddressCard } from "./LightningAddressCard";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
-import { Sheet, useBusy } from "../components/ui";
+import { CopyButton, Sheet, useBusy } from "../components/ui";
+import type { DetailRow } from "../api/types";
 import { DeviceIcon, HardwareBadge } from "../hw/devices";
 import { accountColor, accountKind, amountParts, errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 
 export function AccountSheet({ id }: { id: string }) {
-  const { accounts, activity, unit, price, currency, open, layout, refresh, notify, close } = useWallet();
+  const { accounts, activity, unit, price, currency, open, refresh, notify, close } = useWallet();
   const [busy, run] = useBusy();
   const a = accounts.find((x) => x.id === id);
   if (!a) return null;
@@ -61,7 +62,7 @@ export function AccountSheet({ id }: { id: string }) {
         {a.pays.length > 0 && accounts.length > 1 && (
           <button className="btn" onClick={() => open({ name: "move", from: a.id })}>
             <Icon name="swap" size={20} />
-            Move
+            Transfer
           </button>
         )}
       </div>
@@ -77,12 +78,7 @@ export function AccountSheet({ id }: { id: string }) {
 
       {a.custody.type === "mint" && (
         <p className="notice">
-          Held by the mint at {a.custody.url}. Keep amounts small and move larger ones to Spending or a vault.
-        </p>
-      )}
-      {a.custody.type === "hardware" && (
-        <p className="notice">
-          Keys stay on your {a.custody.device}. Sending prepares the transaction here; you check and sign it on the device.
+          Held by the mint at {a.custody.url}. Keep amounts small and transfer larger ones to Spending or a vault.
         </p>
       )}
       {a.custody.type === "multisig" && (
@@ -91,21 +87,7 @@ export function AccountSheet({ id }: { id: string }) {
         </p>
       )}
 
-      {layout?.advanced && (
-        <>
-          <p className="group-label">Details</p>
-          <div className="group">
-            <div className="cell">
-              <span className="grow">Account id</span>
-              <span className="value">{a.id}</span>
-            </div>
-            <div className="cell">
-              <span className="grow">Receives</span>
-              <span className="value">{a.receives.join(", ")}</span>
-            </div>
-          </div>
-        </>
-      )}
+      <WalletDetails id={a.id} />
 
       {a.id !== "spending" && a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut === 0 && (
         <button className="btn block" style={{ color: "var(--red)", marginBottom: 22 }} disabled={busy} onClick={remove}>
@@ -164,6 +146,49 @@ function PayjoinSwitch({ account }: { account: string }) {
         </label>
       </div>
       <p className="group-note">Makes your receive QR longer. Needs at least one confirmed coin in this wallet; otherwise a normal address is shown.</p>
+    </>
+  );
+}
+
+/** Technical details, one tap away so they don't crowd the account. */
+function WalletDetails({ id }: { id: string }) {
+  const [rows, setRows] = useState<DetailRow[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = async () => {
+    if (open) return setOpen(false);
+    setOpen(true);
+    if (!rows) {
+      try {
+        setRows(await (await api()).accountDetails(id));
+      } catch (e) {
+        setError(errorText(e));
+      }
+    }
+  };
+
+  return (
+    <>
+      <p style={{ textAlign: "center", margin: "4px 0 14px" }}>
+        <button className="text-button with-icon subtle" aria-expanded={open} onClick={() => void toggle()}>
+          <Icon name="key" size={14} />
+          {open ? "Hide wallet details" : "Wallet details"}
+        </button>
+      </p>
+      {open && (
+        <div className="group details">
+          {error && <div className="cell field-error">{error}</div>}
+          {!rows && !error && <div className="cell empty">Loading…</div>}
+          {rows?.map((r, i) => (
+            <div className="cell detail-row" key={`${r.label}-${i}`}>
+              <span className="detail-label">{r.label}</span>
+              <span className={`detail-value${r.mono ? " mono" : ""}`}>{r.value}</span>
+              {r.mono && <CopyButton text={r.value} label="" />}
+            </div>
+          ))}
+        </div>
+      )}
     </>
   );
 }

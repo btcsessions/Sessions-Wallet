@@ -25,6 +25,25 @@ pub enum SwapKind {
     ChainBtcToLbtc,
     /// L-BTC -> Lightning (an outside sender locks L-BTC, Boltz pays our invoice).
     Submarine,
+    /// Lightning -> BTC receive (an outside payer pays Boltz's hold invoice;
+    /// we claim Boltz's BTC lockup to one of our on-chain addresses).
+    ReverseToBtc,
+    /// L-BTC -> BTC receive chain swap (an outside sender locks L-BTC; we
+    /// claim Boltz's BTC lockup to one of our on-chain addresses).
+    ChainLbtcToBtc,
+}
+
+impl SwapKind {
+    /// Our claim transaction spends a Bitcoin (not Liquid) lockup.
+    pub fn claims_on_bitcoin(self) -> bool {
+        matches!(self, SwapKind::ReverseToBtc | SwapKind::ChainLbtcToBtc)
+    }
+
+    /// A refund (if ever needed) spends an L-BTC lockup that an outside
+    /// sender funded, so it goes back to a Liquid address.
+    pub fn refunds_on_liquid(self) -> bool {
+        matches!(self, SwapKind::Submarine | SwapKind::ChainLbtcToBtc)
+    }
 }
 
 /// Our view of a swap. Boltz's own status is kept separately in
@@ -90,10 +109,22 @@ pub struct SwapRecord {
     pub target_amount_sat: Sats,
     /// Amount the payer sends (our account for pay bridges, the outside sender for receive).
     pub pay_amount_sat: Sats,
-    /// Absolute fee for our Liquid claim transaction.
+    /// Absolute fee for our Liquid claim transaction. For BTC claims, the
+    /// estimate quoted to the user (the real fee follows the fee rate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_fee_sat: Option<Sats>,
-    /// Liquid address the user is paying (pay bridges).
+    /// BTC claims: fee rate (sat/vB) of the latest signed claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_fee_rate: Option<f64>,
+    /// BTC claims: when the latest claim was signed (unix seconds), to bump it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_signed_at: Option<u64>,
+    /// L-BTC -> BTC chain swaps: Boltz's new BTC lockup amount we accepted
+    /// after the sender locked a different amount than agreed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_quote_sat: Option<Sats>,
+    /// Liquid address the user is paying (pay bridges), or our own BTC
+    /// address the claim pays (BTC receive bridges).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
     /// BTC address our chain-swap lockup is refunded to.
@@ -251,6 +282,9 @@ mod tests {
             target_amount_sat: 50_000,
             pay_amount_sat: 50_321,
             claim_fee_sat: Some(40),
+            claim_fee_rate: None,
+            claim_signed_at: None,
+            accepted_quote_sat: None,
             destination: Some("lq1qq…".into()),
             refund_address: Some("bc1q…".into()),
             invoice: None,
@@ -283,6 +317,17 @@ mod tests {
             kind: SwapKind::Submarine,
             phase: Phase::Pending,
             ..record("b")
+        });
+        s.swaps.push(SwapRecord {
+            kind: SwapKind::ReverseToBtc,
+            claim_fee_rate: Some(12.5),
+            claim_signed_at: Some(1_700_000_050),
+            ..record("c")
+        });
+        s.swaps.push(SwapRecord {
+            kind: SwapKind::ChainLbtcToBtc,
+            accepted_quote_sat: Some(49_000),
+            ..record("d")
         });
         s.save(dir.path()).unwrap();
         // No temp file left behind.

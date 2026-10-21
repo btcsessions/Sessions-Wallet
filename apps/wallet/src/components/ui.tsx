@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import QRCode from "qrcode";
 import { Icon } from "./Icon";
+import { Dropdown } from "./Dropdown";
 import { useWallet } from "../state/store";
 import { formatFiat, formatSats } from "../format";
 
@@ -203,7 +204,7 @@ export function useBusy() {
   return [busy, run] as const;
 }
 
-/** iOS-style pop-up button: a row with a label and a native dropdown. */
+/** A row with a label and the in-app dropdown. */
 export function SelectRow<T extends string>({
   label,
   value,
@@ -214,23 +215,10 @@ export function SelectRow<T extends string>({
   label: string;
   value: T | undefined;
   onChange: (v: T) => void;
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; detail?: string; color?: string }[];
   dot?: string;
 }) {
-  return (
-    <label className="cell select-row">
-      <span className="grow">{label}</span>
-      {dot && <span className="select-dot" style={{ background: dot }} />}
-      <select value={value} onChange={(e) => onChange(e.target.value as T)}>
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      <Icon name="chevron" size={14} stroke={2.5} />
-    </label>
-  );
+  return <Dropdown label={label} value={value} onChange={onChange} options={options.map((o) => (o.value === value && dot && !o.color ? { ...o, color: dot } : o))} />;
 }
 
 /** Efficient / Private choice for on-chain sends. */

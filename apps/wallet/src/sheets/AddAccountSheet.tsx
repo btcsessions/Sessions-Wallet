@@ -38,7 +38,7 @@ export function AddAccountSheet({ kind }: { kind: Kind }) {
   const { addModule, refresh, notify, close } = useWallet();
   const [busy, run] = useBusy();
   const [name, setName] = useState(
-    kind === "multisig" ? "Vault" : kind === "ecash" ? "Ecash" : kind === "hardware" ? "Cold storage" : kind === "savings" ? "On-chain" : "Watching",
+    kind === "multisig" ? "Vault" : kind === "ecash" ? "Ecash" : kind === "hardware" ? "Cold storage" : kind === "savings" ? "On-Chain" : "Watching",
   );
   const [mintChoice, setMintChoice] = useState(MINTS[0].value);
   const [understood, setUnderstood] = useState(false);

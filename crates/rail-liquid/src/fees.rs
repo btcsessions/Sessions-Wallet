@@ -6,7 +6,7 @@
 //! receives *at least* what was asked, then double-check Boltz's actual quote
 //! before anything can be paid.
 
-use sessions_core::{Error, Result, Sats};
+use sessions_core::{Error, ReceiveQuote, Result, Sats};
 
 /// Liquid's minimum relay fee rate, sat/vB.
 pub const LIQUID_MIN_FEE_RATE: f64 = 0.1;
@@ -16,6 +16,17 @@ pub const LIQUID_MIN_FEE_RATE: f64 = 0.1;
 pub const LIQUID_CLAIM_MAX_VSIZE: u64 = 300;
 /// Most Boltz may round its quote above our own inverse of its fee formula.
 pub const QUOTE_TOLERANCE_SAT: Sats = 2;
+/// Our one-input, one-output BTC claim (key path, Taproot destination). Used
+/// for quotes only; the real claim is signed at a fee rate.
+pub const BTC_CLAIM_VSIZE: u64 = 125;
+/// Fee rate bounds for BTC claims, sat/vB. The cap stops a broken fee
+/// estimate from burning the claim.
+pub const BTC_MIN_FEE_RATE: f64 = 1.0;
+pub const BTC_MAX_FEE_RATE: f64 = 500.0;
+/// Smallest BTC output we'll create (P2PKH dust; every other type is lower).
+pub const BTC_DUST_SAT: Sats = 546;
+/// Shown to the user as the swap provider.
+pub const PROVIDER: &str = "Boltz";
 
 fn rail(msg: impl std::fmt::Display) -> Error {
     Error::rail("boltz", msg)
@@ -176,6 +187,109 @@ pub fn submarine_max_fee(invoice: Sats, pct: f64, miner_fee: Sats) -> Result<Sat
     Ok(gross - invoice + QUOTE_TOLERANCE_SAT)
 }
 
+/// A fee estimate clamped to what we're willing to sign a BTC claim at.
+pub fn clamp_btc_rate(rate: f64) -> f64 {
+    if !rate.is_finite() {
+        return BTC_MIN_FEE_RATE;
+    }
+    rate.clamp(BTC_MIN_FEE_RATE, BTC_MAX_FEE_RATE)
+}
+
+/// Estimated fee of our BTC claim: Boltz's own estimate or ours at `rate`,
+/// whichever is higher.
+pub fn btc_claim_fee(boltz_estimate: Sats, rate: f64) -> Sats {
+    let ours = (BTC_CLAIM_VSIZE as f64 * clamp_btc_rate(rate)).ceil() as Sats;
+    boltz_estimate.max(ours)
+}
+
+/// Fee rate to (re-)sign a BTC claim at. A re-sign never goes below the
+/// previous rate; a bump (claim stuck in the mempool) goes at least
+/// 1 sat/vB above it, which is enough for BIP125 replacement.
+pub fn btc_claim_rate(current: f64, previous: Option<f64>, bump: bool) -> f64 {
+    let floor = match (previous, bump) {
+        (Some(p), true) => p + 1.0,
+        (Some(p), false) => p,
+        (None, _) => 0.0,
+    };
+    clamp_btc_rate(current.max(floor))
+}
+
+/// Receive bridges where the outside payer pays `amount` and fees come out
+/// of it (LN → BTC reverse swap, L-BTC → BTC chain swap).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayerPaysQuote {
+    /// BTC Boltz must lock: `amount` minus its percentage and fixed fee.
+    pub boltz_lock_sat: Sats,
+    /// What reaches our address after our claim fee.
+    pub receive_sat: Sats,
+    /// `amount - receive_sat`.
+    pub fee_sat: Sats,
+}
+
+pub fn quote_payer_pays(
+    amount: Sats,
+    pct: f64,
+    boltz_fixed: Sats,
+    claim_fee: Sats,
+) -> Result<PayerPaysQuote> {
+    check_pct(pct)?;
+    let too_small = || {
+        rail(format!(
+            "{amount} sats doesn't cover the swap fees; send more"
+        ))
+    };
+    let lock = net_of(amount, pct, boltz_fixed).ok_or_else(too_small)?;
+    let receive = lock.checked_sub(claim_fee).ok_or_else(too_small)?;
+    if receive < BTC_DUST_SAT {
+        return Err(too_small());
+    }
+    Ok(PayerPaysQuote {
+        boltz_lock_sat: lock,
+        receive_sat: receive,
+        fee_sat: amount - receive,
+    })
+}
+
+/// Accept Boltz's BTC lockup amount only if it's what its advertised fees
+/// imply for what the payer pays.
+pub fn check_boltz_lock(q: &PayerPaysQuote, offered: Sats, paid: Sats) -> Result<()> {
+    if offered + QUOTE_TOLERANCE_SAT < q.boltz_lock_sat || offered >= paid {
+        return Err(rail(format!(
+            "Boltz offered to lock {offered} sats for {paid} sats, expected about {}",
+            q.boltz_lock_sat
+        )));
+    }
+    Ok(())
+}
+
+/// Turn live pair data into a [`ReceiveQuote`]. `payer_pays`: `amount` is
+/// what the payer sends and fees come out of it; otherwise `amount` is what
+/// we receive and the payer pays the fees on top.
+pub fn receive_quote(
+    min: Sats,
+    max: Sats,
+    pct: f64,
+    network_fee: Sats,
+    amount: Option<Sats>,
+    payer_pays: bool,
+) -> ReceiveQuote {
+    let total = amount.map(|a| percentage_fee(pct, a).saturating_add(network_fee));
+    let receive = match (amount, total) {
+        (Some(a), Some(t)) if payer_pays => Some(a.saturating_sub(t)),
+        (Some(a), _) => Some(a),
+        _ => None,
+    };
+    ReceiveQuote {
+        provider: PROVIDER.into(),
+        min_sat: min,
+        max_sat: max,
+        fee_percent: pct,
+        network_fee_sat: network_fee,
+        total_fee_sat: total,
+        receive_sat: receive,
+    }
+}
+
 /// `12345` → `"0.00012345"`, exact, no trailing zeros.
 pub fn sats_to_btc(sats: Sats) -> String {
     let s = format!("{}.{:08}", sats / 100_000_000, sats % 100_000_000);
@@ -278,6 +392,67 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("at most"));
+    }
+
+    #[test]
+    fn payer_pays_quote() {
+        // 0.5% + 530 sat lockup + 140 sat claim on a 100k invoice.
+        let q = quote_payer_pays(100_000, 0.5, 530, 140).unwrap();
+        assert_eq!(q.boltz_lock_sat, 100_000 - 500 - 530);
+        assert_eq!(q.receive_sat, q.boltz_lock_sat - 140);
+        assert_eq!(q.fee_sat, 500 + 530 + 140);
+        // Matches what the quote API reports for the same numbers.
+        let rq = receive_quote(25_000, 25_000_000, 0.5, 530 + 140, Some(100_000), true);
+        assert_eq!(rq.total_fee_sat, Some(q.fee_sat));
+        assert_eq!(rq.receive_sat, Some(q.receive_sat));
+        assert_eq!(rq.provider, "Boltz");
+        // Too small to cover fees, or would leave dust.
+        assert!(quote_payer_pays(500, 0.5, 530, 140).is_err());
+        assert!(quote_payer_pays(1_200, 0.1, 530, 140).is_err());
+        assert!(quote_payer_pays(1_300, 0.1, 530, 140).is_ok());
+        assert!(quote_payer_pays(100_000, 80.0, 0, 0).is_err());
+    }
+
+    #[test]
+    fn boltz_lock_check() {
+        let q = quote_payer_pays(100_000, 0.5, 530, 140).unwrap();
+        assert!(check_boltz_lock(&q, q.boltz_lock_sat, 100_000).is_ok());
+        assert!(check_boltz_lock(&q, q.boltz_lock_sat - QUOTE_TOLERANCE_SAT, 100_000).is_ok());
+        assert!(check_boltz_lock(&q, q.boltz_lock_sat - QUOTE_TOLERANCE_SAT - 1, 100_000).is_err());
+        // More is fine, but never the whole payment or more.
+        assert!(check_boltz_lock(&q, q.boltz_lock_sat + 50, 100_000).is_ok());
+        assert!(check_boltz_lock(&q, 100_000, 100_000).is_err());
+    }
+
+    #[test]
+    fn receiver_gets_quote() {
+        // Liquid → Lightning: the invoice amount arrives; the payer adds fees.
+        let q = receive_quote(1_000, 25_000_000, 0.1, 19, Some(100_000), false);
+        assert_eq!(q.total_fee_sat, Some(119));
+        assert_eq!(q.receive_sat, Some(100_000));
+        let q = receive_quote(1_000, 25_000_000, 0.1, 19, None, false);
+        assert_eq!((q.total_fee_sat, q.receive_sat), (None, None));
+        // Fees larger than the amount report zero, not an underflow.
+        let q = receive_quote(25_000, 25_000_000, 0.5, 900, Some(800), true);
+        assert_eq!(q.receive_sat, Some(0));
+    }
+
+    #[test]
+    fn btc_claim_fees_and_rates() {
+        assert_eq!(btc_claim_fee(0, 2.0), 250);
+        assert_eq!(btc_claim_fee(400, 2.0), 400);
+        // Clamped: broken estimates never produce a silly fee.
+        assert_eq!(btc_claim_fee(0, 0.2), 125);
+        assert_eq!(btc_claim_fee(0, f64::NAN), 125);
+        assert_eq!(btc_claim_fee(0, 1e9), 125 * 500);
+        assert_eq!(btc_claim_rate(5.0, None, false), 5.0);
+        assert_eq!(btc_claim_rate(5.0, Some(8.0), false), 8.0);
+        assert_eq!(btc_claim_rate(5.0, Some(8.0), true), 9.0);
+        assert_eq!(btc_claim_rate(20.0, Some(8.0), true), 20.0);
+        assert_eq!(
+            btc_claim_rate(5.0, Some(BTC_MAX_FEE_RATE), true),
+            BTC_MAX_FEE_RATE
+        );
     }
 
     #[test]

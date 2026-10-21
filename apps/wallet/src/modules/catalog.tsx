@@ -48,7 +48,7 @@ const defs: ModuleDef[] = [
   {
     type: "pay-receive",
     name: "Send & Receive",
-    blurb: "Send, receive and move between accounts. The wallet picks the cheapest way.",
+    blurb: "Send, receive and transfer between accounts. The wallet picks the cheapest way.",
     icon: "swap",
     tint: "#FF9500",
     section: "essentials",
@@ -125,7 +125,7 @@ const defs: ModuleDef[] = [
   },
   {
     type: "move",
-    name: "Move",
+    name: "Transfer",
     blurb: "Shift sats between any two of your accounts in one step.",
     icon: "swap",
     tint: "#007AFF",
@@ -183,7 +183,7 @@ export const CATALOG: Record<string, ModuleDef> = Object.fromEntries(defs.map((d
 export const SECTIONS: { id: ModuleDef["section"]; title: string; lede: string }[] = [
   { id: "essentials", title: "Essentials", lede: "The basics. Start here." },
   { id: "accounts", title: "Places for your sats", lede: "Each one is a separate account with its own security." },
-  { id: "move", title: "Move money", lede: "Get sats where they need to be." },
+  { id: "move", title: "Transfer", lede: "Get sats where they need to be." },
   { id: "tools", title: "Tools", lede: "Handy readouts." },
 ];
 

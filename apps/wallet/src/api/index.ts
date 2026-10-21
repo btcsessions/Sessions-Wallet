@@ -1,6 +1,8 @@
 import type {
   AccountInfo,
   DescriptorPreview,
+  DetailRow,
+  ReceiveQuote,
   Execution,
   FeeRates,
   FeePriority,
@@ -39,6 +41,10 @@ export interface WalletApi {
   /** Hot on-chain accounts only. */
   payjoinReceive(account: string): Promise<boolean>;
   setPayjoinReceive(account: string, enabled: boolean): Promise<void>;
+  /** Technical details (descriptor, xpub, fingerprint…) for an account. */
+  accountDetails(id: string): Promise<DetailRow[]>;
+  /** Limits and fees when receiving with `method` needs a swap into this account; null when it doesn't. */
+  receiveQuote(into: string, method: Method, amountSat: number | null): Promise<ReceiveQuote | null>;
   /** Check a hardware wallet export before adding it. */
   inspectDescriptor(descriptor: string): Promise<DescriptorPreview>;
   /** Trezor Connect signTransaction params for an unsigned PSBT. */

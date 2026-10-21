@@ -9,7 +9,7 @@ export function ActivityRow({ p }: { p: Payment }) {
   const account = accounts.find((a) => a.id === p.account);
   const title =
     p.description ||
-    (p.direction === "incoming" ? `Received via ${METHOD_LABEL[p.method]}` : p.direction === "internal" ? "Moved between accounts" : `Sent via ${METHOD_LABEL[p.method]}`);
+    (p.direction === "incoming" ? `Received via ${METHOD_LABEL[p.method]}` : p.direction === "internal" ? "Transferred between accounts" : `Sent via ${METHOD_LABEL[p.method]}`);
   return (
     <li className="row">
       <span className={`row-icon ${p.direction === "incoming" ? "in" : ""}`}>

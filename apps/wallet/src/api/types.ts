@@ -171,3 +171,26 @@ export interface DescriptorPreview {
   scriptType: string;
   firstAddress: string;
 }
+
+export interface DetailRow {
+  label: string;
+  value: string;
+  /** Copyable data, shown in monospace. */
+  mono: boolean;
+}
+
+/** What it costs to receive into an account through a swap. */
+export interface ReceiveQuote {
+  /** Who does the swap, e.g. "Boltz". */
+  provider: string;
+  minSat: number;
+  maxSat: number;
+  /** Percentage fee, e.g. 0.25 for 0.25%. */
+  feePercent: number;
+  /** Network fees the swap pays (lockup + claim), in sats. */
+  networkFeeSat: number;
+  /** Total fee for the requested amount, when one was given. */
+  totalFeeSat: number | null;
+  /** What arrives for the requested amount, when one was given. */
+  receiveSat: number | null;
+}

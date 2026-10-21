@@ -4,6 +4,10 @@
 //! * Pay a Liquid address from Lightning: reverse swap (LN → L-BTC).
 //! * Pay a Liquid address from on-chain BTC: chain swap (BTC → L-BTC).
 //! * Receive from a Liquid sender into Lightning: submarine swap (L-BTC → LN).
+//! * Receive from a Lightning payer into an on-chain account: reverse swap
+//!   (LN → BTC), claimed to one of the account's own addresses.
+//! * Receive from a Liquid sender into an on-chain account: chain swap
+//!   (L-BTC → BTC), claimed to one of the account's own addresses.
 //!
 //! See `README.md` for trust assumptions and the recovery story.
 
@@ -34,11 +38,12 @@ use boltz_client::network::{BitcoinChain, Chain, LiquidChain, Network as BoltzNe
 use boltz_client::swaps::{
     BtcLikeTransaction, ChainClient, SwapScript, SwapTransactionParams, TransactionOptions,
 };
-use boltz_client::{Bolt11Invoice, PublicKey};
+use boltz_client::util::secrets::Preimage;
+use boltz_client::{Bolt11Invoice, Keypair, PublicKey};
 use serde::de::DeserializeOwned;
 use sessions_core::rail::{BridgedPayment, SwapStatus};
 use sessions_core::{
-    Error, Method, Network, PaymentRequest, ReceiveTarget, Result, Sats, SwapProvider,
+    Error, Method, Network, PaymentRequest, ReceiveQuote, ReceiveTarget, Result, Sats, SwapProvider,
 };
 use tokio::sync::Mutex;
 
@@ -56,6 +61,13 @@ const LATE_PAYMENT_GRACE_SECS: u64 = 7 * 24 * 3600;
 const REFUND_BUMP_AFTER_SECS: u64 = 6 * 3600;
 /// Shortest invoice validity we'll wrap in a Liquid receive address.
 const MIN_RECEIVE_WINDOW_SECS: u64 = 10 * 60;
+/// Longest we show a Liquid lockup address for an L-BTC → BTC receive.
+const MAX_RECEIVE_WINDOW_SECS: u64 = 24 * 3600;
+/// Confirmation target (blocks) for BTC claims, and for bumping a stuck one.
+const BTC_CLAIM_TARGET_BLOCKS: u16 = 3;
+const BTC_BUMP_TARGET_BLOCKS: u16 = 2;
+/// Re-sign an unconfirmed BTC claim at a higher fee rate after this long.
+const CLAIM_BUMP_AFTER_SECS: u64 = 3600;
 
 pub struct BoltzConfig {
     pub network: Network,
@@ -115,6 +127,97 @@ fn boltz_response<T: DeserializeOwned>(r: &SwapRecord) -> Result<T> {
 
 fn liquid_outpoint(op: &elements::OutPoint) -> String {
     format!("{}:{}", op.txid, op.vout)
+}
+
+/// The address in an on-chain receive request: a plain address or a
+/// `bitcoin:` BIP21 URI (any query, e.g. `amount` or `pj`, is dropped).
+fn btc_address_from_request(request: &str) -> &str {
+    let r = request.trim();
+    let r = match r.get(..8) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("bitcoin:") => &r[8..],
+        _ => r,
+    };
+    r.split('?').next().unwrap_or(r)
+}
+
+/// L-BTC paid to `spk` in `tx`, unblinding confidential outputs with
+/// `blinding_key`. Every matching output must hold `asset` (L-BTC).
+fn lockup_value(
+    tx: &elements::Transaction,
+    spk: &elements::Script,
+    blinding_key: elements::secp256k1_zkp::SecretKey,
+    asset: elements::AssetId,
+) -> Result<Sats> {
+    let secp = elements::secp256k1_zkp::Secp256k1::new();
+    let mut total: Sats = 0;
+    let mut found = false;
+    for out in tx.output.iter().filter(|o| &o.script_pubkey == spk) {
+        let (value, a) = match (out.value.explicit(), out.asset.explicit()) {
+            (Some(v), Some(a)) => (v, a),
+            _ => {
+                let s = out
+                    .unblind(&secp, blinding_key)
+                    .map_err(|e| rail(format!("couldn't unblind the Liquid lockup: {e}")))?;
+                (s.value, s.asset)
+            }
+        };
+        if a != asset {
+            return Err(rail(format!(
+                "the Liquid lockup holds asset {a}, not L-BTC"
+            )));
+        }
+        total = total
+            .checked_add(value)
+            .ok_or_else(|| rail("amount overflow"))?;
+        found = true;
+    }
+    if !found {
+        return Err(rail("the sender's transaction doesn't pay the swap lockup"));
+    }
+    Ok(total)
+}
+
+/// A freshly created swap, before any status from Boltz.
+fn new_record(
+    id: String,
+    kind: SwapKind,
+    key_index: u64,
+    created_at: u64,
+    boltz_response: serde_json::Value,
+) -> SwapRecord {
+    SwapRecord {
+        id,
+        kind,
+        key_index,
+        refund_key_index: None,
+        preimage_hash: None,
+        created_at,
+        target_amount_sat: 0,
+        pay_amount_sat: 0,
+        claim_fee_sat: None,
+        claim_fee_rate: None,
+        claim_signed_at: None,
+        accepted_quote_sat: None,
+        destination: None,
+        refund_address: None,
+        invoice: None,
+        boltz_response,
+        boltz_status: None,
+        phase: Phase::Pending,
+        payer_locked: false,
+        preimage_revealed: false,
+        lockup_outpoint: None,
+        claim_txids: vec![],
+        claim_tx_hex: None,
+        refund_outpoints: vec![],
+        refund_txids: vec![],
+        refund_tx_hex: None,
+        refund_broadcast_at: None,
+        cooperated: false,
+        ended_at: None,
+        last_error: None,
+        updated_at: created_at,
+    }
 }
 
 impl BoltzSwaps {
@@ -188,9 +291,9 @@ impl BoltzSwaps {
         self.store.lock().await.swaps.clone()
     }
 
-    /// Return the L-BTC of a failed incoming (submarine) swap to a Liquid
-    /// address, e.g. the original sender's. Only for swaps in
-    /// [`Phase::NeedsRescue`]. Returns the refund txid.
+    /// Return the L-BTC of a failed incoming swap (submarine, or L-BTC → BTC
+    /// chain swap) to a Liquid address, e.g. the original sender's. Only for
+    /// swaps in [`Phase::NeedsRescue`]. Returns the refund txid.
     pub async fn refund_to_liquid(&self, swap_id: &str, address: &str) -> Result<String> {
         let _driver = self.driver.lock().await;
         let mut r = self
@@ -200,7 +303,7 @@ impl BoltzSwaps {
             .get(swap_id)
             .cloned()
             .ok_or_else(|| rail(format!("unknown swap {swap_id}")))?;
-        if r.kind != SwapKind::Submarine || r.phase != Phase::NeedsRescue {
+        if !r.kind.refunds_on_liquid() || r.phase != Phase::NeedsRescue {
             return Err(Error::Unsupported(format!(
                 "refund swap {swap_id} in state {}",
                 r.phase.as_str()
@@ -289,6 +392,26 @@ impl BoltzSwaps {
             .require_network(self.network.to_bitcoin())
             .map_err(|e| rail(format!("refund address is for the wrong network: {e}")))?;
         Ok(())
+    }
+
+    /// A Bitcoin address on our network. Accepts the upper-case bech32 form
+    /// used in QR-friendly BIP21 URIs.
+    fn parse_btc(&self, address: &str) -> Result<boltz_client::bitcoin::Address> {
+        let unchecked = boltz_client::bitcoin::Address::from_str(address)
+            .or_else(|_| boltz_client::bitcoin::Address::from_str(&address.to_ascii_lowercase()))
+            .map_err(|e| rail(format!("invalid Bitcoin address: {e}")))?;
+        unchecked
+            .require_network(self.network.to_bitcoin())
+            .map_err(|e| Error::Network(format!("Bitcoin address is for the wrong network: {e}")))
+    }
+
+    /// BTC fee rate (sat/vB) for confirmation within `target` blocks, clamped.
+    async fn btc_fee_rate(&self, target: u16) -> Result<f64> {
+        self.bitcoin
+            .fee_rate(target)
+            .await
+            .map(fees::clamp_btc_rate)
+            .map_err(rail)
     }
 
     fn parse_invoice(&self, invoice: &str) -> Result<(Bolt11Invoice, Sats)> {
@@ -385,6 +508,9 @@ impl BoltzSwaps {
             target_amount_sat: target,
             pay_amount_sat: q.invoice_sat,
             claim_fee_sat: Some(claim_fee),
+            claim_fee_rate: None,
+            claim_signed_at: None,
+            accepted_quote_sat: None,
             destination: Some(destination.to_string()),
             refund_address: None,
             invoice: Some(invoice.clone()),
@@ -486,6 +612,9 @@ impl BoltzSwaps {
             target_amount_sat: target,
             pay_amount_sat: user_lock,
             claim_fee_sat: Some(claim_fee),
+            claim_fee_rate: None,
+            claim_signed_at: None,
+            accepted_quote_sat: None,
             destination: Some(destination.to_string()),
             refund_address: Some(refund_address),
             invoice: None,
@@ -521,6 +650,317 @@ impl BoltzSwaps {
         })
     }
 
+    // ---------- receive bridges into an on-chain account ----------
+
+    /// Lightning → our BTC address: reverse swap BTC/BTC. The outside payer
+    /// pays Boltz's hold invoice for `amount`; Boltz locks BTC; `tick` claims
+    /// it to `address`.
+    async fn receive_ln_to_btc(&self, address: String, amount: Sats) -> Result<ReceiveTarget> {
+        let pairs = self.api.get_reverse_pairs().await.map_err(rail)?;
+        let pair = pairs
+            .get_btc_to_btc_pair()
+            .ok_or_else(|| rail("Boltz isn't offering Lightning → on-chain swaps right now"))?;
+        fees::check_limits(
+            amount,
+            pair.limits.minimal,
+            pair.limits.maximal,
+            "A Lightning → on-chain swap",
+        )?;
+        let rate = self.btc_fee_rate(BTC_CLAIM_TARGET_BLOCKS).await?;
+        let claim_fee = fees::btc_claim_fee(pair.fees.miner_fees.claim, rate);
+        let q = fees::quote_payer_pays(
+            amount,
+            pair.fees.percentage,
+            pair.fees.miner_fees.lockup,
+            claim_fee,
+        )?;
+
+        let index = self.alloc_indices(1).await?;
+        let claim_pk = self.keys.public_key(index)?;
+        let preimage = self.keys.preimage(index)?;
+        let resp = self
+            .api
+            .post_reverse_req(CreateReverseRequest {
+                from: "BTC".into(),
+                to: "BTC".into(),
+                claim_public_key: claim_pk,
+                invoice: None,
+                invoice_amount: Some(amount),
+                preimage_hash: Some(preimage.sha256),
+                description: Some("Sessions Wallet".into()),
+                description_hash: None,
+                address: None,
+                address_signature: None,
+                referral_id: None,
+                webhook: None,
+            })
+            .await
+            .map_err(rail)?;
+        // Checks the invoice's payment hash and that the lockup script/address are ours.
+        resp.validate(&preimage, &claim_pk, Chain::Bitcoin(self.bchain))
+            .map_err(rail)?;
+        let invoice = resp
+            .invoice
+            .clone()
+            .ok_or_else(|| rail("Boltz returned no invoice"))?;
+        let (inv, inv_amount) = self.parse_invoice(&invoice)?;
+        if inv_amount != amount {
+            return Err(rail(format!(
+                "Boltz's invoice is for {inv_amount} sats, expected {amount}"
+            )));
+        }
+        fees::check_boltz_lock(&q, resp.onchain_amount, amount)?;
+        let t = now();
+        let expires_at = inv.expires_at().map(|d| d.as_secs()).unwrap_or(t);
+        if expires_at < t + MIN_RECEIVE_WINDOW_SECS {
+            return Err(rail("Boltz's invoice expires too soon"));
+        }
+        let receive = resp.onchain_amount.saturating_sub(claim_fee);
+
+        let mut record = new_record(
+            resp.id.clone(),
+            SwapKind::ReverseToBtc,
+            index,
+            t,
+            serde_json::to_value(&resp).map_err(|e| Error::Storage(e.to_string()))?,
+        );
+        record.preimage_hash = Some(preimage.sha256.to_string());
+        record.target_amount_sat = receive;
+        record.pay_amount_sat = amount;
+        record.claim_fee_sat = Some(claim_fee);
+        record.destination = Some(address);
+        record.invoice = Some(invoice.clone());
+        self.put(&record).await?;
+        Ok(ReceiveTarget {
+            method: Method::Bolt11,
+            request: invoice,
+            amount_sat: Some(amount),
+            fee_sat: Some(amount - receive),
+            expires_at: Some(expires_at),
+            watch_id: Some(resp.id),
+        })
+    }
+
+    /// Liquid → our BTC address: chain swap L-BTC → BTC. The outside sender
+    /// locks `amount` L-BTC at Boltz's lockup address; Boltz locks BTC; `tick`
+    /// claims it to `address`.
+    async fn receive_lbtc_to_btc(&self, address: String, amount: Sats) -> Result<ReceiveTarget> {
+        let pairs = self.api.get_chain_pairs().await.map_err(rail)?;
+        let pair = pairs
+            .get_lbtc_to_btc_pair()
+            .ok_or_else(|| rail("Boltz isn't offering Liquid → on-chain swaps right now"))?;
+        fees::check_limits(
+            amount,
+            pair.limits.minimal,
+            pair.limits.maximal,
+            "A Liquid → on-chain swap",
+        )?;
+        let rate = self.btc_fee_rate(BTC_CLAIM_TARGET_BLOCKS).await?;
+        let claim_fee = fees::btc_claim_fee(pair.fees.miner_fees.user.claim, rate);
+        let q = fees::quote_payer_pays(
+            amount,
+            pair.fees.percentage,
+            pair.fees.miner_fees.server,
+            claim_fee,
+        )?;
+
+        let index = self.alloc_indices(2).await?;
+        let (claim_index, refund_index) = (index, index + 1);
+        let claim_pk = self.keys.public_key(claim_index)?;
+        let refund_pk = self.keys.public_key(refund_index)?;
+        let preimage = self.keys.preimage(claim_index)?;
+        let resp = self
+            .api
+            .post_chain_req(CreateChainRequest {
+                from: "L-BTC".into(),
+                to: "BTC".into(),
+                preimage_hash: preimage.sha256,
+                claim_public_key: Some(claim_pk),
+                refund_public_key: Some(refund_pk),
+                user_lock_amount: Some(amount),
+                server_lock_amount: None,
+                pair_hash: Some(pair.hash.clone()),
+                referral_id: None,
+                webhook: None,
+            })
+            .await
+            .map_err(rail)?;
+        resp.validate(
+            &claim_pk,
+            &refund_pk,
+            Chain::Liquid(self.lchain),
+            Chain::Bitcoin(self.bchain),
+            &preimage.sha256,
+        )
+        .map_err(rail)?;
+        if resp.lockup_details.amount != amount {
+            return Err(rail(format!(
+                "Boltz asked for {} sats of L-BTC, expected {amount}",
+                resp.lockup_details.amount
+            )));
+        }
+        fees::check_boltz_lock(&q, resp.claim_details.amount, amount)?;
+        let lockup_address = resp.lockup_details.lockup_address.clone();
+        self.parse_liquid(&lockup_address)?;
+        // Stop showing the address well before the sender's refund timeout
+        // (Liquid: ~1 block/minute), and after a day at most.
+        let t = now();
+        let tip = self.liquid.tip_height().await.map_err(rail)?;
+        let blocks_left = resp.lockup_details.timeout_block_height.saturating_sub(tip);
+        let expires_at = t + (u64::from(blocks_left) * 60 / 2).min(MAX_RECEIVE_WINDOW_SECS);
+        if expires_at < t + MIN_RECEIVE_WINDOW_SECS {
+            return Err(rail("Boltz's swap window is too short"));
+        }
+        let receive = resp.claim_details.amount.saturating_sub(claim_fee);
+
+        let mut record = new_record(
+            resp.id.clone(),
+            SwapKind::ChainLbtcToBtc,
+            claim_index,
+            t,
+            serde_json::to_value(&resp).map_err(|e| Error::Storage(e.to_string()))?,
+        );
+        record.refund_key_index = Some(refund_index);
+        record.preimage_hash = Some(preimage.sha256.to_string());
+        record.target_amount_sat = receive;
+        record.pay_amount_sat = amount;
+        record.claim_fee_sat = Some(claim_fee);
+        record.destination = Some(address);
+        self.put(&record).await?;
+        Ok(ReceiveTarget {
+            method: Method::LiquidAddress,
+            request: fees::liquid_bip21(
+                &lockup_address,
+                amount,
+                &self.lchain.bitcoin().to_string(),
+            ),
+            amount_sat: Some(amount),
+            fee_sat: Some(amount - receive),
+            expires_at: Some(expires_at),
+            watch_id: Some(resp.id),
+        })
+    }
+
+    /// Liquid → our Lightning invoice: submarine swap L-BTC → LN. The outside
+    /// sender locks L-BTC; Boltz pays `ours` (an invoice) and sweeps.
+    async fn receive_lbtc_to_ln(&self, ours: ReceiveTarget) -> Result<ReceiveTarget> {
+        let raw = ours.request.trim();
+        let invoice = if raw.len() > 10 && raw[..10].eq_ignore_ascii_case("lightning:") {
+            &raw[10..]
+        } else {
+            raw
+        };
+        let invoice = invoice.to_ascii_lowercase();
+        let (inv, amount) = self.parse_invoice(&invoice)?;
+        let t = now();
+        // Leave Boltz a few minutes to see the lockup and pay before the invoice dies.
+        let inv_expiry = inv
+            .expires_at()
+            .map(|d| d.as_secs())
+            .unwrap_or(t)
+            .saturating_sub(5 * 60);
+        if inv_expiry < t + MIN_RECEIVE_WINDOW_SECS {
+            return Err(rail(
+                "the Lightning invoice expires too soon to receive over Liquid",
+            ));
+        }
+
+        let pairs = self.api.get_submarine_pairs().await.map_err(rail)?;
+        let pair = pairs
+            .get_lbtc_to_btc_pair()
+            .ok_or_else(|| rail("Boltz isn't offering Liquid → Lightning swaps right now"))?;
+        fees::check_limits(
+            amount,
+            pair.limits.minimal,
+            pair.limits.maximal,
+            "A Liquid → Lightning swap",
+        )?;
+        let max_fee = fees::submarine_max_fee(amount, pair.fees.percentage, pair.fees.miner_fees)?;
+
+        let index = self.alloc_indices(1).await?;
+        let refund_pk = self.keys.public_key(index)?;
+        let resp = self
+            .api
+            .post_swap_req(&CreateSubmarineRequest {
+                from: "L-BTC".into(),
+                to: "BTC".into(),
+                invoice: invoice.clone(),
+                refund_public_key: refund_pk,
+                pair_hash: Some(pair.hash.clone()),
+                referral_id: None,
+                webhook: None,
+            })
+            .await
+            .map_err(rail)?;
+        // Checks the script pays to our invoice's hash, refunds to our key, and matches the address.
+        resp.validate(&invoice, &refund_pk, Chain::Liquid(self.lchain))
+            .map_err(rail)?;
+        if resp.expected_amount <= amount || resp.expected_amount - amount > max_fee {
+            return Err(rail(format!(
+                "Boltz asked for {} sats to pay a {amount} sat invoice (max fee {max_fee})",
+                resp.expected_amount
+            )));
+        }
+        self.parse_liquid(&resp.address)?;
+        // Stop showing the address well before Boltz's timeout (Liquid: ~1 block/minute).
+        let tip = self.liquid.tip_height().await.map_err(rail)?;
+        let blocks_left = resp.timeout_block_height.saturating_sub(u64::from(tip));
+        let expires_at = inv_expiry.min(t + blocks_left * 60 / 2);
+        if expires_at < t + MIN_RECEIVE_WINDOW_SECS {
+            return Err(rail("Boltz's swap window is too short"));
+        }
+
+        let record = SwapRecord {
+            id: resp.id.clone(),
+            kind: SwapKind::Submarine,
+            key_index: index,
+            refund_key_index: None,
+            preimage_hash: None,
+            created_at: t,
+            target_amount_sat: amount,
+            pay_amount_sat: resp.expected_amount,
+            claim_fee_sat: None,
+            claim_fee_rate: None,
+            claim_signed_at: None,
+            accepted_quote_sat: None,
+            destination: None,
+            refund_address: None,
+            invoice: Some(invoice),
+            boltz_response: serde_json::to_value(&resp)
+                .map_err(|e| Error::Storage(e.to_string()))?,
+            boltz_status: None,
+            phase: Phase::Pending,
+            payer_locked: false,
+            preimage_revealed: false,
+            lockup_outpoint: None,
+            claim_txids: vec![],
+            claim_tx_hex: None,
+            refund_outpoints: vec![],
+            refund_txids: vec![],
+            refund_tx_hex: None,
+            refund_broadcast_at: None,
+            cooperated: false,
+            ended_at: None,
+            last_error: None,
+            updated_at: t,
+        };
+        self.put(&record).await?;
+        Ok(ReceiveTarget {
+            method: Method::LiquidAddress,
+            request: fees::liquid_bip21(
+                &resp.address,
+                resp.expected_amount,
+                &self.lchain.bitcoin().to_string(),
+            ),
+            amount_sat: Some(resp.expected_amount),
+            fee_sat: Some(resp.expected_amount - amount),
+            expires_at: Some(expires_at),
+            // Settlement arrives as a Lightning payment to our own invoice, so
+            // keep the account's watch id; the swap is tracked by `tick`.
+            watch_id: ours.watch_id.clone(),
+        })
+    }
+
     // ---------- tick ----------
 
     async fn drive(&self, r: &mut SwapRecord) -> Result<()> {
@@ -538,7 +978,8 @@ impl BoltzSwaps {
         r.boltz_status = Some(st.status.clone());
         match state::plan(r.kind, &st.status, r.payer_locked) {
             Action::Wait => Ok(()),
-            Action::Claim => self.claim(r).await,
+            Action::Claim => self.claim_any(r).await,
+            Action::Requote => self.requote(r).await,
             Action::Paid => {
                 r.phase = Phase::Paid;
                 Ok(())
@@ -559,20 +1000,24 @@ impl BoltzSwaps {
 
     async fn on_fail(&self, r: &mut SwapRecord, status: &str) -> Result<()> {
         match r.kind {
-            SwapKind::Reverse if r.preimage_revealed => {
+            SwapKind::Reverse | SwapKind::ReverseToBtc | SwapKind::ChainLbtcToBtc
+                if r.preimage_revealed =>
+            {
                 if status == "transaction.refunded" {
                     r.phase = Phase::Failed;
                     return Err(rail("Boltz refunded its lockup after our preimage was revealed; contact Boltz support with this swap id"));
                 }
                 // Boltz may already have settled our payment: we must claim.
-                self.claim(r).await
+                self.claim_any(r).await
             }
-            SwapKind::Submarine => {
-                // Expired before anyone paid. Watch a while for a late payment.
-                let resp: CreateSubmarineResponse = boltz_response(r)?;
+            SwapKind::Submarine | SwapKind::ChainLbtcToBtc => {
+                // Ended before Boltz paid us. If the outside sender's L-BTC
+                // reached the lockup, it's refundable only with our key: it
+                // needs a rescue. Otherwise watch a while for a late payment.
+                let lockup = self.liquid_lockup_address(r)?;
                 if self
                     .liquid
-                    .address_has_history(&resp.address)
+                    .address_has_history(&lockup)
                     .await
                     .map_err(rail)?
                 {
@@ -596,8 +1041,9 @@ impl BoltzSwaps {
         t.saturating_sub(ended) > LATE_PAYMENT_GRACE_SECS
     }
 
-    /// Claim L-BTC to the destination (reverse and chain swaps).
-    async fn claim(&self, r: &mut SwapRecord) -> Result<()> {
+    /// Claim key, its public key and the preimage of a reverse / chain swap,
+    /// checked against the journaled preimage hash.
+    fn claim_secrets(&self, r: &SwapRecord) -> Result<(Keypair, PublicKey, Preimage)> {
         let keys = self.keys.keypair(r.key_index)?;
         let pk = PublicKey {
             compressed: true,
@@ -610,6 +1056,21 @@ impl BoltzSwaps {
                 r.id
             )));
         }
+        Ok((keys, pk, preimage))
+    }
+
+    async fn claim_any(&self, r: &mut SwapRecord) -> Result<()> {
+        if r.kind.claims_on_bitcoin() {
+            let bump = Self::claim_stale(r);
+            self.claim_btc(r, bump).await
+        } else {
+            self.claim(r).await
+        }
+    }
+
+    /// Claim L-BTC to the destination (reverse and chain swaps).
+    async fn claim(&self, r: &mut SwapRecord) -> Result<()> {
+        let (keys, pk, preimage) = self.claim_secrets(r)?;
         let lchain = Chain::Liquid(self.lchain);
         let (script, lockup_txid, options) = match r.kind {
             SwapKind::Reverse => {
@@ -657,7 +1118,12 @@ impl BoltzSwaps {
                     TransactionOptions::default().with_chain_claim(refund_keys, lockup_script),
                 )
             }
-            SwapKind::Submarine => return Err(Error::Unsupported("claim a submarine swap".into())),
+            SwapKind::Submarine | SwapKind::ReverseToBtc | SwapKind::ChainLbtcToBtc => {
+                return Err(Error::Unsupported(format!(
+                    "claim a {:?} swap on Liquid",
+                    r.kind
+                )))
+            }
         };
 
         // Only reveal the preimage once Boltz's lockup is confirmed in our own
@@ -731,15 +1197,294 @@ impl BoltzSwaps {
             .map_err(rail)
     }
 
+    /// A signed BTC claim has sat unconfirmed long enough to bump its fee.
+    fn claim_stale(r: &SwapRecord) -> bool {
+        r.claim_signed_at
+            .is_some_and(|t| now().saturating_sub(t) > CLAIM_BUMP_AFTER_SECS)
+    }
+
+    /// Claim BTC to our own address (BTC receive bridges). `bump` re-signs at
+    /// least 1 sat/vB above the previous claim (it's RBF-enabled).
+    async fn claim_btc(&self, r: &mut SwapRecord, bump: bool) -> Result<()> {
+        let (keys, pk, preimage) = self.claim_secrets(r)?;
+        let bchain = Chain::Bitcoin(self.bchain);
+        let (script, lockup_txid, options) = match r.kind {
+            SwapKind::ReverseToBtc => {
+                let resp: CreateReverseResponse = boltz_response(r)?;
+                let script = SwapScript::reverse_from_swap_resp(bchain, &resp, pk).map_err(rail)?;
+                let txid = self.api.get_reverse_tx(&r.id).await.map_err(rail)?.id;
+                (script, txid, TransactionOptions::default())
+            }
+            SwapKind::ChainLbtcToBtc => {
+                let resp: CreateChainResponse = boltz_response(r)?;
+                let script = SwapScript::chain_from_swap_resp(
+                    bchain,
+                    Side::Claim,
+                    resp.claim_details.clone(),
+                    pk,
+                )
+                .map_err(rail)?;
+                // Boltz's claim of the sender's L-BTC needs our refund key's
+                // partial signature in exchange for its signature on ours.
+                let refund_index = r
+                    .refund_key_index
+                    .ok_or_else(|| Error::Storage("chain swap without refund key".into()))?;
+                let refund_keys = self.keys.keypair(refund_index)?;
+                let refund_pk = PublicKey {
+                    compressed: true,
+                    inner: refund_keys.public_key(),
+                };
+                let lockup_script = SwapScript::chain_from_swap_resp(
+                    Chain::Liquid(self.lchain),
+                    Side::Lockup,
+                    resp.lockup_details.clone(),
+                    refund_pk,
+                )
+                .map_err(rail)?;
+                let txid = self
+                    .api
+                    .get_chain_txs(&r.id)
+                    .await
+                    .map_err(rail)?
+                    .server_lock
+                    .ok_or_else(|| rail("Boltz hasn't locked its side yet"))?
+                    .transaction
+                    .id;
+                (
+                    script,
+                    txid,
+                    TransactionOptions::default().with_chain_claim(refund_keys, lockup_script),
+                )
+            }
+            _ => {
+                return Err(Error::Unsupported(format!(
+                    "claim a {:?} swap on Bitcoin",
+                    r.kind
+                )))
+            }
+        };
+
+        // Only reveal the preimage once Boltz's lockup is confirmed in our
+        // own view of the chain; afterwards we must finish the claim regardless.
+        if !r.preimage_revealed
+            && !self
+                .bitcoin
+                .tx_confirmed(&lockup_txid)
+                .await
+                .map_err(rail)?
+        {
+            return Ok(());
+        }
+        let txid = boltz_client::bitcoin::Txid::from_str(&lockup_txid)
+            .map_err(|e| rail(format!("bad lockup txid: {e}")))?;
+        let bitcoin = self
+            .chain
+            .bitcoin_client()
+            .ok_or_else(|| rail("no Bitcoin client"))?;
+        let lockup_tx = bitcoin.get_tx(txid).await.map_err(rail)?;
+        let target = if bump {
+            BTC_BUMP_TARGET_BLOCKS
+        } else {
+            BTC_CLAIM_TARGET_BLOCKS
+        };
+        let current = match (self.btc_fee_rate(target).await, r.claim_fee_rate) {
+            (Ok(rate), _) => rate,
+            // No estimate right now: a re-sign can reuse the last rate.
+            (Err(_), Some(prev)) => prev,
+            (Err(e), None) => return Err(e),
+        };
+        let rate = fees::btc_claim_rate(current, r.claim_fee_rate, bump);
+
+        let destination = r
+            .destination
+            .clone()
+            .ok_or_else(|| Error::Storage("swap without destination".into()))?;
+        let dest_spk = self.parse_btc(&destination)?.script_pubkey();
+        r.preimage_revealed = true;
+        self.put(r).await?;
+
+        let params = |cooperative: bool| SwapTransactionParams {
+            keys,
+            output_address: destination.clone(),
+            fee: Fee::Relative(rate),
+            swap_id: r.id.clone(),
+            chain_client: &self.chain,
+            boltz_client: &self.api,
+            options: Some(
+                options
+                    .clone()
+                    .with_lockup_tx(BtcLikeTransaction::bitcoin(lockup_tx.clone()))
+                    .with_cooperative(cooperative),
+            ),
+        };
+        // Cooperative key-path claim first; the script path needs nobody's help.
+        let tx = match script.construct_claim(&preimage, params(true)).await {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!(swap = %r.id, "cooperative claim failed, using script path: {e}");
+                script
+                    .construct_claim(&preimage, params(false))
+                    .await
+                    .map_err(rail)?
+            }
+        };
+        let tx = tx
+            .as_bitcoin()
+            .ok_or_else(|| rail("claim is not a Bitcoin transaction"))?
+            .clone();
+        let paid = tx
+            .output
+            .iter()
+            .filter(|o| o.script_pubkey == dest_spk)
+            .map(|o| o.value.to_sat())
+            .sum::<Sats>();
+        if paid < fees::BTC_DUST_SAT {
+            return Err(rail("claim transaction doesn't pay our address"));
+        }
+        let input = tx
+            .input
+            .first()
+            .ok_or_else(|| rail("claim transaction has no input"))?;
+        let locked = lockup_tx
+            .output
+            .get(input.previous_output.vout as usize)
+            .map(|o| o.value.to_sat())
+            .ok_or_else(|| rail("claim spends an unknown lockup output"))?;
+        let txid = tx.compute_txid().to_string();
+        let hex = boltz_client::bitcoin::consensus::encode::serialize_hex(&tx);
+
+        r.lockup_outpoint = Some(input.previous_output.to_string());
+        r.claim_txids.push(txid.clone());
+        r.claim_tx_hex = Some(hex.clone());
+        r.claim_fee_sat = Some(locked.saturating_sub(paid));
+        r.claim_fee_rate = Some(rate);
+        r.claim_signed_at = Some(now());
+        r.target_amount_sat = paid;
+        r.phase = Phase::Claiming;
+        self.put(r).await?;
+        self.broadcast(bchain, &hex, &txid).await.map_err(rail)
+    }
+
+    /// L-BTC → BTC chain swap whose sender locked a different amount than
+    /// agreed. Boltz offers a new BTC amount; accept it only if it's what
+    /// Boltz's advertised fees give for what was actually locked. Until it's
+    /// accepted (or the swap expires and needs a rescue), retry every tick.
+    async fn requote(&self, r: &mut SwapRecord) -> Result<()> {
+        if r.kind != SwapKind::ChainLbtcToBtc || r.accepted_quote_sat.is_some() {
+            return Ok(());
+        }
+        r.payer_locked = true;
+        let resp: CreateChainResponse = boltz_response(r)?;
+        let paid = self.user_lockup_amount(&r.id, &resp).await?;
+        let pairs = self.api.get_chain_pairs().await.map_err(rail)?;
+        let pair = pairs
+            .get_lbtc_to_btc_pair()
+            .ok_or_else(|| rail("Boltz isn't offering Liquid → on-chain swaps right now"))?;
+        fees::check_limits(
+            paid,
+            pair.limits.minimal,
+            pair.limits.maximal,
+            "The L-BTC sent",
+        )?;
+        let claim_fee = r
+            .claim_fee_sat
+            .unwrap_or_else(|| fees::btc_claim_fee(pair.fees.miner_fees.user.claim, 1.0));
+        let q = fees::quote_payer_pays(
+            paid,
+            pair.fees.percentage,
+            pair.fees.miner_fees.server,
+            claim_fee,
+        )?;
+        let offered = self
+            .api
+            .get_quote(&r.id)
+            .await
+            .map_err(|e| {
+                rail(format!(
+                    "Boltz has no new quote for the {paid} sats sent: {e}"
+                ))
+            })?
+            .amount;
+        fees::check_boltz_lock(&q, offered, paid)?;
+        // Journal the new amounts first: the claim checks Boltz's lockup
+        // against `claimDetails.amount`. If accepting fails we retry; if it
+        // succeeded without us hearing back, the journal already matches.
+        r.pay_amount_sat = paid;
+        r.target_amount_sat = offered.saturating_sub(claim_fee);
+        r.boltz_response["claimDetails"]["amount"] = serde_json::json!(offered);
+        self.put(r).await?;
+        self.api
+            .accept_quote(&r.id, offered)
+            .await
+            .map_err(|e| rail(format!("couldn't accept Boltz's new quote: {e}")))?;
+        r.accepted_quote_sat = Some(offered);
+        Ok(())
+    }
+
+    /// L-BTC the outside sender actually locked in a chain swap.
+    async fn user_lockup_amount(&self, id: &str, resp: &CreateChainResponse) -> Result<Sats> {
+        let lock = self
+            .api
+            .get_chain_txs(id)
+            .await
+            .map_err(rail)?
+            .user_lock
+            .ok_or_else(|| rail("Boltz hasn't seen the sender's lockup"))?;
+        let txid = elements::Txid::from_str(&lock.transaction.id)
+            .map_err(|e| rail(format!("bad lockup txid: {e}")))?;
+        let tx = self
+            .chain
+            .liquid_client()
+            .ok_or_else(|| rail("no Liquid client"))?
+            .get_tx(txid)
+            .await
+            .map_err(rail)?;
+        let spk = self
+            .parse_liquid(&resp.lockup_details.lockup_address)?
+            .script_pubkey();
+        let key = resp
+            .lockup_details
+            .blinding_key
+            .as_deref()
+            .ok_or_else(|| rail("Boltz gave no blinding key for the Liquid lockup"))?;
+        let key = elements::secp256k1_zkp::SecretKey::from_str(key)
+            .map_err(|e| rail(format!("bad lockup blinding key: {e}")))?;
+        lockup_value(&tx, &spk, key, self.lchain.bitcoin())
+    }
+
+    /// The Liquid lockup an outside sender pays (submarine and L-BTC → BTC).
+    fn liquid_lockup_address(&self, r: &SwapRecord) -> Result<String> {
+        match r.kind {
+            SwapKind::Submarine => Ok(boltz_response::<CreateSubmarineResponse>(r)?.address),
+            SwapKind::ChainLbtcToBtc => Ok(boltz_response::<CreateChainResponse>(r)?
+                .lockup_details
+                .lockup_address),
+            other => Err(Error::Unsupported(format!(
+                "find a Liquid lockup for a {other:?} swap"
+            ))),
+        }
+    }
+
     async fn check_claim(&self, r: &mut SwapRecord) -> Result<()> {
         let outpoint = r
             .lockup_outpoint
             .clone()
             .ok_or_else(|| Error::Storage("claiming without lockup outpoint".into()))?;
-        match self.liquid.outspend(&outpoint).await.map_err(rail)? {
+        let on_bitcoin = r.kind.claims_on_bitcoin();
+        let (esplora, chain) = if on_bitcoin {
+            (&self.bitcoin, Chain::Bitcoin(self.bchain))
+        } else {
+            (&self.liquid, Chain::Liquid(self.lchain))
+        };
+        match esplora.outspend(&outpoint).await.map_err(rail)? {
             Spend::SpentBy { txid, confirmed } if r.claim_txids.contains(&txid) => {
                 if confirmed {
                     r.phase = Phase::Complete;
+                } else if on_bitcoin && Self::claim_stale(r) {
+                    // Stuck in the mempool: Boltz can refund its lockup after
+                    // the timeout, so outbid ourselves (the claim is RBF).
+                    tracing::info!(swap = %r.id, "BTC claim unconfirmed; bumping its fee");
+                    return self.claim_btc(r, true).await;
                 }
                 Ok(())
             }
@@ -752,16 +1497,13 @@ impl BoltzSwaps {
             Spend::Unspent => {
                 let (hex, txid) = match (&r.claim_tx_hex, r.claim_txids.last()) {
                     (Some(h), Some(t)) => (h.clone(), t.clone()),
-                    _ => return self.claim(r).await,
+                    _ => return self.claim_any(r).await,
                 };
-                match self
-                    .broadcast(Chain::Liquid(self.lchain), &hex, &txid)
-                    .await
-                {
+                match self.broadcast(chain, &hex, &txid).await {
                     Ok(()) => Ok(()),
                     Err(Broadcast::Rejected(e)) => {
                         tracing::warn!(swap = %r.id, "claim rejected ({e}); re-signing");
-                        self.claim(r).await
+                        self.claim_any(r).await
                     }
                     Err(e) => Err(rail(e)),
                 }
@@ -887,14 +1629,40 @@ impl BoltzSwaps {
             .clone()
             .ok_or_else(|| rail("no Liquid refund address set"))?;
         let dest_spk = self.parse_liquid(&refund_address)?.script_pubkey();
-        let keys = self.keys.keypair(r.key_index)?;
+        let lchain = Chain::Liquid(self.lchain);
+        // The key that can refund the sender's L-BTC lockup.
+        let key_index = match r.kind {
+            SwapKind::Submarine => r.key_index,
+            _ => r
+                .refund_key_index
+                .ok_or_else(|| Error::Storage("chain swap without refund key".into()))?,
+        };
+        let keys = self.keys.keypair(key_index)?;
         let pk = PublicKey {
             compressed: true,
             inner: keys.public_key(),
         };
-        let resp: CreateSubmarineResponse = boltz_response(r)?;
-        let script = SwapScript::submarine_from_swap_resp(Chain::Liquid(self.lchain), &resp, pk)
-            .map_err(rail)?;
+        let (script, timeout) = match r.kind {
+            SwapKind::Submarine => {
+                let resp: CreateSubmarineResponse = boltz_response(r)?;
+                let script =
+                    SwapScript::submarine_from_swap_resp(lchain, &resp, pk).map_err(rail)?;
+                (script, resp.timeout_block_height)
+            }
+            SwapKind::ChainLbtcToBtc => {
+                let resp: CreateChainResponse = boltz_response(r)?;
+                let timeout = u64::from(resp.lockup_details.timeout_block_height);
+                let script =
+                    SwapScript::chain_from_swap_resp(lchain, Side::Lockup, resp.lockup_details, pk)
+                        .map_err(rail)?;
+                (script, timeout)
+            }
+            other => {
+                return Err(Error::Unsupported(format!(
+                    "refund a {other:?} swap on Liquid"
+                )))
+            }
+        };
         let params = |cooperative: bool| SwapTransactionParams {
             keys,
             output_address: refund_address.clone(),
@@ -908,10 +1676,9 @@ impl BoltzSwaps {
             Ok(tx) => tx,
             Err(e) => {
                 let tip = self.liquid.tip_height().await.map_err(rail)?;
-                if u64::from(tip) < resp.timeout_block_height {
+                if u64::from(tip) < timeout {
                     return Err(rail(format!(
-                        "Boltz didn't co-sign the refund ({e}); it can be refunded alone after Liquid block {}",
-                        resp.timeout_block_height
+                        "Boltz didn't co-sign the refund ({e}); it can be refunded alone after Liquid block {timeout}"
                     )));
                 }
                 script.construct_refund(params(false)).await.map_err(rail)?
@@ -946,9 +1713,10 @@ impl BoltzSwaps {
     }
 
     async fn check_refund(&self, r: &mut SwapRecord) -> Result<()> {
-        let (esplora, chain) = match r.kind {
-            SwapKind::Submarine => (&self.liquid, Chain::Liquid(self.lchain)),
-            _ => (&self.bitcoin, Chain::Bitcoin(self.bchain)),
+        let (esplora, chain) = if r.kind.refunds_on_liquid() {
+            (&self.liquid, Chain::Liquid(self.lchain))
+        } else {
+            (&self.bitcoin, Chain::Bitcoin(self.bchain))
         };
         let mut all_confirmed = true;
         let mut unspent = false;
@@ -995,24 +1763,25 @@ impl BoltzSwaps {
         if !rebuild {
             return Ok(());
         }
-        match r.kind {
-            SwapKind::Submarine => self.refund_liquid(r).await,
-            _ => self.refund_btc(r).await,
+        if r.kind.refunds_on_liquid() {
+            self.refund_liquid(r).await
+        } else {
+            self.refund_btc(r).await
         }
     }
 
     /// Incoming swap that needs a manual refund: notice if it was rescued elsewhere.
     async fn check_rescue(&self, r: &mut SwapRecord) -> Result<()> {
-        let resp: CreateSubmarineResponse = boltz_response(r)?;
+        let lockup = self.liquid_lockup_address(r)?;
         let empty = self
             .liquid
-            .address_utxos_empty(&resp.address)
+            .address_utxos_empty(&lockup)
             .await
             .map_err(rail)?;
         if empty
             && self
                 .liquid
-                .address_has_history(&resp.address)
+                .address_has_history(&lockup)
                 .await
                 .map_err(rail)?
         {
@@ -1067,8 +1836,14 @@ impl SwapProvider for BoltzSwaps {
         ]
     }
 
+    /// Liquid → Lightning comes first: `Wallet::receive` prefers it for
+    /// accounts that take invoices, and uses the on-chain bridges otherwise.
     fn receive_bridges(&self) -> Vec<(Method, Method)> {
-        vec![(Method::LiquidAddress, Method::Bolt11)]
+        vec![
+            (Method::LiquidAddress, Method::Bolt11),
+            (Method::Bolt11, Method::BitcoinAddress),
+            (Method::LiquidAddress, Method::BitcoinAddress),
+        ]
     }
 
     async fn bridge_payment(
@@ -1095,124 +1870,88 @@ impl SwapProvider for BoltzSwaps {
     }
 
     async fn bridge_receive(&self, ours: ReceiveTarget, outside: Method) -> Result<ReceiveTarget> {
-        if outside != Method::LiquidAddress || ours.method != Method::Bolt11 {
-            return Err(Error::Unsupported(format!(
+        match (outside, ours.method) {
+            (Method::LiquidAddress, Method::Bolt11) => self.receive_lbtc_to_ln(ours).await,
+            (Method::Bolt11 | Method::LiquidAddress, Method::BitcoinAddress) => {
+                // Checked before any network call or key use.
+                let amount = ours
+                    .amount_sat
+                    .filter(|a| *a > 0)
+                    .ok_or(Error::AmountRequired)?;
+                let address = self
+                    .parse_btc(btc_address_from_request(&ours.request))?
+                    .to_string();
+                if outside == Method::Bolt11 {
+                    self.receive_ln_to_btc(address, amount).await
+                } else {
+                    self.receive_lbtc_to_btc(address, amount).await
+                }
+            }
+            _ => Err(Error::Unsupported(format!(
                 "receive {outside:?} into {:?}",
                 ours.method
-            )));
+            ))),
         }
-        let raw = ours.request.trim();
-        let invoice = if raw.len() > 10 && raw[..10].eq_ignore_ascii_case("lightning:") {
-            &raw[10..]
-        } else {
-            raw
+    }
+
+    async fn receive_quote(
+        &self,
+        outside: Method,
+        ours: Method,
+        amount_sat: Option<Sats>,
+    ) -> Result<Option<ReceiveQuote>> {
+        let q = match (outside, ours) {
+            (Method::Bolt11, Method::BitcoinAddress) => {
+                let pairs = self.api.get_reverse_pairs().await.map_err(rail)?;
+                let pair = pairs.get_btc_to_btc_pair().ok_or_else(|| {
+                    rail("Boltz isn't offering Lightning → on-chain swaps right now")
+                })?;
+                let rate = self.btc_fee_rate(BTC_CLAIM_TARGET_BLOCKS).await?;
+                let claim = fees::btc_claim_fee(pair.fees.miner_fees.claim, rate);
+                fees::receive_quote(
+                    pair.limits.minimal,
+                    pair.limits.maximal,
+                    pair.fees.percentage,
+                    pair.fees.miner_fees.lockup.saturating_add(claim),
+                    amount_sat,
+                    true,
+                )
+            }
+            (Method::LiquidAddress, Method::BitcoinAddress) => {
+                let pairs = self.api.get_chain_pairs().await.map_err(rail)?;
+                let pair = pairs.get_lbtc_to_btc_pair().ok_or_else(|| {
+                    rail("Boltz isn't offering Liquid → on-chain swaps right now")
+                })?;
+                let rate = self.btc_fee_rate(BTC_CLAIM_TARGET_BLOCKS).await?;
+                let claim = fees::btc_claim_fee(pair.fees.miner_fees.user.claim, rate);
+                fees::receive_quote(
+                    pair.limits.minimal,
+                    pair.limits.maximal,
+                    pair.fees.percentage,
+                    pair.fees.miner_fees.server.saturating_add(claim),
+                    amount_sat,
+                    true,
+                )
+            }
+            // The amount here is the invoice amount we receive; the sender
+            // pays the fees on top (see `receive_lbtc_to_ln`).
+            (Method::LiquidAddress, Method::Bolt11) => {
+                let pairs = self.api.get_submarine_pairs().await.map_err(rail)?;
+                let pair = pairs.get_lbtc_to_btc_pair().ok_or_else(|| {
+                    rail("Boltz isn't offering Liquid → Lightning swaps right now")
+                })?;
+                fees::receive_quote(
+                    pair.limits.minimal,
+                    pair.limits.maximal,
+                    pair.fees.percentage,
+                    pair.fees.miner_fees,
+                    amount_sat,
+                    false,
+                )
+            }
+            _ => return Ok(None),
         };
-        let invoice = invoice.to_ascii_lowercase();
-        let (inv, amount) = self.parse_invoice(&invoice)?;
-        let t = now();
-        // Leave Boltz a few minutes to see the lockup and pay before the invoice dies.
-        let inv_expiry = inv
-            .expires_at()
-            .map(|d| d.as_secs())
-            .unwrap_or(t)
-            .saturating_sub(5 * 60);
-        if inv_expiry < t + MIN_RECEIVE_WINDOW_SECS {
-            return Err(rail(
-                "the Lightning invoice expires too soon to receive over Liquid",
-            ));
-        }
-
-        let pairs = self.api.get_submarine_pairs().await.map_err(rail)?;
-        let pair = pairs
-            .get_lbtc_to_btc_pair()
-            .ok_or_else(|| rail("Boltz isn't offering Liquid → Lightning swaps right now"))?;
-        fees::check_limits(
-            amount,
-            pair.limits.minimal,
-            pair.limits.maximal,
-            "A Liquid → Lightning swap",
-        )?;
-        let max_fee = fees::submarine_max_fee(amount, pair.fees.percentage, pair.fees.miner_fees)?;
-
-        let index = self.alloc_indices(1).await?;
-        let refund_pk = self.keys.public_key(index)?;
-        let resp = self
-            .api
-            .post_swap_req(&CreateSubmarineRequest {
-                from: "L-BTC".into(),
-                to: "BTC".into(),
-                invoice: invoice.clone(),
-                refund_public_key: refund_pk,
-                pair_hash: Some(pair.hash.clone()),
-                referral_id: None,
-                webhook: None,
-            })
-            .await
-            .map_err(rail)?;
-        // Checks the script pays to our invoice's hash, refunds to our key, and matches the address.
-        resp.validate(&invoice, &refund_pk, Chain::Liquid(self.lchain))
-            .map_err(rail)?;
-        if resp.expected_amount <= amount || resp.expected_amount - amount > max_fee {
-            return Err(rail(format!(
-                "Boltz asked for {} sats to pay a {amount} sat invoice (max fee {max_fee})",
-                resp.expected_amount
-            )));
-        }
-        self.parse_liquid(&resp.address)?;
-        // Stop showing the address well before Boltz's timeout (Liquid: ~1 block/minute).
-        let tip = self.liquid.tip_height().await.map_err(rail)?;
-        let blocks_left = resp.timeout_block_height.saturating_sub(u64::from(tip));
-        let expires_at = inv_expiry.min(t + blocks_left * 60 / 2);
-        if expires_at < t + MIN_RECEIVE_WINDOW_SECS {
-            return Err(rail("Boltz's swap window is too short"));
-        }
-
-        let record = SwapRecord {
-            id: resp.id.clone(),
-            kind: SwapKind::Submarine,
-            key_index: index,
-            refund_key_index: None,
-            preimage_hash: None,
-            created_at: t,
-            target_amount_sat: amount,
-            pay_amount_sat: resp.expected_amount,
-            claim_fee_sat: None,
-            destination: None,
-            refund_address: None,
-            invoice: Some(invoice),
-            boltz_response: serde_json::to_value(&resp)
-                .map_err(|e| Error::Storage(e.to_string()))?,
-            boltz_status: None,
-            phase: Phase::Pending,
-            payer_locked: false,
-            preimage_revealed: false,
-            lockup_outpoint: None,
-            claim_txids: vec![],
-            claim_tx_hex: None,
-            refund_outpoints: vec![],
-            refund_txids: vec![],
-            refund_tx_hex: None,
-            refund_broadcast_at: None,
-            cooperated: false,
-            ended_at: None,
-            last_error: None,
-            updated_at: t,
-        };
-        self.put(&record).await?;
-        Ok(ReceiveTarget {
-            method: Method::LiquidAddress,
-            request: fees::liquid_bip21(
-                &resp.address,
-                resp.expected_amount,
-                &self.lchain.bitcoin().to_string(),
-            ),
-            amount_sat: Some(resp.expected_amount),
-            fee_sat: Some(resp.expected_amount - amount),
-            expires_at: Some(expires_at),
-            // Settlement arrives as a Lightning payment to our own invoice, so
-            // keep the account's watch id; the swap is tracked by `tick`.
-            watch_id: ours.watch_id.clone(),
-        })
+        Ok(Some(q))
     }
 
     async fn tick(&self) -> Result<Vec<SwapStatus>> {
@@ -1302,7 +2041,11 @@ mod tests {
             .contains(&(Method::LiquidAddress, Method::BitcoinAddress)));
         assert_eq!(
             b.receive_bridges(),
-            vec![(Method::LiquidAddress, Method::Bolt11)]
+            vec![
+                (Method::LiquidAddress, Method::Bolt11),
+                (Method::Bolt11, Method::BitcoinAddress),
+                (Method::LiquidAddress, Method::BitcoinAddress),
+            ]
         );
     }
 
@@ -1337,19 +2080,53 @@ mod tests {
                 .await,
             Err(Error::AmountRequired)
         ));
-        // Wrong receive combination.
-        let ours = ReceiveTarget {
-            method: Method::BitcoinAddress,
-            request: "bc1q".into(),
-            amount_sat: None,
+        let ours = |method: Method, request: &str, amount_sat: Option<Sats>| ReceiveTarget {
+            method,
+            request: request.into(),
+            amount_sat,
             fee_sat: None,
             expires_at: None,
             watch_id: None,
         };
-        assert!(matches!(
-            b.bridge_receive(ours, Method::LiquidAddress).await,
-            Err(Error::Unsupported(_))
-        ));
+        const ADDR: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        // Wrong receive combinations.
+        for (m, outside) in [
+            (Method::SparkAddress, Method::LiquidAddress),
+            (Method::BitcoinAddress, Method::SparkAddress),
+            (Method::Bolt11, Method::Bolt11),
+        ] {
+            assert!(matches!(
+                b.bridge_receive(ours(m, ADDR, Some(50_000)), outside).await,
+                Err(Error::Unsupported(_))
+            ));
+        }
+        for outside in [Method::Bolt11, Method::LiquidAddress] {
+            // On-chain bridges need the payer's amount.
+            for amount in [None, Some(0)] {
+                assert!(matches!(
+                    b.bridge_receive(ours(Method::BitcoinAddress, ADDR, amount), outside)
+                        .await,
+                    Err(Error::AmountRequired)
+                ));
+            }
+            // A regtest address can't receive a mainnet swap.
+            assert!(matches!(
+                b.bridge_receive(
+                    ours(
+                        Method::BitcoinAddress,
+                        "bitcoin:bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080?amount=0.001",
+                        Some(100_000)
+                    ),
+                    outside
+                )
+                .await,
+                Err(Error::Network(_))
+            ));
+            assert!(b
+                .bridge_receive(ours(Method::BitcoinAddress, "bc1q", Some(100_000)), outside)
+                .await
+                .is_err());
+        }
         // Nothing was journaled.
         assert!(b.swaps().await.is_empty());
         assert!(!Store::path(dir.path()).exists());
@@ -1381,6 +2158,82 @@ mod tests {
             .to_string()
             .contains("confidential"));
         assert!(b.parse_liquid(&regtest).is_err());
+    }
+
+    #[test]
+    fn address_from_bip21() {
+        const A: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        assert_eq!(btc_address_from_request(A), A);
+        assert_eq!(btc_address_from_request(&format!("  {A}\n")), A);
+        assert_eq!(btc_address_from_request(&format!("bitcoin:{A}")), A);
+        assert_eq!(
+            btc_address_from_request(&format!(
+                "BITCOIN:{}?amount=0.001&pj=https://x.example/abc",
+                A.to_uppercase()
+            )),
+            A.to_uppercase()
+        );
+        assert_eq!(
+            btc_address_from_request("bitcoin:1BoatSLRHtKNngkdXEeobR76b53LETtpyT?label=x"),
+            "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
+        );
+        // Multi-byte input never panics.
+        assert_eq!(btc_address_from_request("bitcoin€x"), "bitcoin€x");
+
+        let dir = tempfile::tempdir().unwrap();
+        let b = BoltzSwaps::new(cfg(Network::Bitcoin, dir.path())).unwrap();
+        // The upper-case QR form parses and normalises to lower case.
+        let parsed = b
+            .parse_btc(btc_address_from_request(&format!(
+                "bitcoin:{}?amount=1",
+                A.to_uppercase()
+            )))
+            .unwrap();
+        assert_eq!(parsed.to_string(), A);
+        // Base58 is case-sensitive and still works.
+        assert!(b.parse_btc("1BoatSLRHtKNngkdXEeobR76b53LETtpyT").is_ok());
+        assert!(matches!(
+            b.parse_btc("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"),
+            Err(Error::Network(_))
+        ));
+        assert!(b.parse_btc("bc1qnope").is_err());
+    }
+
+    #[test]
+    fn liquid_lockup_value() {
+        use boltz_client::elements::confidential::{Asset, Nonce, Value};
+        let lbtc = LiquidChain::Liquid.bitcoin();
+        let spk = elements::Script::from(vec![0x51]);
+        let other = elements::Script::from(vec![0x52]);
+        let out = |value: u64, asset: elements::AssetId, spk: &elements::Script| elements::TxOut {
+            asset: Asset::Explicit(asset),
+            value: Value::Explicit(value),
+            nonce: Nonce::Null,
+            script_pubkey: spk.clone(),
+            witness: Default::default(),
+        };
+        let tx = |outputs: Vec<elements::TxOut>| elements::Transaction {
+            version: 2,
+            lock_time: elements::LockTime::ZERO,
+            input: vec![],
+            output: outputs,
+        };
+        let key = elements::secp256k1_zkp::SecretKey::from_slice(&[7u8; 32]).unwrap();
+        assert_eq!(
+            lockup_value(
+                &tx(vec![out(5_000, lbtc, &other), out(60_000, lbtc, &spk)]),
+                &spk,
+                key,
+                lbtc
+            )
+            .unwrap(),
+            60_000
+        );
+        // Nothing paid to the lockup.
+        assert!(lockup_value(&tx(vec![out(5_000, lbtc, &other)]), &spk, key, lbtc).is_err());
+        // Some other asset.
+        let usdt = elements::AssetId::from_slice(&[9u8; 32]).unwrap();
+        assert!(lockup_value(&tx(vec![out(60_000, usdt, &spk)]), &spk, key, lbtc).is_err());
     }
 
     #[test]

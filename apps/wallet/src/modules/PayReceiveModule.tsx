@@ -19,7 +19,7 @@ export function PayReceiveModule({ module }: ModuleProps) {
       {canMove && !small && (
         <button className="btn" onClick={() => open({ name: "move" })}>
           <Icon name="swap" size={22} />
-          Move
+          Transfer
         </button>
       )}
     </div>

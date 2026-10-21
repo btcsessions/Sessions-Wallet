@@ -206,6 +206,27 @@ pub struct ReceiveTarget {
     pub watch_id: Option<String>,
 }
 
+/// What it costs to receive into an account through a swap, before anything
+/// is created. Every amount is in sats and refers to the amount the user
+/// enters in [`crate::Wallet::receive`] for that method.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiveQuote {
+    /// Who does the swap, e.g. "Boltz".
+    pub provider: String,
+    pub min_sat: Sats,
+    pub max_sat: Sats,
+    /// The provider's percentage fee, e.g. `0.25` for 0.25 %.
+    pub fee_percent: f64,
+    /// Fixed network fees: the provider's miner fees plus our estimated
+    /// claim transaction fee.
+    pub network_fee_sat: Sats,
+    /// Total fee for the requested amount, when one was given.
+    pub total_fee_sat: Option<Sats>,
+    /// What arrives in the account for the requested amount, when one was given.
+    pub receive_sat: Option<Sats>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReceiveRequest {

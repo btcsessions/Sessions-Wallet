@@ -97,6 +97,8 @@ pub fn run() {
             commands::payjoin_receive,
             commands::set_payjoin_receive,
             commands::inspect_descriptor,
+            commands::account_details,
+            commands::receive_quote,
             commands::trezor_sign_request,
             commands::trezor_merge,
         ])

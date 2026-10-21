@@ -391,21 +391,71 @@ impl Wallet {
                 })
                 .await;
         }
-        for s in self.swaps.read().await.iter() {
-            for (outside, ours) in s.receive_bridges() {
-                if outside == method && info.receives.contains(&ours) {
-                    let inner = rail
-                        .receive(ReceiveRequest {
-                            method: ours,
-                            amount_sat,
-                            description: description.clone(),
-                        })
-                        .await?;
-                    return s.bridge_receive(inner, outside).await;
-                }
-            }
+        let (swap, ours) = self
+            .receive_bridge(&info, method)
+            .await
+            .ok_or_else(|| Error::Unsupported(format!("receive via {method:?}")))?;
+        let inner = if ours == Method::BitcoinAddress {
+            // The swap claims to a plain address of this account. Ask for it
+            // without an amount: what lands is the payer's amount minus swap
+            // fees, and an amount would only start a pointless payjoin session.
+            let mut t = rail
+                .receive(ReceiveRequest {
+                    method: ours,
+                    amount_sat: None,
+                    description,
+                })
+                .await?;
+            t.amount_sat = amount_sat;
+            t
+        } else {
+            rail.receive(ReceiveRequest {
+                method: ours,
+                amount_sat,
+                description,
+            })
+            .await?
+        };
+        swap.bridge_receive(inner, method).await
+    }
+
+    /// Limits and fees for receiving `method` into `into` through a swap.
+    /// `None` when the account receives `method` natively (no swap needed)
+    /// or the provider can't quote it.
+    pub async fn receive_quote(
+        &self,
+        into: &AccountId,
+        method: Method,
+        amount_sat: Option<Sats>,
+    ) -> Result<Option<ReceiveQuote>> {
+        let info = self.account(into).await?.info().await?;
+        if info.receives.contains(&method) {
+            return Ok(None);
         }
-        Err(Error::Unsupported(format!("receive via {method:?}")))
+        let (swap, ours) = self
+            .receive_bridge(&info, method)
+            .await
+            .ok_or_else(|| Error::Unsupported(format!("receive via {method:?}")))?;
+        swap.receive_quote(method, ours, amount_sat).await
+    }
+
+    /// The swap bridge `receive` uses for `method` into this account. Prefers
+    /// bridges into an instant method (e.g. Liquid → our Lightning invoice)
+    /// over bridges into an on-chain address, then provider order.
+    async fn receive_bridge(
+        &self,
+        info: &AccountInfo,
+        method: Method,
+    ) -> Option<(Arc<dyn SwapProvider>, Method)> {
+        let swaps = self.swaps.read().await;
+        let candidates = swaps.iter().flat_map(|s| {
+            s.receive_bridges()
+                .into_iter()
+                .filter(|(outside, ours)| *outside == method && info.receives.contains(ours))
+                .map(move |(_, ours)| (s.clone(), ours))
+        });
+        // `min_by_key` keeps the first of equal keys, so provider order breaks ties.
+        candidates.min_by_key(|(_, ours)| *ours == Method::BitcoinAddress)
     }
 
     /// Redeem a bearer token (Cashu). Tries the chosen account, or every ecash
@@ -585,7 +635,13 @@ mod tests {
             vec![(Method::LiquidAddress, Method::Bolt11)]
         }
         fn receive_bridges(&self) -> Vec<(Method, Method)> {
-            vec![(Method::LiquidAddress, Method::Bolt11)]
+            // On-chain bridges listed first on purpose: selection must not
+            // depend on this order.
+            vec![
+                (Method::Bolt11, Method::BitcoinAddress),
+                (Method::LiquidAddress, Method::BitcoinAddress),
+                (Method::LiquidAddress, Method::Bolt11),
+            ]
         }
         async fn bridge_payment(
             &self,
@@ -606,13 +662,34 @@ mod tests {
         async fn bridge_receive(
             &self,
             ours: ReceiveTarget,
-            _outside: Method,
+            outside: Method,
         ) -> Result<ReceiveTarget> {
+            let prefix = match outside {
+                Method::LiquidAddress => "lq1lockup",
+                Method::Bolt11 => "lnbc1hold",
+                m => return Err(Error::Unsupported(format!("{m:?}"))),
+            };
             Ok(ReceiveTarget {
-                method: Method::LiquidAddress,
-                request: format!("lq1lockup-for-{}", ours.request),
+                method: outside,
+                request: format!("{prefix}-for-{:?}-{}", ours.method, ours.request),
                 ..ours
             })
+        }
+        async fn receive_quote(
+            &self,
+            outside: Method,
+            ours: Method,
+            amount_sat: Option<Sats>,
+        ) -> Result<Option<ReceiveQuote>> {
+            Ok(Some(ReceiveQuote {
+                provider: format!("{outside:?}->{ours:?}"),
+                min_sat: 25_000,
+                max_sat: 25_000_000,
+                fee_percent: 0.5,
+                network_fee_sat: 500,
+                total_fee_sat: amount_sat.map(|a| a / 200 + 500),
+                receive_sat: amount_sat.map(|a| a - a / 200 - 500),
+            }))
         }
         async fn tick(&self) -> Result<Vec<SwapStatus>> {
             Ok(vec![])
@@ -731,7 +808,103 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(t.method, Method::LiquidAddress);
-        assert!(t.request.starts_with("lq1lockup-for-lnbc1spending"));
+        assert!(
+            t.request.starts_with("lq1lockup-for-Bolt11-lnbc1spending"),
+            "{}",
+            t.request
+        );
+    }
+
+    #[tokio::test]
+    async fn onchain_account_receives_lightning_and_liquid_via_its_address() {
+        let (w, _, _) = wallet().await;
+        for (method, prefix) in [
+            (Method::Bolt11, "lnbc1hold"),
+            (Method::LiquidAddress, "lq1lockup"),
+        ] {
+            let t = w
+                .receive(&"savings".into(), method, Some(50_000), None)
+                .await
+                .unwrap();
+            assert_eq!(t.method, method);
+            assert_eq!(
+                t.request,
+                format!("{prefix}-for-BitcoinAddress-bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq")
+            );
+            // The payer's amount reaches the provider even though the address
+            // itself was requested without one.
+            assert_eq!(t.amount_sat, Some(50_000));
+        }
+        // Native methods are never bridged.
+        let t = w
+            .receive(&"savings".into(), Method::BitcoinAddress, None, None)
+            .await
+            .unwrap();
+        assert_eq!(t.request, "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq");
+        // Nothing bridges into an on-chain account from Spark.
+        assert!(matches!(
+            w.receive(&"savings".into(), Method::SparkAddress, Some(1), None)
+                .await,
+            Err(Error::Unsupported(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn receive_quote_follows_the_receive_bridge() {
+        let (w, _, _) = wallet().await;
+        // Native: no swap, no quote.
+        assert_eq!(
+            w.receive_quote(&"spending".into(), Method::Bolt11, Some(1))
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            w.receive_quote(&"savings".into(), Method::BitcoinAddress, None)
+                .await
+                .unwrap(),
+            None
+        );
+        // Spark keeps Liquid → Lightning.
+        let q = w
+            .receive_quote(&"spending".into(), Method::LiquidAddress, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(q.provider, "LiquidAddress->Bolt11");
+        assert_eq!(q.receive_sat, None);
+        // On-chain accounts bridge via their address.
+        let q = w
+            .receive_quote(&"savings".into(), Method::Bolt11, Some(100_000))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(q.provider, "Bolt11->BitcoinAddress");
+        assert_eq!(q.total_fee_sat, Some(1_000));
+        assert_eq!(q.receive_sat, Some(99_000));
+        let q = w
+            .receive_quote(&"savings".into(), Method::LiquidAddress, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(q.provider, "LiquidAddress->BitcoinAddress");
+        assert!(matches!(
+            w.receive_quote(&"savings".into(), Method::CashuToken, None)
+                .await,
+            Err(Error::Unsupported(_))
+        ));
+        let json = serde_json::to_value(&q).unwrap();
+        for k in [
+            "provider",
+            "minSat",
+            "maxSat",
+            "feePercent",
+            "networkFeeSat",
+            "totalFeeSat",
+            "receiveSat",
+        ] {
+            assert!(json.get(k).is_some(), "{k} missing in {json}");
+        }
     }
 
     #[tokio::test]

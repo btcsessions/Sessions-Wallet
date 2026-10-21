@@ -88,6 +88,8 @@ pub struct SparkAccount {
     network: breez_sdk_spark::Network,
     sdk: BreezSdk,
     quotes: Mutex<HashMap<String, PendingQuote>>,
+    /// A background sync is running; don't start another.
+    syncing: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn rail_err(e: SdkError) -> Error {
@@ -145,6 +147,7 @@ impl SparkAccount {
             network,
             sdk,
             quotes: Mutex::new(HashMap::new()),
+            syncing: Default::default(),
         })
     }
 
@@ -359,11 +362,22 @@ impl Rail for SparkAccount {
         })
     }
 
+    /// The SDK keeps itself in sync and tells us when anything changes (see
+    /// `on_change`). A manual sync just nudges it, in the background, so a
+    /// slow Spark operator never holds up (or times out) a refresh.
     async fn sync(&self) -> Result<()> {
-        self.sdk
-            .sync_wallet(SyncWalletRequest {})
-            .await
-            .map_err(rail_err)?;
+        use std::sync::atomic::Ordering;
+        if self.syncing.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let sdk = self.sdk.clone();
+        let flag = self.syncing.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sdk.sync_wallet(SyncWalletRequest {}).await {
+                tracing::info!("spark background sync: {e}");
+            }
+            flag.store(false, Ordering::SeqCst);
+        });
         Ok(())
     }
 
