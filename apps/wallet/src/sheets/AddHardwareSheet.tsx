@@ -8,6 +8,7 @@ import { DEVICES, DeviceIcon, type DeviceDef } from "../hw/devices";
 import { isMobile, trezorDescriptor, trezorDescriptors, type TrezorScript } from "../hw/trezor";
 import { errorText, formatSats } from "../format";
 import { JadeQrUnlock } from "../hw/JadeUnlock";
+import { BitboxProgress, useBitboxProgress } from "../hw/BitboxProgress";
 import { switchMode } from "../state/mode";
 import { useWallet } from "../state/store";
 import { walletHasCard } from "../modules/AccountModule";
@@ -40,6 +41,8 @@ export function AddHardwareSheet() {
   } | null>(null);
   const [adding, setAdding] = useState<number | null>(null);
   const [unlock, setUnlock] = useState(false);
+  const [talking, setTalking] = useState(false);
+  const bitbox = useBitboxProgress(talking && device?.connect === "bitbox");
 
   const inspect = async (text: string) => {
     setError(null);
@@ -51,13 +54,24 @@ export function AddHardwareSheet() {
     }
   };
 
-  const fromTrezor = () =>
+  /** Descriptors for these account numbers from a connected device. */
+  const descriptorsFrom = async (accounts: number[]): Promise<string[]> => {
+    if (device?.connect === "bitbox") return (await api()).bitboxDescriptors(script, accounts);
+    return trezorDescriptors(script, accounts);
+  };
+
+  const fromDevice = () =>
     run(async () => {
       setError(null);
+      setTalking(true);
       try {
-        await inspect(await trezorDescriptor(script, false, Number(accountNo)));
+        const n = Number(accountNo);
+        const [d] = device?.connect === "trezor" ? [await trezorDescriptor(script, false, n)] : await descriptorsFrom([n]);
+        await inspect(d);
       } catch (e) {
         setError(errorText(e));
+      } finally {
+        setTalking(false);
       }
     });
 
@@ -76,20 +90,23 @@ export function AddHardwareSheet() {
       if (!walletHasCard([...all, account], layout, account)) await addModule({ id: `hardware:${account.id}`, size: "small" });
       await refresh();
       notify("ok", `Added ${account.name}`);
-      if (device.connect === "trezor" && accountNo === "0") void lookForMore(account.name);
+      if ((device.connect === "trezor" || device.connect === "bitbox") && accountNo === "0") void lookForMore(account.name);
       else close();
     });
 
   // A Trezor that's been used before may have accounts 2, 3… with coins in them.
   const lookForMore = async (name: string) => {
     setMore({ name, found: null });
+    setTalking(true);
     try {
-      const descs = await trezorDescriptors(script, [1, 2, 3, 4, 5]);
+      const descs = await descriptorsFrom([1, 2, 3, 4, 5]);
       const found = (await (await api()).scanDescriptors(descs)).filter((f) => f.index > 0);
       if (!found.length) return close();
       setMore({ name, found });
     } catch {
       close();
+    } finally {
+      setTalking(false);
     }
   };
 
@@ -127,7 +144,10 @@ export function AddHardwareSheet() {
         }
       >
         {!more.found ? (
-          <p className="empty">Checking your {device?.name} for other accounts with history…</p>
+          <>
+            <BitboxProgress step={bitbox} />
+            <p className="empty">Checking your {device?.name} for other accounts with history…</p>
+          </>
         ) : more.found.length === 0 ? (
           <p className="empty">All added.</p>
         ) : (
@@ -257,6 +277,30 @@ export function AddHardwareSheet() {
     );
   }
 
+  // Address type and account number, for devices we talk to directly.
+  const pickers = advanced && (
+    <div className="group">
+      <SelectRow
+        label="Address type"
+        value={script}
+        onChange={(v) => setScript(v as TrezorScript)}
+        options={[
+          { value: "wpkh", label: "Native SegWit (bc1q)" },
+          { value: "tr", label: "Taproot (bc1p)" },
+        ]}
+      />
+      <SelectRow
+        label="Account"
+        value={accountNo}
+        onChange={setAccountNo}
+        options={Array.from({ length: 10 }, (_, i) => ({
+          value: String(i),
+          label: `Account ${i + 1}`,
+        }))}
+      />
+    </div>
+  );
+
   // Step 2: connect or scan.
   return (
     <Sheet title={device.name} left={back} right={<span />}>
@@ -271,32 +315,24 @@ export function AddHardwareSheet() {
               ? "This opens the Trezor Suite app. Unlock your Trezor there and approve sharing the wallet, and you'll be brought back here."
               : "Open Trezor Suite on this computer and unlock your Trezor. Suite will ask you to allow Sessions Wallet."}
           </p>
-          {advanced && (
-            <div className="group">
-              <SelectRow
-                label="Address type"
-                value={script}
-                onChange={(v) => setScript(v as TrezorScript)}
-                options={[
-                  { value: "wpkh", label: "Native SegWit (bc1q)" },
-                  { value: "tr", label: "Taproot (bc1p)" },
-                ]}
-              />
-              <SelectRow
-                label="Account"
-                value={accountNo}
-                onChange={setAccountNo}
-                options={Array.from({ length: 10 }, (_, i) => ({
-                  value: String(i),
-                  label: `Account ${i + 1}`,
-                }))}
-              />
-            </div>
-          )}
-          <button className="btn primary block" disabled={busy} onClick={fromTrezor}>
+          {pickers}
+          <button className="btn primary block" disabled={busy} onClick={fromDevice}>
             {busy ? "Waiting for Trezor…" : "Connect Trezor"}
           </button>
           {isMobile() && <p className="group-note">Needs the Trezor Suite app, version 26.8 or later.</p>}
+        </>
+      ) : device.connect === "bitbox" ? (
+        <>
+          <p className="notice">
+            {isMobile()
+              ? "Plug your BitBox02 into this phone (USB-C, or with an OTG adapter) and allow access when asked. You'll unlock it with your password on the device."
+              : "Plug your BitBox02 into this computer. You'll unlock it with your password on the device."}
+          </p>
+          {pickers}
+          <BitboxProgress step={bitbox} />
+          <button className="btn primary block" disabled={busy} onClick={fromDevice}>
+            {busy ? "Waiting for BitBox02…" : "Connect BitBox02"}
+          </button>
         </>
       ) : (
         <>

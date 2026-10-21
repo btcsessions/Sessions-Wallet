@@ -9,6 +9,7 @@ import { DeviceIcon, deviceFor } from "../hw/devices";
 import { isMobile, trezorSign } from "../hw/trezor";
 import { errorText } from "../format";
 import { JadeQrUnlock } from "../hw/JadeUnlock";
+import { BitboxProgress, useBitboxProgress } from "../hw/BitboxProgress";
 import { useWallet } from "../state/store";
 
 /** A signed PSBT from whatever the device showed: UR, base64 or hex. */
@@ -27,9 +28,13 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
   const [signed, setSigned] = useState("");
   const [showManual, setShowManual] = useState(false);
   const [unlock, setUnlock] = useState(false);
+  const [talking, setTalking] = useState(false);
+  const bitbox = useBitboxProgress(talking);
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
   const quote = paused.awaitingSignature;
+  const quoteAccount = accounts.find((a) => a.id === quote?.account);
+  const isBitbox = quoteAccount?.custody.type === "hardware" && deviceFor(quoteAccount.custody.device).connect === "bitbox";
   const ns = quote?.needsSignature;
   if (!quote || !ns) return null;
 
@@ -64,6 +69,22 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
       }
     });
 
+  const signWithBitbox = () =>
+    run(async () => {
+      setError(null);
+      setTalking(true);
+      try {
+        const psbt = await (await api()).bitboxSign(ns.psbtBase64);
+        await (await api()).resume(paused, psbt, fee);
+        await refresh();
+        onDone();
+      } catch (e) {
+        setError(errorText(e));
+      } finally {
+        setTalking(false);
+      }
+    });
+
   const more = ns.signaturesNeeded > 1 ? ` and ${ns.signaturesNeeded - 1} more cosigner${ns.signaturesNeeded > 2 ? "s" : ""}` : "";
 
   return (
@@ -83,6 +104,14 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
           </p>
           <button className="btn primary block" disabled={busy} onClick={signWithTrezor}>
             {busy ? "Waiting for Trezor…" : "Sign with Trezor"}
+          </button>
+        </>
+      ) : isBitbox ? (
+        <>
+          <p className="notice">Plug in your {name}. You'll unlock it with your password, then check the amount and address on its screen and confirm.</p>
+          <BitboxProgress step={bitbox} signing />
+          <button className="btn primary block" disabled={busy} onClick={signWithBitbox}>
+            {busy ? "Waiting for BitBox02…" : "Sign with BitBox02"}
           </button>
         </>
       ) : def?.connect === "jade" && unlock ? (
