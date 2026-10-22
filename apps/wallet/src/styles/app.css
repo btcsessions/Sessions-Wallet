@@ -2436,3 +2436,43 @@ button {
 .loading-chip.retrying {
   color: var(--accent-ink, var(--accent));
 }
+
+/* Onboarding choice cards */
+.choice-list {
+  display: grid;
+  gap: 12px;
+  margin: 8px 0 14px;
+}
+.choice-card {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--card);
+  border: 2px solid transparent;
+  color: var(--label-2);
+  font-size: 15px;
+  line-height: 1.4;
+}
+.choice-card strong {
+  color: var(--label);
+  font-size: 18px;
+}
+.choice-card.selected {
+  border-color: var(--accent);
+}
+.choice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.choice-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}

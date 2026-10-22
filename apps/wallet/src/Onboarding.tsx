@@ -84,33 +84,112 @@ export function Lock() {
   );
 }
 
-type Step = "welcome" | "restore" | "passcode" | "confirm" | "phrase";
+type Step = "welcome" | "setup" | "backup" | "restore-choice" | "restore" | "passcode" | "confirm" | "phrase";
+type Backup = "passkey" | "phrase" | "both";
+
+/** A big tappable choice card. */
+function Choice({ title, body, badge, selected, onClick }: { title: string; body: string; badge?: string; selected: boolean; onClick: () => void }) {
+  return (
+    <button className={`choice-card${selected ? " selected" : ""}`} aria-pressed={selected} onClick={onClick}>
+      <span className="choice-head">
+        <strong>{title}</strong>
+        {badge && <span className="choice-badge">{badge}</span>}
+      </span>
+      <span>{body}</span>
+    </button>
+  );
+}
 
 export function Onboarding() {
   const setStatus = useWallet((s) => s.setStatus);
   const [step, setStep] = useState<Step>("welcome");
   const [mode, setMode] = useState<"create" | "restore">("create");
+  const [restoreWith, setRestoreWith] = useState<"passkey" | "phrase">("passkey");
+  const [advanced, setAdvanced] = useState(false);
+  const [backup, setBackup] = useState<Backup>("passkey");
+  const [passkeys, setPasskeys] = useState<boolean | null>(null);
   const [restorePhrase, setRestorePhrase] = useState("");
   const [code, setCode] = useState("");
   const [first, setFirst] = useState("");
   const [shake, setShake] = useState(false);
   const [phrase, setPhrase] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
 
+  useEffect(() => {
+    api()
+      .then((a) => a.passkeySupported())
+      .then(setPasskeys)
+      .catch(() => setPasskeys(false));
+  }, []);
+
   const words = restorePhrase.trim().split(/\s+/).filter(Boolean);
+  // Basic mode backs up with a passkey; without passkey support it falls back to words.
+  const plan: Backup = advanced ? backup : passkeys ? "passkey" : "phrase";
+
+  /** Into the wallet, in the mode chosen during setup. */
+  const open = async (note?: string) => {
+    setStatus("unlocked");
+    const st = useWallet.getState();
+    if (advanced) {
+      await st.refresh();
+      await useWallet.getState().setAdvanced(true);
+    }
+    if (note) useWallet.getState().notify("ok", note);
+  };
+
+  const restoredNote = (r: { found: boolean; accounts: number; error?: string | null }) =>
+    r.found ? `Restored ${r.accounts} account${r.accounts === 1 ? "" : "s"} and your settings from backup.` : r.error ? `Wallet restored. Couldn't reach the backup servers, so accounts and labels may be missing: ${r.error}` : "Wallet restored. No saved accounts or labels were found.";
 
   const finish = (passcode: string) =>
     run(async () => {
+      setError(null);
       const a = await api();
-      if (mode === "create") {
+      try {
+        if (mode === "restore") {
+          if (restoreWith === "passkey") {
+            const r = await a.restoreWithPasskey(passcode);
+            useWallet.setState({ restored: true });
+            await open(restoredNote(r));
+          } else {
+            await a.restoreWallet(restorePhrase, passcode);
+            useWallet.setState({ restored: true });
+            const r = await a.restoreState().catch((e) => ({ found: false, accounts: 0, error: errorText(e) }));
+            await open(restoredNote(r));
+          }
+          return;
+        }
+        if (plan === "passkey") {
+          await a.createPasskeyWallet(passcode);
+          await open("Wallet created and backed up with your passkey.");
+          return;
+        }
         setPhrase(await a.createWallet(passcode, 12));
         setStep("phrase");
-      } else {
-        await a.restoreWallet(restorePhrase, passcode);
-        useWallet.setState({ restored: true });
-        setStatus("unlocked");
+      } catch (e) {
+        setError(errorText(e));
+        setCode("");
+        setFirst("");
+        setStep("passcode");
       }
+    });
+
+  // After the words are written down: confirm, add the passkey too if chosen, open.
+  const afterPhrase = () =>
+    run(async () => {
+      const a = await api();
+      await a.setPhraseBackedUp(true).catch(() => {});
+      if (plan === "both") {
+        try {
+          await a.enablePasskeyBackup();
+          await open("Wallet created. Backed up with your recovery phrase and your passkey.");
+        } catch (e) {
+          await open(`Wallet created. The passkey backup didn't work (${errorText(e)}); you can add it later in Settings.`);
+        }
+        return;
+      }
+      await open();
     });
 
   if (step === "welcome") {
@@ -123,13 +202,93 @@ export function Onboarding() {
           Your keys stay on your devices.
         </p>
         <div className="stack">
-          <button className="btn primary block" onClick={() => (setMode("create"), setStep("passcode"))}>
+          <button className="btn primary block" onClick={() => (setMode("create"), setStep("setup"))}>
             Create a new wallet
           </button>
-          <button className="btn block" onClick={() => (setMode("restore"), setStep("restore"))}>
-            I have a recovery phrase
+          <button className="btn block" onClick={() => (setMode("restore"), setStep(passkeys ? "restore-choice" : "restore"), setRestoreWith(passkeys ? "passkey" : "phrase"))}>
+            Restore my wallet
           </button>
         </div>
+      </main>
+    );
+  }
+
+  if (step === "setup") {
+    return (
+      <main className="center-screen">
+        <button className="text-button" style={{ alignSelf: "flex-start", marginLeft: -8 }} onClick={() => setStep("welcome")}>
+          Back
+        </button>
+        <h1 className="welcome-title" style={{ fontSize: 30 }}>
+          How do you want to start?
+        </h1>
+        <div className="choice-list">
+          <Choice
+            title="Basic"
+            badge="Recommended"
+            selected={!advanced}
+            onClick={() => setAdvanced(false)}
+            body={passkeys === false ? "The essentials, kept simple. You'll write down 12 words as your backup (passkeys aren't available on this device)." : "The essentials, kept simple. Backed up with a passkey: no words to write down."}
+          />
+          <Choice
+            title="Advanced"
+            selected={advanced}
+            onClick={() => setAdvanced(true)}
+            body="Every tool: coin control, vaults, custom fees, your own server. Back up with a recovery phrase, a passkey, or both."
+          />
+        </div>
+        <p className="group-note">You can switch between Basic and Advanced any time in Settings.</p>
+        <button className="btn primary block" onClick={() => setStep(advanced ? "backup" : "passcode")}>
+          Continue
+        </button>
+      </main>
+    );
+  }
+
+  if (step === "backup") {
+    return (
+      <main className="center-screen">
+        <button className="text-button" style={{ alignSelf: "flex-start", marginLeft: -8 }} onClick={() => setStep("setup")}>
+          Back
+        </button>
+        <h1 className="welcome-title" style={{ fontSize: 30 }}>
+          How should we back it up?
+        </h1>
+        <div className="choice-list">
+          <Choice title="Recovery phrase" selected={backup === "phrase"} onClick={() => setBackup("phrase")} body="12 words you write down on paper. Works with any bitcoin wallet, forever." />
+          {passkeys !== false && (
+            <>
+              <Choice title="Passkey" selected={backup === "passkey"} onClick={() => setBackup("passkey")} body="Saved by your password manager and synced to your other devices. Restore with your fingerprint or face." />
+              <Choice title="Both" badge="Most resilient" selected={backup === "both"} onClick={() => setBackup("both")} body="Write down the words, and also keep a passkey backup. Either one restores your wallet." />
+            </>
+          )}
+        </div>
+        <p className="group-note">Your accounts, hardware wallets, labels and layout are backed up too, encrypted so only your phrase or passkey can open them.</p>
+        <button className="btn primary block" onClick={() => setStep("passcode")}>
+          Continue
+        </button>
+      </main>
+    );
+  }
+
+  if (step === "restore-choice") {
+    return (
+      <main className="center-screen">
+        <button className="text-button" style={{ alignSelf: "flex-start", marginLeft: -8 }} onClick={() => setStep("welcome")}>
+          Back
+        </button>
+        <h1 className="welcome-title" style={{ fontSize: 30 }}>
+          Restore your wallet
+        </h1>
+        <div className="stack">
+          <button className="btn primary block" onClick={() => (setRestoreWith("passkey"), setStep("passcode"))}>
+            Use my passkey
+          </button>
+          <button className="btn block" onClick={() => (setRestoreWith("phrase"), setStep("restore"))}>
+            Use a recovery phrase
+          </button>
+        </div>
+        <p className="group-note">Your accounts, hardware wallets, labels and layout come back too, if they were backed up.</p>
       </main>
     );
   }
@@ -137,7 +296,7 @@ export function Onboarding() {
   if (step === "restore") {
     return (
       <main className="center-screen">
-        <button className="text-button" style={{ alignSelf: "flex-start", marginLeft: -8 }} onClick={() => setStep("welcome")}>
+        <button className="text-button" style={{ alignSelf: "flex-start", marginLeft: -8 }} onClick={() => setStep(passkeys ? "restore-choice" : "welcome")}>
           Back
         </button>
         <h1 className="welcome-title" style={{ fontSize: 30 }}>
@@ -169,12 +328,25 @@ export function Onboarding() {
   }
 
   if (step === "passcode" || step === "confirm") {
+    const working =
+      mode === "restore"
+        ? restoreWith === "passkey"
+          ? "Choose your passkey when asked, then we'll restore your wallet…"
+          : "Restoring your wallet…"
+        : plan === "passkey"
+          ? "Create your passkey when asked…"
+          : "Setting up your wallet…";
     return (
       <main className="center-screen" style={{ textAlign: "center" }}>
         <h1 className="welcome-title" style={{ fontSize: 26 }}>
           {step === "passcode" ? "Choose a passcode" : "Enter it again"}
         </h1>
-        <p className="balance-sub">{busy ? "Setting up your wallet…" : "Six digits. It encrypts your keys on this device."}</p>
+        <p className="balance-sub">{busy ? working : "Six digits. It unlocks your wallet on this device."}</p>
+        {error && (
+          <p className="field-error" role="alert" style={{ margin: "0 auto 8px", maxWidth: 320 }}>
+            {error}
+          </p>
+        )}
         <Keypad
           value={code}
           onChange={setCode}
@@ -203,7 +375,7 @@ export function Onboarding() {
         Write down these words
       </h1>
       <p className="welcome-copy" style={{ marginBottom: 20 }}>
-        In order, on paper. They're the only way to get your bitcoin back if you lose this device.
+        In order, on paper. {plan === "both" ? "Together with your passkey, they" : "They're the only way to"} get your bitcoin back if you lose this device.
       </p>
       <ol className="phrase-grid">
         {phrase?.split(" ").map((w, i) => (
@@ -217,8 +389,8 @@ export function Onboarding() {
         <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} style={{ flex: "none", width: 22, height: 22, accentColor: "var(--accent)" }} />
         <span>I've written them down somewhere safe</span>
       </label>
-      <button className="btn primary block" disabled={!saved} onClick={() => setStatus("unlocked")}>
-        Open my wallet
+      <button className="btn primary block" disabled={!saved || busy} onClick={afterPhrase}>
+        {busy && plan === "both" ? "Create your passkey when asked…" : plan === "both" ? "Next: add the passkey" : "Open my wallet"}
       </button>
     </main>
   );
