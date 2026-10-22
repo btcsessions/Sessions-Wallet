@@ -98,6 +98,12 @@ export function AccountModule({ module }: ModuleProps) {
             {siblings.length} accounts
           </button>
         )}
+        {siblings.some((a) => a.scanning) && (
+          <span className="loading-chip" title="Loading this wallet's history">
+            <span className="spinner small" aria-hidden />
+            Loading history
+          </span>
+        )}
         {account.custody.type === "hardware" ? <HardwareBadge device={account.custody.device} compact={module.size === "small" || multi} /> : !multi && accountKind(account)}
       </div>
       <div className="account-actions">

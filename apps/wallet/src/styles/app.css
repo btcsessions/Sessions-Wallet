@@ -2416,3 +2416,20 @@ button {
 [data-skin="sessions"] .big-stat.fit {
   font-size: clamp(18px, min(20cqi, calc(190cqi / var(--len, 9))), 38px);
 }
+
+.spinner.small {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+  flex: none;
+}
+.loading-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--label-2);
+}

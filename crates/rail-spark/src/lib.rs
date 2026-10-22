@@ -368,6 +368,7 @@ impl Rail for SparkAccount {
             pays: PAYS.to_vec(),
             group: None,
             account_index: None,
+            scanning: false,
         })
     }
 

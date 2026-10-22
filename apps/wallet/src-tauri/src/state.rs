@@ -12,6 +12,11 @@ use sessions_core::{AccountId, Custody, Error, Network, Result, Wallet};
 use tokio::sync::Mutex;
 
 use crate::config::{check_name, write_atomic, AccountSpec, Config};
+use crate::monitor::Monitor;
+
+/// Called with an account's id when it reports a change (e.g. a payment
+/// arrived, history finished loading).
+pub type Notify = Arc<dyn Fn(&AccountId) + Send + Sync>;
 
 /// Mainnet. Change only for development builds.
 pub const NETWORK: Network = Network::Bitcoin;
@@ -59,12 +64,26 @@ pub struct Unlocked {
     pub forwarder: Option<AccountId>,
     /// Accounts that failed to open (e.g. offline at startup), with the reason.
     pub unavailable: Vec<(AccountId, String)>,
+    /// Push updates for on-chain accounts (the running app only).
+    pub monitor: Option<Monitor>,
+}
+
+impl Unlocked {
+    /// Tell the monitor which on-chain accounts exist (after adding or
+    /// removing one).
+    pub fn refresh_monitor(&self) {
+        if let Some(m) = &self.monitor {
+            m.set_accounts(self.onchain.values().cloned().collect());
+        }
+    }
 }
 
 pub struct AppState {
     pub paths: Paths,
     /// Called when an account reports a change (e.g. a payment arrived).
-    notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Set in the running app; tests leave it out and stay offline (no
+    /// background monitor).
+    notify: Option<Notify>,
     pub inner: Mutex<Option<Unlocked>>,
     failures: Mutex<(u32, Option<Instant>)>,
 }
@@ -76,7 +95,7 @@ impl AppState {
         Ok(g.as_ref().ok_or(Error::Locked)?.config.network)
     }
 
-    pub fn new(root: PathBuf, notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+    pub fn new(root: PathBuf, notify: Option<Notify>) -> Self {
         AppState {
             paths: Paths { root },
             notify,
@@ -194,6 +213,13 @@ impl AppState {
             Err(e) => tracing::warn!("Liquid swaps unavailable: {e}"),
         }
 
+        let monitor = self.notify.as_ref().map(|_| {
+            let url = config
+                .esplora_url
+                .clone()
+                .unwrap_or_else(|| rail_onchain::default_esplora(config.network).to_string());
+            Monitor::start(&url, onchain.values().cloned().collect())
+        });
         *self.inner.lock().await = Some(Unlocked {
             seed,
             wallet,
@@ -202,6 +228,7 @@ impl AppState {
             spark,
             forwarder,
             unavailable,
+            monitor,
         });
         Ok(())
     }
@@ -241,22 +268,24 @@ impl AppState {
                        signer,
                        payjoin_receive: bool|
          -> Result<Opened> {
-            Ok(Opened::Onchain(Arc::new(OnchainAccount::open(
-                OnchainConfig {
-                    id: id.clone(),
-                    name: name.to_string(),
-                    network: cfg.network,
-                    db_path: self.paths.onchain(id),
-                    esplora_url: cfg.esplora_url.clone(),
-                    descriptors,
-                    custody,
-                    signer,
-                    payjoin_receive,
-                    payjoin_dir: Some(self.paths.root.join("payjoin").join(&id.0)),
-                    group: group.clone(),
-                    account_index,
-                },
-            )?)))
+            let account = OnchainAccount::open(OnchainConfig {
+                id: id.clone(),
+                name: name.to_string(),
+                network: cfg.network,
+                db_path: self.paths.onchain(id),
+                esplora_url: cfg.esplora_url.clone(),
+                descriptors,
+                custody,
+                signer,
+                payjoin_receive,
+                payjoin_dir: Some(self.paths.root.join("payjoin").join(&id.0)),
+                group: group.clone(),
+                account_index,
+            })?;
+            if let Some(notify) = self.notify.clone() {
+                account.on_change(notify);
+            }
+            Ok(Opened::Onchain(Arc::new(account)))
         };
         match spec {
             AccountSpec::Savings {
@@ -338,7 +367,8 @@ impl AppState {
                 })
                 .await?;
                 if let Some(notify) = self.notify.clone() {
-                    account.on_change(move || notify()).await;
+                    let id = id.clone();
+                    account.on_change(move || notify(&id)).await;
                 }
                 Ok(Opened::Spark(Arc::new(account)))
             }
@@ -370,6 +400,7 @@ impl AppState {
             Opened::Onchain(a) => {
                 u.onchain.insert(id.clone(), a.clone());
                 u.wallet.add_account(a).await;
+                u.refresh_monitor();
             }
             Opened::Other(r) => u.wallet.add_account(r).await,
             Opened::Spark(a) => {

@@ -108,6 +108,11 @@ pub struct AccountInfo {
     /// BIP44-style account number within its wallet (`m/84'/0'/3'` → 3).
     #[serde(default)]
     pub account_index: Option<u32>,
+    /// The account's history is still loading: an on-chain account's first
+    /// full scan hasn't finished yet, so its balance and activity may be
+    /// incomplete. Always `false` for other rails.
+    #[serde(default)]
+    pub scanning: bool,
 }
 
 /// A way of moving sats. The planner matches these up between accounts.

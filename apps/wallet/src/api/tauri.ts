@@ -52,6 +52,7 @@ export const tauriApi: WalletApi = {
   jadeQrPin: async (request) => new Uint8Array(await invoke<number[]>("jade_qr_pin", { request: Array.from(request) })),
   syncAccount: (id) => invoke("sync_account", { id }),
   checkIncoming: (account, watchId) => invoke("check_incoming", { account, watchId }),
+  watchAddress: (account, address) => invoke("watch_address", { account, address }),
   txDetails: (account, txid) => invoke("tx_details", { account, txid }),
   prepareBump: (account, txid, action, fee) => invoke("prepare_bump", { account, txid, action, fee }),
   confirmQuote: (quote) => invoke("confirm_quote", { quote }),
@@ -82,4 +83,5 @@ export const tauriApi: WalletApi = {
     return () => offs.forEach((off) => off());
   },
   onChange: (cb) => listen("wallet-changed", () => cb()),
+  onWalletChanged: (cb) => listen<{ account: string }>("wallet://changed", (e) => cb(e.payload.account)),
 };

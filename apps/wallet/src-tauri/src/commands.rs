@@ -760,7 +760,9 @@ pub async fn remove_account(state: State<'_, AppState>, id: AccountId) -> Result
     let mut guard = state.inner.lock().await;
     let u = guard.as_mut().ok_or(Error::Locked)?;
     u.config.accounts.retain(|a| a.id() != &id);
-    u.onchain.remove(&id);
+    if u.onchain.remove(&id).is_some() {
+        u.refresh_monitor();
+    }
     u.spark.remove(&id);
     u.config
         .layout
@@ -1030,6 +1032,40 @@ pub async fn check_incoming(
         // Slow server: the next poll tries again.
         Err(_) => Ok(false),
     }
+}
+
+/// The Receive screen shows `address` of `account`: watch it for payments
+/// over the chain server's websocket from now on (mempool servers only; a
+/// no-op otherwise). `check_incoming` polling stays as the fallback.
+/// Errors if the address isn't one of the account's.
+#[tauri::command]
+pub async fn watch_address(
+    state: State<'_, AppState>,
+    account: AccountId,
+    address: String,
+) -> Result<()> {
+    let address = address
+        .trim()
+        .trim_start_matches("bitcoin:")
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    let Some(a) = u.onchain.get(&account) else {
+        // Not on-chain (e.g. Lightning): nothing to watch.
+        return Ok(());
+    };
+    if !a.owns_address(&address).await {
+        return Err(Error::Invalid(
+            "That address doesn't belong to this account".into(),
+        ));
+    }
+    if let Some(m) = &u.monitor {
+        m.watch(account, address);
+    }
+    Ok(())
 }
 
 /// Sync one account now.

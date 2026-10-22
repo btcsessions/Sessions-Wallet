@@ -282,6 +282,7 @@ mod tests {
             pays: pays.to_vec(),
             group: None,
             account_index: None,
+            scanning: false,
         }
     }
 

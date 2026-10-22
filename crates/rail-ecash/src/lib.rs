@@ -342,6 +342,7 @@ impl sessions_core::Rail for EcashAccount {
             pays: vec![Method::Bolt11],
             group: None,
             account_index: None,
+            scanning: false,
         })
     }
 

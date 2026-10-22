@@ -94,10 +94,11 @@ impl Wallet {
         Ok(out)
     }
 
-    /// Sync every account; one failing account doesn't stop the others.
     /// Sync every account at once, each with its own time limit, so one
-    /// slow server can't hold up the rest. Swaps are driven separately by
-    /// [`Wallet::tick_swaps`].
+    /// slow server can't hold up the rest; one failing account doesn't stop
+    /// the others. Rails keep long work (an on-chain account's first scan)
+    /// in the background, so hitting the limit loses nothing. Swaps are
+    /// driven separately by [`Wallet::tick_swaps`].
     pub async fn sync_all(&self) -> Vec<(AccountId, Result<()>)> {
         self.sync_all_within(SYNC_TIMEOUT).await
     }
@@ -697,6 +698,7 @@ mod tests {
                 pays: self.pays.clone(),
                 group: None,
                 account_index: None,
+                scanning: false,
             })
         }
         async fn sync(&self) -> Result<()> {

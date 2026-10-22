@@ -129,6 +129,14 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       (p.account === accountId || (swap && ready && p.account === spendingId && (!amount || p.amountSat === amount))),
   );
 
+  // Ask the live connection to watch this address the moment it's on screen.
+  useEffect(() => {
+    if (!target || !account || account.rail !== "onchain" || target.method !== "bitcoinAddress" || !target.watchId) return;
+    void api()
+      .then((a) => a.watchAddress(account.id, target.watchId!))
+      .catch(() => {});
+  }, [target?.watchId, account?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // While a request is on screen, watch for the payment. An on-chain address
   // is checked every 2 seconds with one cheap request, so a payment shows the
   // moment it reaches the mempool. Everything else (Lightning, swaps) syncs
@@ -288,7 +296,11 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
           )}
         </>
       ) : (
-        <p className="empty">Getting a fresh request…</p>
+        <p className="empty">
+          {account?.scanning && method === "bitcoinAddress"
+            ? "Checking this wallet's history so you get a fresh, unused address…"
+            : "Getting a fresh request…"}
+        </p>
       )}
       <p style={{ textAlign: "center", margin: "18px 0 0" }}>
         <ScanButton

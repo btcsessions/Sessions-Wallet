@@ -14,6 +14,7 @@ mod bump;
 pub mod descriptors;
 pub mod discovery;
 mod labels;
+pub mod net;
 pub mod payjoin;
 pub mod privacy;
 pub mod trezor;
@@ -35,7 +36,9 @@ use sessions_core::types::*;
 use sessions_core::{Error, Rail, Result};
 
 pub use bdk_wallet::bitcoin::bip32::Xpriv;
+pub use bdk_wallet::bitcoin::Txid;
 pub use descriptors::DescriptorPair;
+pub use net::ChangeHook;
 pub use payjoin::{PayjoinEndpoints, PjVersion, DEFAULT_DIRECTORY, DEFAULT_RELAYS};
 
 const RAIL: &str = "on-chain";
@@ -43,8 +46,12 @@ const RAIL: &str = "on-chain";
 const DB_MAGIC: &[u8] = b"sessions-wallet-onchain-v1";
 
 type Db = Store<ChangeSet>;
-const STOP_GAP: usize = 25;
-const PARALLEL_REQUESTS: usize = 4;
+use net::PARALLEL_REQUESTS;
+
+/// How long [`Rail::receive`] waits for a new account's first scan of its
+/// receive addresses, so it doesn't hand out an address that was already
+/// used. After that it gives the first unused address it knows of.
+const RECEIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 fn encode_handle(psbt: &Psbt, payjoin_uri: Option<&str>) -> String {
     match payjoin_uri {
@@ -87,8 +94,13 @@ pub struct OnchainConfig {
 struct Inner {
     wallet: PersistedWallet<Db>,
     conn: Db,
-    /// Set after the first successful full scan; later syncs are incremental.
+    /// Set after the first successful full scan (both keychains); later
+    /// syncs are incremental. Remembered on disk by a marker file next to
+    /// the database, because the database alone exists as soon as the
+    /// account is created.
     scanned: bool,
+    /// The receive keychain's first full scan is done (half of `scanned`).
+    external_scanned: bool,
     /// When every revealed address was last checked. In between, syncs only
     /// look where something can change (see [`light_sync_request`]).
     last_wide_sync: Option<std::time::Instant>,
@@ -107,8 +119,10 @@ pub struct OnchainAccount {
     custody: Custody,
     signer: Option<Xpriv>,
     client: AsyncClient,
-    inner: Mutex<Inner>,
+    inner: std::sync::Arc<Mutex<Inner>>,
     pj: payjoin::PayjoinState,
+    /// Server budget, background jobs and the change hook.
+    net: std::sync::Arc<net::Net>,
 }
 
 fn now() -> u64 {
@@ -168,8 +182,11 @@ impl OnchainAccount {
             .check_network(net)
             .load_wallet(&mut conn)
             .map_err(|e| Error::Storage(e.to_string()))?;
+        // A database that was never fully scanned (e.g. the app closed while
+        // a big wallet's first scan was running) gets scanned again.
+        let marker = cfg.db_path.with_extension("scanned");
         let (wallet, scanned) = match loaded {
-            Some(w) => (w, true),
+            Some(w) => (w, marker.exists()),
             None => (
                 Wallet::create(ext, int)
                     .network(net)
@@ -182,9 +199,8 @@ impl OnchainAccount {
         let url = cfg
             .esplora_url
             .unwrap_or_else(|| default_esplora(cfg.network).to_string());
-        let client = esplora_client::Builder::new(&url)
-            .build_async()
-            .map_err(err)?;
+        let net = std::sync::Arc::new(net::Net::new(cfg.id.clone(), &url, marker)?);
+        let client = net.client.clone();
 
         let pj = payjoin::PayjoinState::new(&cfg.custody, cfg.payjoin_receive, cfg.payjoin_dir);
         Ok(Self {
@@ -197,14 +213,16 @@ impl OnchainAccount {
             custody: cfg.custody,
             signer: cfg.signer,
             client,
-            inner: Mutex::new(Inner {
+            net,
+            inner: std::sync::Arc::new(Mutex::new(Inner {
                 wallet,
                 conn,
                 scanned,
+                external_scanned: scanned,
                 last_wide_sync: None,
                 labels,
                 pending: Default::default(),
-            }),
+            })),
         })
     }
 
@@ -464,6 +482,7 @@ impl Rail for OnchainAccount {
             },
             group: self.group.clone(),
             account_index: self.account_index,
+            scanning: !inner.scanned,
         })
     }
 
@@ -472,56 +491,29 @@ impl Rail for OnchainAccount {
         Ok(())
     }
 
+    /// Never waits for long work: an account's first full scan and the
+    /// periodic wide sync run in the background (see [`net`]) and report
+    /// through the change hook when done. Otherwise a light sync, here.
     async fn sync(&self) -> Result<()> {
-        let (request_full, request_sync) = {
+        let (scanned, wide_due) = {
             let inner = self.inner.lock().await;
-            if inner.scanned {
-                let wide = inner
+            (
+                inner.scanned,
+                inner
                     .last_wide_sync
-                    .is_none_or(|t| t.elapsed() >= WIDE_SYNC_EVERY);
-                let req = if wide {
-                    inner.wallet.start_sync_with_revealed_spks().build()
-                } else {
-                    light_sync_request(&inner.wallet)
-                };
-                (None, Some((req, wide)))
-            } else {
-                (Some(inner.wallet.start_full_scan().build()), None)
-            }
+                    .is_none_or(|t| t.elapsed() >= WIDE_SYNC_EVERY),
+            )
         };
-
-        if let Some(req) = request_full {
-            let update = self
-                .client
-                .full_scan(req, STOP_GAP, PARALLEL_REQUESTS)
-                .await
-                .map_err(err)?;
-            let mut inner = self.inner.lock().await;
-            inner.wallet.apply_update(update).map_err(err)?;
-            inner.scanned = true;
-            inner.last_wide_sync = Some(std::time::Instant::now());
-            let Inner { wallet, conn, .. } = &mut *inner;
-            wallet
-                .persist(conn)
-                .map_err(|e| Error::Storage(e.to_string()))?;
+        if !scanned {
+            net::start(net::Job::FirstScan, &self.inner, &self.net);
+            return Ok(());
         }
-        if let Some((req, wide)) = request_sync {
-            let update = self
-                .client
-                .sync(req, PARALLEL_REQUESTS)
-                .await
-                .map_err(err)?;
-            let mut inner = self.inner.lock().await;
-            inner.wallet.apply_update(update).map_err(err)?;
-            if wide {
-                inner.last_wide_sync = Some(std::time::Instant::now());
-            }
-            let Inner { wallet, conn, .. } = &mut *inner;
-            wallet
-                .persist(conn)
-                .map_err(|e| Error::Storage(e.to_string()))?;
+        // A wide sync covers everything a light one would. While it's only
+        // queued behind other accounts' jobs, keep doing light syncs.
+        if wide_due && net::start(net::Job::Wide, &self.inner, &self.net) && self.net.active() {
+            return Ok(());
         }
-        Ok(())
+        self.light_sync().await
     }
 
     /// One esplora request for the address on screen: anything new (even
@@ -539,39 +531,12 @@ impl Rail for OnchainAccount {
         .require_network(self.network.to_bitcoin())
         .map_err(|_| Error::Network("that address is for a different network".into()))?;
         let spk = address.script_pubkey();
-        let seen = self.client.scripthash_txs(&spk, None).await.map_err(err)?;
-        let new: Vec<_> = {
-            let inner = self.inner.lock().await;
-            seen.iter()
-                .map(|t| t.txid)
-                .filter(|txid| inner.wallet.get_tx(*txid).is_none())
-                .collect()
+        let seen = {
+            let _permit = self.net.lanes.quick.acquire().await.map_err(err)?;
+            self.client.scripthash_txs(&spk, None).await.map_err(err)?
         };
-        if new.is_empty() {
-            return Ok(false);
-        }
-        let mut txs = Vec::new();
-        for txid in new {
-            if let Some(tx) = self.client.get_tx(&txid).await.map_err(err)? {
-                txs.push(tx);
-            }
-        }
-        if txs.is_empty() {
-            return Ok(false);
-        }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let mut inner = self.inner.lock().await;
-        inner
-            .wallet
-            .apply_unconfirmed_txs(txs.into_iter().map(|tx| (tx, now)));
-        let Inner { wallet, conn, .. } = &mut *inner;
-        wallet
-            .persist(conn)
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        Ok(true)
+        self.apply_txids(seen.iter().map(|t| t.txid).collect())
+            .await
     }
 
     async fn receive(&self, req: ReceiveRequest) -> Result<ReceiveTarget> {
@@ -581,6 +546,9 @@ impl Rail for OnchainAccount {
                 req.method
             )));
         }
+        // A new account's first address may have been used already: wait
+        // (briefly) for the scan to find out.
+        net::wait_for_receive_scan(&self.inner, &self.net, RECEIVE_WAIT).await;
         let info = {
             let mut inner = self.inner.lock().await;
             let Inner {
@@ -1067,7 +1035,133 @@ impl Rail for OnchainAccount {
     }
 }
 
+impl Drop for OnchainAccount {
+    fn drop(&mut self) {
+        self.net.abort();
+    }
+}
+
 impl OnchainAccount {
+    /// Call `hook` (with this account's id) whenever the balance or history
+    /// changes because of something found on the network: a background
+    /// scan or sync, a quick check or a pushed transaction.
+    pub fn on_change(&self, hook: ChangeHook) {
+        self.net.set_hook(hook);
+    }
+
+    /// The history is still loading (first full scan not finished).
+    pub async fn scanning(&self) -> bool {
+        !self.inner.lock().await.scanned
+    }
+
+    /// Where new payments to this account are expected: up to `max`
+    /// receive addresses that were handed out (revealed) but haven't been
+    /// paid yet, oldest first. Reveals nothing new.
+    pub async fn watch_addresses(&self, max: usize) -> Vec<String> {
+        let inner = self.inner.lock().await;
+        let net = self.network.to_bitcoin();
+        inner
+            .wallet
+            .spk_index()
+            .unused_keychain_spks(KeychainKind::External)
+            .filter_map(|(_, spk)| Address::from_script(&spk, net).ok())
+            .map(|a| a.to_string())
+            .take(max)
+            .collect()
+    }
+
+    /// Whether `address` is one of this account's (revealed) addresses.
+    pub async fn owns_address(&self, address: &str) -> bool {
+        let Ok(a) = Address::from_str(address.trim()) else {
+            return false;
+        };
+        let Ok(a) = a.require_network(self.network.to_bitcoin()) else {
+            return false;
+        };
+        self.inner.lock().await.wallet.is_mine(a.script_pubkey())
+    }
+
+    /// Add transactions seen paying to or spending from this account (e.g.
+    /// pushed by a mempool websocket) as unconfirmed. Fetches the ones the
+    /// wallet doesn't have yet; ignores any that don't touch the account.
+    /// `true` when something new was added. A later sync adds confirmations.
+    pub async fn apply_txids(&self, txids: Vec<Txid>) -> Result<bool> {
+        let new: Vec<Txid> = {
+            let inner = self.inner.lock().await;
+            let mut seen = std::collections::HashSet::new();
+            txids
+                .into_iter()
+                .filter(|t| seen.insert(*t) && inner.wallet.get_tx(*t).is_none())
+                .collect()
+        };
+        if new.is_empty() {
+            return Ok(false);
+        }
+        let mut txs = Vec::new();
+        {
+            let _permit = self.net.lanes.quick.acquire().await.map_err(err)?;
+            for txid in new {
+                if let Some(tx) = self.client.get_tx(&txid).await.map_err(err)? {
+                    txs.push(tx);
+                }
+            }
+        }
+        let mut inner = self.inner.lock().await;
+        let Inner { wallet, conn, .. } = &mut *inner;
+        use bdk_wallet::chain::Indexer;
+        let ours: Vec<_> = txs
+            .into_iter()
+            .filter(|tx| wallet.spk_index().is_tx_relevant(tx))
+            .collect();
+        if ours.is_empty() {
+            return Ok(false);
+        }
+        let before = net::fingerprint(wallet);
+        let seen = now();
+        wallet.apply_unconfirmed_txs(ours.into_iter().map(|tx| (tx, seen)));
+        wallet
+            .persist(conn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let changed = net::fingerprint(wallet) != before;
+        drop(inner);
+        if changed {
+            self.net.changed();
+        }
+        Ok(changed)
+    }
+
+    /// Ask only about what can change between wide syncs (see
+    /// [`light_sync_request`]). One at a time per account.
+    async fn light_sync(&self) -> Result<()> {
+        let _one = self.net.light.lock().await;
+        let (request, before) = {
+            let inner = self.inner.lock().await;
+            (
+                light_sync_request(&inner.wallet),
+                net::fingerprint(&inner.wallet),
+            )
+        };
+        let update = {
+            let _permit = self.net.lanes.light.acquire().await.map_err(err)?;
+            self.client
+                .sync(request, PARALLEL_REQUESTS)
+                .await
+                .map_err(err)?
+        };
+        let mut inner = self.inner.lock().await;
+        let Inner { wallet, conn, .. } = &mut *inner;
+        wallet.apply_update(update).map_err(err)?;
+        wallet
+            .persist(conn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let changed = net::fingerprint(wallet) != before;
+        drop(inner);
+        if changed {
+            self.net.changed();
+        }
+        Ok(())
+    }
+
     /// Record a transaction we just broadcast for the quote `quoted_txid`,
     /// and label it with that quote's label. Returns the label.
     async fn record_broadcast(
@@ -1158,6 +1252,215 @@ mod tests {
             account_index: None,
         })
         .unwrap()
+    }
+
+    /// A fake Esplora server for an empty wallet: every address is unused.
+    /// Each response takes `delay`. Tracks how many requests were served and
+    /// the most that were in flight at once.
+    struct FakeEsplora {
+        url: String,
+        served: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    async fn fake_esplora(delay: std::time::Duration) -> FakeEsplora {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const GENESIS: &str = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let served = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let (s, p) = (served.clone(), peak.clone());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let (s, p, f) = (s.clone(), p.clone(), in_flight.clone());
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 2048];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let now = f.fetch_add(1, SeqCst) + 1;
+                    p.fetch_max(now, SeqCst);
+                    tokio::time::sleep(delay).await;
+                    let head = String::from_utf8_lossy(&buf).to_string();
+                    let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let (status, body) = if path == "/blocks" {
+                        (
+                            "200 OK",
+                            format!(
+                                r#"[{{"id":"{GENESIS}","height":0,"version":1,"timestamp":1231006505,"tx_count":1,"size":285,"weight":816,"merkle_root":"4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b","previousblockhash":null,"mediantime":1231006505,"nonce":2083236893,"bits":486604799,"difficulty":1.0}}]"#
+                            ),
+                        )
+                    } else if path.starts_with("/scripthash/") {
+                        ("200 OK", "[]".to_string())
+                    } else if path == "/block-height/0" {
+                        ("200 OK", GENESIS.to_string())
+                    } else {
+                        ("404 Not Found", String::new())
+                    };
+                    s.fetch_add(1, SeqCst);
+                    f.fetch_sub(1, SeqCst);
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        FakeEsplora { url, served, peak }
+    }
+
+    fn hot_on(dir: &std::path::Path, id: &str, index: u32, url: &str) -> OnchainAccount {
+        let master = Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
+        OnchainAccount::open(OnchainConfig {
+            id: id.into(),
+            name: id.into(),
+            network: Network::Bitcoin,
+            db_path: dir.join(format!("{id}.db")),
+            esplora_url: Some(url.into()),
+            descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, index).unwrap(),
+            custody: Custody::Hot,
+            signer: Some(master),
+            payjoin_receive: false,
+            payjoin_dir: None,
+            group: None,
+            account_index: None,
+        })
+        .unwrap()
+    }
+
+    async fn until_scanned(a: &OnchainAccount) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while a.info().await.unwrap().scanning {
+            assert!(std::time::Instant::now() < deadline, "scan never finished");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// The first scan runs in the background: a caller that gives up (like
+    /// the sync round's time limit) doesn't cancel it, and once it's done it
+    /// is remembered across restarts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn first_scan_finishes_even_when_the_caller_gives_up() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let server = fake_esplora(std::time::Duration::from_millis(15)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let a = std::sync::Arc::new(hot_on(dir.path(), "hw", 0, &server.url));
+        let changes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = changes.clone();
+        a.on_change(std::sync::Arc::new(move |id: &AccountId| {
+            assert_eq!(id.0, "hw");
+            c.fetch_add(1, SeqCst);
+        }));
+        assert!(a.info().await.unwrap().scanning);
+
+        // Like `Wallet::sync_all` with a limit far shorter than the scan.
+        let wallet = sessions_core::Wallet::new();
+        wallet.add_account(a.clone()).await;
+        let results = wallet
+            .sync_all_within(std::time::Duration::from_millis(1))
+            .await;
+        assert_eq!(results.len(), 1);
+        // Only one scan at a time, however often sync is called.
+        a.sync().await.unwrap();
+        a.sync().await.unwrap();
+
+        until_scanned(&a).await;
+        // 20 unused receive and 20 unused change addresses (plus block info).
+        let served = server.served.load(SeqCst);
+        assert!((40..60).contains(&served), "served {served}");
+        assert_eq!(changes.load(SeqCst), 1);
+        assert!(dir.path().join("hw.scanned").exists());
+        drop(wallet);
+        drop(a);
+
+        // Reopened: no second full scan.
+        let a = hot_on(dir.path(), "hw", 0, &server.url);
+        assert!(!a.info().await.unwrap().scanning);
+    }
+
+    /// A wallet database without the scan marker (the old app saved the
+    /// database before the first scan finished) is scanned again.
+    #[tokio::test]
+    async fn unfinished_scan_is_redone_after_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot_on(dir.path(), "old", 0, "http://127.0.0.1:9");
+        a.receive(ReceiveRequest {
+            method: Method::BitcoinAddress,
+            amount_sat: None,
+            description: None,
+        })
+        .await
+        .unwrap();
+        drop(a);
+        assert!(dir.path().join("old.db").exists());
+        let a = hot_on(dir.path(), "old", 0, "http://127.0.0.1:9");
+        assert!(a.info().await.unwrap().scanning);
+    }
+
+    /// Receive waits for the receive addresses to be scanned once, so it
+    /// doesn't hand out an address the wallet used before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn receive_waits_for_the_first_scan_of_receive_addresses() {
+        let server = fake_esplora(std::time::Duration::from_millis(10)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot_on(dir.path(), "new", 0, &server.url);
+        a.sync().await.unwrap();
+        let r = a
+            .receive(ReceiveRequest {
+                method: Method::BitcoinAddress,
+                amount_sat: None,
+                description: None,
+            })
+            .await
+            .unwrap();
+        assert!(a.inner.lock().await.external_scanned);
+        assert_eq!(r.request, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+        assert_eq!(
+            a.watch_addresses(5).await,
+            vec!["bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu".to_string()]
+        );
+        assert!(
+            a.owns_address("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+                .await
+        );
+        assert!(
+            !a.owns_address("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq")
+                .await
+        );
+        until_scanned(&a).await;
+    }
+
+    /// Accounts on the same server share its request budget: two first
+    /// scans queue rather than run at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn scans_on_one_server_take_turns() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let server = fake_esplora(std::time::Duration::from_millis(15)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot_on(dir.path(), "a", 0, &server.url);
+        let b = hot_on(dir.path(), "b", 1, &server.url);
+        a.sync().await.unwrap();
+        b.sync().await.unwrap();
+        until_scanned(&a).await;
+        until_scanned(&b).await;
+        let peak = server.peak.load(SeqCst);
+        assert!(peak <= net::PARALLEL_REQUESTS, "peak {peak}");
     }
 
     #[tokio::test]

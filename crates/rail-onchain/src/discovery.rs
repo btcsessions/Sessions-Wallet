@@ -5,7 +5,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 
-use bdk_esplora::esplora_client;
 use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::Wallet;
 use sessions_core::{Error, Network, Result};
@@ -46,10 +45,7 @@ pub async fn scan(esplora_url: &str, network: Network, pair: &DescriptorPair) ->
         .network(network.to_bitcoin())
         .create_wallet_no_persist()
         .map_err(|e| Error::Crypto(e.to_string()))?;
-    let client = esplora_client::Builder::new(esplora_url)
-        .timeout(20)
-        .build_async()
-        .map_err(err)?;
+    let client = crate::net::client(esplora_url)?;
     let request = wallet.start_full_scan().build();
     let update = client
         .full_scan(request, ADDRESS_GAP, PARALLEL_REQUESTS)

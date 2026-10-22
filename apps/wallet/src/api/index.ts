@@ -68,6 +68,8 @@ export interface WalletApi {
   syncAccount(id: string): Promise<void>;
   /** Quick check for a payment to a receive target (its `watchId`); true when something new arrived. */
   checkIncoming(account: string, watchId: string): Promise<boolean>;
+  /** The Receive screen shows this on-chain address: watch it for payments (pushed over the chain server's websocket when it's a mempool server; no-op otherwise). Rejects if the address isn't the account's. */
+  watchAddress(account: string, address: string): Promise<void>;
   /** On-chain transaction details; null for other rails. */
   txDetails(account: string, txid: string): Promise<TxDetails | null>;
   /** Speed up (RBF or CPFP) or cancel (RBF back to ourselves) an unconfirmed transaction. */
@@ -132,6 +134,8 @@ export interface WalletApi {
   registerLightningAddress(account: string, username: string): Promise<LightningAddress>;
   /** Called when an account changes (payment in or out). Returns an unsubscribe. */
   onChange(cb: () => void): Promise<() => void>;
+  /** Called with the account id when that account's balance or history changes (payment seen, confirmation, history finished loading). Returns an unsubscribe. */
+  onWalletChanged(cb: (account: string) => void): Promise<() => void>;
 }
 
 function inTauri(): boolean {

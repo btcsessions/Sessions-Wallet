@@ -273,6 +273,7 @@ export const mockApi: WalletApi = {
     await sleep(150);
     return false;
   },
+  async watchAddress() {},
   async renameAccount(id, name) {
     const a = find(id);
     a.name = name.trim();
@@ -605,6 +606,9 @@ export const mockApi: WalletApi = {
     return mockLnAddress;
   },
   async onChange() {
+    return () => {};
+  },
+  async onWalletChanged() {
     return () => {};
   },
   async unavailableAccounts() {

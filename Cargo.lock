@@ -7838,6 +7838,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.28.0",
  "tracing",
  "tracing-subscriber",
  "uuid",

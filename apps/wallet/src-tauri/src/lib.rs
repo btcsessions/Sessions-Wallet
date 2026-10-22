@@ -4,6 +4,7 @@ mod config;
 mod jade;
 #[cfg(target_os = "android")]
 mod logcat;
+mod monitor;
 mod state;
 
 use std::sync::Arc;
@@ -40,9 +41,15 @@ pub fn run() {
             }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            // Tell the UI when an account changes so it refreshes at once.
+            // Tell the UI when an account changes so it refreshes at once:
+            // `wallet://changed` with `{ account }`, and the older
+            // payload-less `wallet-changed`.
             let emitter = app.handle().clone();
-            let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let notify: state::Notify = Arc::new(move |account: &sessions_core::AccountId| {
+                let _ = emitter.emit(
+                    "wallet://changed",
+                    serde_json::json!({ "account": account.0 }),
+                );
                 let _ = emitter.emit("wallet-changed", ());
             });
             app.manage(bitbox::BitBoxState::new(&dir));
@@ -126,6 +133,7 @@ pub fn run() {
             commands::tx_details,
             commands::sync_account,
             commands::check_incoming,
+            commands::watch_address,
             commands::prepare_bump,
             commands::confirm_quote,
             commands::list_utxos,

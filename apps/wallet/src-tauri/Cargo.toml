@@ -36,6 +36,11 @@ async-trait.workspace = true
 bitcoin.workspace = true
 # BitBox02. USB (hidapi) on desktop only; Android goes through tauri-plugin-bitbox.
 bitbox-api = { version = "0.13", features = ["tokio", "multithreaded"] }
+# Push updates from mempool.space-style servers (new blocks, payments to
+# watched addresses). rustls + bundled roots: same TLS stack as reqwest, works
+# on Android without the platform trust store.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = "0.3"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 bitbox-api = { version = "0.13", features = ["usb"] }
@@ -43,7 +48,6 @@ bitbox-api = { version = "0.13", features = ["usb"] }
 hidapi = "2.3"
 # Jade over Bluetooth LE on desktop. Android goes through tauri-plugin-jade.
 btleplug = "0.13"
-futures-util = "0.3"
 uuid = "1"
 
 [target.'cfg(target_os = "android")'.dependencies]

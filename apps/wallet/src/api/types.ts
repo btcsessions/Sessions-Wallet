@@ -37,6 +37,8 @@ export interface AccountInfo {
   group?: string | null;
   /** Account number inside its wallet (BIP44 account level). */
   accountIndex?: number | null;
+  /** History still loading: an on-chain account's first full scan hasn't finished (balance/activity may be incomplete). */
+  scanning?: boolean;
 }
 
 /** An account with history found while scanning a wallet. */
