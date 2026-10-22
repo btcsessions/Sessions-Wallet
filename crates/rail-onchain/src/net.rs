@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use bdk_esplora::esplora_client::{self, AsyncClient};
+use bdk_esplora::esplora_client::AsyncClient;
 use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::chain::spk_client::FullScanRequest;
 use bdk_wallet::{KeychainKind, Wallet};
@@ -31,8 +31,6 @@ pub const STOP_GAP: usize = 20;
 pub const PARALLEL_REQUESTS: usize = 2;
 /// Per-request limit, so one stuck connection can't hold a sync for minutes.
 pub const REQUEST_TIMEOUT_SECS: u64 = 15;
-/// Retries on 429 / 5xx (backoff 0.25 s, 0.5 s, 1 s, 2 s).
-pub const MAX_RETRIES: usize = 4;
 
 /// Longest a background job may take before it's stopped and retried.
 const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -55,13 +53,43 @@ const QUICK_PERMITS: usize = 2;
 /// Called with the account id when an account's balance or history changes.
 pub type ChangeHook = Arc<dyn Fn(&AccountId) + Send + Sync>;
 
-/// An Esplora client with sane limits.
+/// An Esplora client with sane limits, tuned for flaky mobile networks:
+///
+/// * HTTP/1.1 only. On some mobile networks HTTP/2 connections to the chain
+///   server stall ("keep-alive timed out") while new HTTP/1.1 requests work.
+/// * IPv4 first (IPv6 as a fallback). A common mobile failure is an IPv6 path
+///   that connects but drops large responses, so every request times out.
+/// * Short connect timeout and TCP keepalive, so dead connections are noticed.
 pub fn client(url: &str) -> Result<AsyncClient> {
-    esplora_client::Builder::new(url)
-        .timeout(REQUEST_TIMEOUT_SECS)
-        .max_retries(MAX_RETRIES)
-        .build_async()
-        .map_err(err)
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(8))
+        .http1_only()
+        .pool_idle_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(20))
+        .dns_resolver(Arc::new(PreferIpv4))
+        .build()
+        .map_err(err)?;
+    Ok(AsyncClient::from_client(url.to_string(), http))
+}
+
+/// System DNS, with IPv4 addresses tried before IPv6 ones.
+struct PreferIpv4;
+
+impl reqwest::dns::Resolve for PreferIpv4 {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = format!("{}:0", name.as_str());
+            let mut addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host(host).await?.collect();
+            ipv4_first(&mut addrs);
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+fn ipv4_first(addrs: &mut [std::net::SocketAddr]) {
+    addrs.sort_by_key(|a| !a.is_ipv4());
 }
 
 /// The request budget for one server, shared by every account using it.
@@ -461,6 +489,19 @@ async fn wide_sync(inner: &Mutex<Inner>, net: &Net) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipv4_addresses_come_first() {
+        let mut a: Vec<std::net::SocketAddr> = vec![
+            "[2001:db8::1]:443".parse().unwrap(),
+            "192.0.2.1:443".parse().unwrap(),
+            "[2001:db8::2]:443".parse().unwrap(),
+            "192.0.2.2:443".parse().unwrap(),
+        ];
+        ipv4_first(&mut a);
+        assert!(a[0].is_ipv4() && a[1].is_ipv4() && a[2].is_ipv6());
+        assert_eq!(a[0].to_string(), "192.0.2.1:443");
+    }
 
     #[test]
     fn lanes_are_shared_per_server() {
