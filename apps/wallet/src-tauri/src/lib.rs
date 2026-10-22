@@ -1,5 +1,7 @@
+mod bitbox;
 mod commands;
 mod config;
+mod jade;
 mod state;
 
 use std::sync::Arc;
@@ -12,6 +14,10 @@ pub fn run() {
         // Trezor Suite on phones: we open its deep link, it calls us back.
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
+        // BitBox02 over USB on Android (USB permission + device handle).
+        .plugin(tauri_plugin_bitbox::init())
+        // Blockstream Jade over Bluetooth LE on Android (scan, bond, GATT).
+        .plugin(tauri_plugin_jade::init())
         // The QR scanner uses the camera from inside the webview.
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
@@ -35,6 +41,8 @@ pub fn run() {
             let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 let _ = emitter.emit("wallet-changed", ());
             });
+            app.manage(bitbox::BitBoxState::new(&dir));
+            app.manage(jade::JadeState::new());
             app.manage(state::AppState::new(dir, Some(notify)));
 
             // Keep swaps moving in the background: Boltz hold invoices only
@@ -72,6 +80,7 @@ pub fn run() {
             commands::accounts,
             commands::add_account,
             commands::rename_account,
+            jade::jade_qr_pin,
             commands::discover_hot_accounts,
             commands::scan_descriptors,
             commands::cosigner_key,
@@ -104,6 +113,12 @@ pub fn run() {
             commands::receive_quote,
             commands::trezor_sign_request,
             commands::trezor_merge,
+            bitbox::bitbox_descriptors,
+            bitbox::bitbox_sign,
+            bitbox::bitbox_show_address,
+            jade::jade_descriptors,
+            jade::jade_sign,
+            jade::jade_show_address,
             commands::tx_details,
             commands::sync_account,
             commands::prepare_bump,

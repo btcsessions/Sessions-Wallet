@@ -256,3 +256,14 @@ export type BitboxEvent =
   | { kind: "pairing"; code: string }
   /** Connected, unlocked and paired. */
   | { kind: "paired" };
+
+/** Progress from a Blockstream Jade over Bluetooth (Tauri events `jade://status`, `jade://connected`). */
+export type JadeEvent =
+  /**
+   * "scanning": looking for Jade nearby; "connecting": found it, connecting (the OS may ask to pair: confirm
+   * the same number on Jade); "unlock": enter the PIN on Jade (the PIN server is contacted automatically);
+   * "confirm": check and confirm on Jade's screen.
+   */
+  | { kind: "status"; state: "scanning" | "connecting" | "unlock" | "confirm" }
+  /** Connected and unlocked. */
+  | { kind: "connected" };

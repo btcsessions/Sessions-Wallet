@@ -1,0 +1,18 @@
+[package]
+name = "tauri-plugin-bitbox"
+description = "USB access to a BitBox02 on Android for Sessions Wallet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+# Lets tauri-build find the Android library under android/.
+links = "tauri-plugin-bitbox"
+
+[dependencies]
+tauri = { version = "2.12", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+tauri-plugin = { version = "2.7", features = ["build"] }

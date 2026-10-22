@@ -1,6 +1,7 @@
 import type {
   AccountInfo,
   BitboxEvent,
+  JadeEvent,
   BumpAction,
   DescriptorPreview,
   SendQuote,
@@ -89,6 +90,14 @@ export interface WalletApi {
   bitboxShowAddress(account: string, index: number): Promise<string>;
   /** BitBox02 progress (status, pairing code, paired). Returns an unsubscribe. */
   onBitbox(cb: (e: BitboxEvent) => void): Promise<() => void>;
+  /** Jade over Bluetooth: one descriptor per account number, `wpkh([fp/84h/0h/{n}h]xpub…/<0;1>/*)` (`tr`/86h for Taproot, firmware 1.0.34+). Connects and unlocks first if needed. */
+  jadeDescriptors(script: "wpkh" | "tr", accounts: number[]): Promise<string[]>;
+  /** Sign an unsigned PSBT (base64) on Jade over Bluetooth; returns the signed PSBT for `resume`. */
+  jadeSign(psbt: string): Promise<string>;
+  /** Show receive address `index` of a hardware account on Jade over Bluetooth (checked against ours); returns it. */
+  jadeShowAddress(account: string, index: number): Promise<string>;
+  /** Jade Bluetooth progress (scanning, connecting, unlock, confirm, connected). Returns an unsubscribe. */
+  onJade(cb: (e: JadeEvent) => void): Promise<() => void>;
   /** Our own cosigner key to share when setting up a multisig. */
   cosignerKey(): Promise<string>;
   sync(): Promise<void>;

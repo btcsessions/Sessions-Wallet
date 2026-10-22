@@ -69,5 +69,15 @@ export const tauriApi: WalletApi = {
     ]);
     return () => offs.forEach((off) => off());
   },
+  jadeDescriptors: (script, accounts) => invoke("jade_descriptors", { script, accounts }),
+  jadeSign: (psbt) => invoke("jade_sign", { psbt }),
+  jadeShowAddress: (account, index) => invoke("jade_show_address", { account, index }),
+  onJade: async (cb) => {
+    const offs = await Promise.all([
+      listen<{ state: "scanning" | "connecting" | "unlock" | "confirm" }>("jade://status", (e) => cb({ kind: "status", state: e.payload.state })),
+      listen("jade://connected", () => cb({ kind: "connected" })),
+    ]);
+    return () => offs.forEach((off) => off());
+  },
   onChange: (cb) => listen("wallet-changed", () => cb()),
 };

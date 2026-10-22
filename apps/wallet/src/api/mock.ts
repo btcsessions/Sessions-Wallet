@@ -2,11 +2,27 @@
 // reviewed without a native build. Never ships in the Tauri app.
 
 import type { WalletApi } from "./index";
-import type { AccountInfo, BitboxEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Settings } from "./types";
+import type { AccountInfo, BitboxEvent, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bitboxListeners = new Set<(e: BitboxEvent) => void>();
+let bitboxPaired = false;
 const mockBitbox = (e: BitboxEvent) => bitboxListeners.forEach((cb) => cb(e));
+const jadeListeners = new Set<(e: JadeEvent) => void>();
+const mockJade = (e: JadeEvent) => jadeListeners.forEach((cb) => cb(e));
+let jadeConnected = false;
+/** Like the real thing: scan, connect and unlock once, then reuse the connection. */
+async function mockJadeConnect() {
+  if (jadeConnected) return;
+  mockJade({ kind: "status", state: "scanning" });
+  await sleep(900);
+  mockJade({ kind: "status", state: "connecting" });
+  await sleep(700);
+  mockJade({ kind: "status", state: "unlock" });
+  await sleep(2000);
+  jadeConnected = true;
+  mockJade({ kind: "connected" });
+}
 const now = () => Math.floor(Date.now() / 1000);
 
 const DEMO_PHRASE =
@@ -370,6 +386,11 @@ export const mockApi: WalletApi = {
     await sleep(400);
     mockBitbox({ kind: "status", state: "unlock" });
     await sleep(800);
+    if (!bitboxPaired) {
+      bitboxPaired = true;
+      mockBitbox({ kind: "pairing", code: "XKQ7M 2RT9P\nHB4WD 8NJ3C" });
+      await sleep(2500);
+    }
     mockBitbox({ kind: "paired" });
     // BIP84 test vector key (abandon … about); fake for other accounts and Taproot.
     const purpose = script === "tr" ? 86 : 84;
@@ -390,6 +411,30 @@ export const mockApi: WalletApi = {
   async onBitbox(cb) {
     bitboxListeners.add(cb);
     return () => bitboxListeners.delete(cb);
+  },
+  async jadeDescriptors(script, accounts) {
+    await mockJadeConnect();
+    // BIP84 test vector key (abandon … about); fake for other accounts and Taproot.
+    const purpose = script === "tr" ? 86 : 84;
+    return accounts.map(
+      (n) => `${script}([73c5da0a/${purpose}h/0h/${n}h]xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V/<0;1>/*)`,
+    );
+  },
+  async jadeSign(psbt) {
+    await mockJadeConnect();
+    mockJade({ kind: "status", state: "confirm" });
+    await sleep(1500);
+    return psbt;
+  },
+  async jadeShowAddress() {
+    await mockJadeConnect();
+    mockJade({ kind: "status", state: "confirm" });
+    await sleep(1200);
+    return "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+  },
+  async onJade(cb) {
+    jadeListeners.add(cb);
+    return () => jadeListeners.delete(cb);
   },
   async payjoinReceive(account) {
     return mockPayjoin.has(account);

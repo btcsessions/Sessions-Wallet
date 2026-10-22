@@ -9,6 +9,7 @@ import { isMobile, trezorDescriptor, trezorDescriptors, type TrezorScript } from
 import { errorText, formatSats } from "../format";
 import { JadeQrUnlock } from "../hw/JadeUnlock";
 import { BitboxProgress, useBitboxProgress } from "../hw/BitboxProgress";
+import { JadeModeSwitch, JadeProgress, useJadeProgress, type JadeMode } from "../hw/JadeProgress";
 import { switchMode } from "../state/mode";
 import { useWallet } from "../state/store";
 import { walletHasCard } from "../modules/AccountModule";
@@ -43,6 +44,10 @@ export function AddHardwareSheet() {
   const [unlock, setUnlock] = useState(false);
   const [talking, setTalking] = useState(false);
   const bitbox = useBitboxProgress(talking && device?.connect === "bitbox");
+  const [jadeMode, setJadeMode] = useState<JadeMode>("ble");
+  const jade = useJadeProgress(talking && device?.connect === "jade");
+  // Devices we talk to directly (not by scanning QR codes).
+  const direct = device?.connect === "trezor" || device?.connect === "bitbox" || (device?.connect === "jade" && jadeMode === "ble");
 
   const inspect = async (text: string) => {
     setError(null);
@@ -57,6 +62,7 @@ export function AddHardwareSheet() {
   /** Descriptors for these account numbers from a connected device. */
   const descriptorsFrom = async (accounts: number[]): Promise<string[]> => {
     if (device?.connect === "bitbox") return (await api()).bitboxDescriptors(script, accounts);
+    if (device?.connect === "jade") return (await api()).jadeDescriptors(script, accounts);
     return trezorDescriptors(script, accounts);
   };
 
@@ -90,7 +96,7 @@ export function AddHardwareSheet() {
       if (!walletHasCard([...all, account], layout, account)) await addModule({ id: `hardware:${account.id}`, size: "small" });
       await refresh();
       notify("ok", `Added ${account.name}`);
-      if ((device.connect === "trezor" || device.connect === "bitbox") && accountNo === "0") void lookForMore(account.name);
+      if (direct && accountNo === "0") void lookForMore(account.name);
       else close();
     });
 
@@ -146,6 +152,7 @@ export function AddHardwareSheet() {
         {!more.found ? (
           <>
             <BitboxProgress step={bitbox} />
+            <JadeProgress state={jade} />
             <p className="empty">Checking your {device?.name} for other accounts with history…</p>
           </>
         ) : more.found.length === 0 ? (
@@ -336,7 +343,20 @@ export function AddHardwareSheet() {
         </>
       ) : (
         <>
-          {device.connect === "jade" && unlock ? (
+          {device.connect === "jade" && <JadeModeSwitch value={jadeMode} onChange={(m) => (setJadeMode(m), setError(null))} />}
+          {device.connect === "jade" && jadeMode === "ble" ? (
+            <>
+              <p className="notice">
+                Turn on Jade and choose Bluetooth. {isMobile() ? "Allow Bluetooth access when asked." : ""} You'll enter your PIN on Jade; the app checks it with Jade's PIN server
+                automatically.
+              </p>
+              {pickers}
+              <JadeProgress state={jade} />
+              <button className="btn primary block" disabled={busy} onClick={fromDevice}>
+                {busy ? "Waiting for Jade…" : "Connect Jade"}
+              </button>
+            </>
+          ) : device.connect === "jade" && unlock ? (
             <>
               <JadeQrUnlock onDone={() => setUnlock(false)} />
               <p style={{ textAlign: "center", margin: "14px 0 0" }}>

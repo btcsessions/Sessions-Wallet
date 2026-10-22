@@ -7,11 +7,8 @@ type Step = { state: "connecting" | "unlock" | "confirm" | "paired"; code?: stri
 /** Live progress from a plugged-in BitBox02 while `active`. */
 export function useBitboxProgress(active: boolean): Step | null {
   const [step, setStep] = useState<Step | null>(null);
+  // Listen the whole time the screen is open, so the first update isn't missed.
   useEffect(() => {
-    if (!active) {
-      setStep(null);
-      return;
-    }
     let off: (() => void) | undefined;
     let alive = true;
     void api()
@@ -27,8 +24,11 @@ export function useBitboxProgress(active: boolean): Step | null {
       alive = false;
       off?.();
     };
+  }, []);
+  useEffect(() => {
+    if (!active) setStep(null);
   }, [active]);
-  return step;
+  return active ? step : null;
 }
 
 /** What to do on the BitBox02 right now. */

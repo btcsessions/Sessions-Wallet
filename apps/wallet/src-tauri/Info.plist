@@ -4,5 +4,7 @@
 <dict>
   <key>NSCameraUsageDescription</key>
   <string>Scan QR codes for addresses, invoices and hardware wallets.</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Connect to your Blockstream Jade over Bluetooth to unlock it, add accounts and sign transactions.</string>
 </dict>
 </plist>

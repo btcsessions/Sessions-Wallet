@@ -9,6 +9,7 @@
 //! | multisig       | `wsh(sortedmulti)`          | this device (optionally) + others  |
 //! | watch-only     | any imported descriptor     | nobody                             |
 
+pub mod bitbox;
 mod bump;
 pub mod descriptors;
 pub mod discovery;
@@ -1993,6 +1994,106 @@ mod tests {
                 .sign_and_finalize(psbt, Some(device_sign(&unsigned.psbt_base64)))
                 .await
                 .unwrap();
+        }
+    }
+
+    // --- BitBox02 ------------------------------------------------------------
+
+    /// A hardware account on the "abandon … about" seed, as a BitBox02 adds it.
+    fn bitbox_account(dir: &std::path::Path, script: bitbox::ScriptKind) -> OnchainAccount {
+        let master = Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
+        let path = format!("m/{}'/0'/0'", script.purpose());
+        let key = descriptors::key_expression(&master, &path).unwrap();
+        let xpub = key.split_once(']').unwrap().1;
+        let desc = bitbox::descriptor(script, Network::Bitcoin, "73c5da0a", 0, xpub).unwrap();
+        OnchainAccount::open(OnchainConfig {
+            id: "bitbox".into(),
+            name: "BitBox02".into(),
+            network: Network::Bitcoin,
+            db_path: dir.join("bitbox.db"),
+            esplora_url: None,
+            descriptors: descriptors::import(&desc, Network::Bitcoin).unwrap(),
+            custody: Custody::Hardware {
+                device: "BitBox02".into(),
+                fingerprint: "73c5da0a".into(),
+            },
+            signer: None,
+            payjoin_receive: false,
+            payjoin_dir: None,
+            group: None,
+            account_index: None,
+        })
+        .unwrap()
+    }
+
+    /// The PSBT a hardware account hands to the device has everything the
+    /// BitBox02 needs, and its signatures go through the normal resume path.
+    #[tokio::test]
+    async fn bitbox_psbts_carry_what_the_device_needs() {
+        use bdk_wallet::bitcoin::bip32::Fingerprint;
+        let ours = Fingerprint::from_str("73c5da0a").unwrap();
+        let master = Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
+        for script in [bitbox::ScriptKind::Wpkh, bitbox::ScriptKind::Tr] {
+            let dir = tempfile::tempdir().unwrap();
+            let a = bitbox_account(dir.path(), script);
+            fund(&a, 100_000).await;
+            let q = a.prepare_send(send_req(40_000)).await.unwrap();
+            let unsigned = q.needs_signature.clone().expect("needs the device");
+            let psbt = OnchainAccount::psbt_from_b64(&unsigned.psbt_base64).unwrap();
+
+            bitbox::check_psbt(&psbt, ours).unwrap();
+            assert!(!bitbox::fully_signed(&psbt));
+            // A different device is turned away before anything is shown.
+            assert!(bitbox::check_psbt(&psbt, Fingerprint::from([1, 2, 3, 4])).is_err());
+
+            // Change carries its key origin, so the device shows it as change.
+            let change: Vec<_> = psbt
+                .outputs
+                .iter()
+                .filter_map(|o| match script {
+                    bitbox::ScriptKind::Wpkh => o.bip32_derivation.values().next().cloned(),
+                    bitbox::ScriptKind::Tr => {
+                        o.tap_key_origins.values().next().map(|(_, s)| s.clone())
+                    }
+                })
+                .collect();
+            assert_eq!(change.len(), 1, "{script:?}");
+            let (fp, path) = &change[0];
+            assert_eq!(*fp, ours);
+            let path: Vec<u32> = path.into_iter().map(|c| u32::from(*c)).collect();
+            assert_eq!(
+                path[..4],
+                [script.purpose() | 0x8000_0000, 0x8000_0000, 0x8000_0000, 1]
+            );
+
+            // SegWit v0 inputs need their previous transactions; Taproot doesn't.
+            let mut stripped = psbt.clone();
+            for i in &mut stripped.inputs {
+                i.non_witness_utxo = None;
+            }
+            assert_eq!(
+                bitbox::check_psbt(&stripped, ours).is_ok(),
+                script == bitbox::ScriptKind::Tr
+            );
+            // Jade reads amounts from the witness UTXOs alone.
+            bitbox::check_psbt_on(&bitbox::JADE, &psbt, ours).unwrap();
+            bitbox::check_psbt_on(&bitbox::JADE, &stripped, ours).unwrap();
+            let wrong =
+                bitbox::check_psbt_on(&bitbox::JADE, &psbt, Fingerprint::from([1, 2, 3, 4]));
+            assert!(wrong.unwrap_err().to_string().contains("Connect the Jade"));
+
+            // Stand in for the device: add signatures to the same PSBT.
+            let mut signed = psbt.clone();
+            let secp = bdk_wallet::bitcoin::secp256k1::Secp256k1::new();
+            signed.sign(&master, &secp).unwrap();
+            assert!(bitbox::fully_signed(&signed));
+            broadcast_offline(&a, &q, Some(signed.to_string())).await;
         }
     }
 

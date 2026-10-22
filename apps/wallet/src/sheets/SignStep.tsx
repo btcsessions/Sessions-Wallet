@@ -10,6 +10,7 @@ import { isMobile, trezorSign } from "../hw/trezor";
 import { errorText } from "../format";
 import { JadeQrUnlock } from "../hw/JadeUnlock";
 import { BitboxProgress, useBitboxProgress } from "../hw/BitboxProgress";
+import { JadeModeSwitch, JadeProgress, useJadeProgress, type JadeMode } from "../hw/JadeProgress";
 import { useWallet } from "../state/store";
 
 /** A signed PSBT from whatever the device showed: UR, base64 or hex. */
@@ -30,6 +31,8 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
   const [unlock, setUnlock] = useState(false);
   const [talking, setTalking] = useState(false);
   const bitbox = useBitboxProgress(talking);
+  const jade = useJadeProgress(talking);
+  const [jadeMode, setJadeMode] = useState<JadeMode>("ble");
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
   const quote = paused.awaitingSignature;
@@ -69,12 +72,13 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
       }
     });
 
-  const signWithBitbox = () =>
+  const signDirect = (kind: "bitbox" | "jade") =>
     run(async () => {
       setError(null);
       setTalking(true);
       try {
-        const psbt = await (await api()).bitboxSign(ns.psbtBase64);
+        const a = await api();
+        const psbt = kind === "bitbox" ? await a.bitboxSign(ns.psbtBase64) : await a.jadeSign(ns.psbtBase64);
         await (await api()).resume(paused, psbt, fee);
         await refresh();
         onDone();
@@ -110,8 +114,17 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
         <>
           <p className="notice">Plug in your {name}. You'll unlock it with your password, then check the amount and address on its screen and confirm.</p>
           <BitboxProgress step={bitbox} signing />
-          <button className="btn primary block" disabled={busy} onClick={signWithBitbox}>
+          <button className="btn primary block" disabled={busy} onClick={() => signDirect("bitbox")}>
             {busy ? "Waiting for BitBox02…" : "Sign with BitBox02"}
+          </button>
+        </>
+      ) : def?.connect === "jade" && jadeMode === "ble" ? (
+        <>
+          <JadeModeSwitch value={jadeMode} onChange={(m) => (setJadeMode(m), setError(null))} />
+          <p className="notice">Turn on Jade and choose Bluetooth. Enter your PIN on Jade if asked, then check the amount and address on its screen and confirm.</p>
+          <JadeProgress state={jade} signing />
+          <button className="btn primary block" disabled={busy} onClick={() => signDirect("jade")}>
+            {busy ? "Waiting for Jade…" : "Sign with Jade"}
           </button>
         </>
       ) : def?.connect === "jade" && unlock ? (
@@ -125,6 +138,7 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
         </>
       ) : (
         <>
+          {def?.connect === "jade" && <JadeModeSwitch value={jadeMode} onChange={(m) => (setJadeMode(m), setError(null))} />}
           {def?.connect === "jade" && (
             <p style={{ textAlign: "center", margin: "0 0 10px" }}>
               <button className="text-button" onClick={() => setUnlock(true)}>

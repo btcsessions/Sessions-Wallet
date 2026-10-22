@@ -1,0 +1,21 @@
+[package]
+name = "tauri-plugin-jade"
+description = "Bluetooth LE access to a Blockstream Jade on Android for Sessions Wallet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+# Lets tauri-build find the Android library under android/.
+links = "tauri-plugin-jade"
+
+[dependencies]
+tauri = { version = "2.12", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+base64 = "0.22"
+
+[build-dependencies]
+tauri-plugin = { version = "2.7", features = ["build"] }
