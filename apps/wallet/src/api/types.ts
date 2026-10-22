@@ -259,13 +259,18 @@ export type BitboxEvent =
   /** Connected, unlocked and paired. */
   | { kind: "paired" };
 
+/** What Jade is doing, in `jade://status` events. */
+export type JadeState = "scanning" | "reconnecting" | "connecting" | "pairing" | "unlock" | "confirm";
+
 /** Progress from a Blockstream Jade over Bluetooth (Tauri events `jade://status`, `jade://connected`). */
 export type JadeEvent =
   /**
-   * "scanning": looking for Jade nearby; "connecting": found it, connecting (the OS may ask to pair: confirm
-   * the same number on Jade); "unlock": enter the PIN on Jade (the PIN server is contacted automatically);
-   * "confirm": check and confirm on Jade's screen.
+   * "scanning": looking for Jade nearby; "reconnecting": the Bluetooth link dropped since the last use (Jade
+   * turned off or out of range), finding it again (no new pairing needed); "connecting": found it, connecting;
+   * "pairing": the phone asks to pair (first time, or again because the old pairing went stale): confirm the
+   * same number on Jade and the phone; "unlock": enter the PIN on Jade (the PIN server is contacted
+   * automatically); "confirm": check and confirm on Jade's screen.
    */
-  | { kind: "status"; state: "scanning" | "connecting" | "unlock" | "confirm" }
+  | { kind: "status"; state: JadeState }
   /** Connected and unlocked. */
   | { kind: "connected" };

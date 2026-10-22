@@ -127,7 +127,9 @@ const WIDE_SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 
 /// confirm) and our unspent coins (spent from another device). Far fewer
 /// server requests than checking every revealed address, so it finishes
 /// quickly even with several accounts syncing at once.
-fn light_sync_request(wallet: &Wallet) -> bdk_wallet::chain::spk_client::SyncRequest<(KeychainKind, u32)> {
+fn light_sync_request(
+    wallet: &Wallet,
+) -> bdk_wallet::chain::spk_client::SyncRequest<(KeychainKind, u32)> {
     let unused: Vec<_> = wallet.spk_index().unused_spks().collect();
     let unconfirmed: Vec<_> = wallet
         .transactions()

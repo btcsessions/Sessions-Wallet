@@ -3,8 +3,9 @@
 //! Android apps can't open USB devices on their own: the user grants access
 //! per device through `UsbManager`. The Kotlin side (`android/`) finds the
 //! BitBox02, asks for permission, opens it and claims its HID interface, then
-//! hands back the usbfs file descriptor and endpoint addresses. The wallet
-//! talks to the device over that descriptor with `nusb`.
+//! moves raw 64-byte HID reports with `bulkTransfer` on a background thread,
+//! as the BitBoxApp does. The wallet's Rust code (bitbox-api) does the U2F-HID
+//! framing and the protocol on top, through `write` and `read`.
 //!
 //! On other platforms the plugin does nothing.
 
@@ -12,7 +13,7 @@ use tauri::plugin::{Builder, TauriPlugin};
 use tauri::Runtime;
 
 #[cfg(target_os = "android")]
-pub use android::{BitboxUsb, OpenedDevice, UsbError};
+pub use android::{BitboxUsb, Opened, UsbError};
 
 /// Register with `tauri::Builder::plugin`.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
@@ -32,8 +33,10 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 
 #[cfg(target_os = "android")]
 mod android {
-    use std::os::fd::{BorrowedFd, OwnedFd};
+    use std::time::Duration;
 
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
     use serde::Deserialize;
     use tauri::plugin::mobile::PluginInvokeError;
     use tauri::plugin::PluginHandle;
@@ -42,16 +45,11 @@ mod android {
     /// Managed state: `app.state::<BitboxUsb<R>>()`.
     pub struct BitboxUsb<R: Runtime>(pub(crate) PluginHandle<R>);
 
-    /// An open BitBox02 with its HID interface claimed.
-    #[derive(Debug)]
-    pub struct OpenedDevice {
-        /// Our own handle on the usbfs file descriptor.
-        pub fd: OwnedFd,
-        pub interface: u8,
-        /// Interrupt IN endpoint address (e.g. 0x81).
-        pub endpoint_in: u8,
-        /// Interrupt OUT endpoint address (e.g. 0x01).
-        pub endpoint_out: u8,
+    /// The BitBox02 is open, its HID interface claimed.
+    #[derive(Debug, Deserialize)]
+    pub struct Opened {
+        /// USB product string, e.g. "BitBox02BTC".
+        pub product: String,
     }
 
     #[derive(Debug)]
@@ -60,6 +58,10 @@ mod android {
         NotFound,
         /// The user declined Android's USB access prompt.
         PermissionDenied,
+        /// Another app holds the device.
+        Busy,
+        /// Nothing arrived within the read timeout.
+        Timeout,
         Other(String),
     }
 
@@ -68,6 +70,8 @@ mod android {
             match self {
                 UsbError::NotFound => f.write_str("no BitBox02 found"),
                 UsbError::PermissionDenied => f.write_str("USB access was not allowed"),
+                UsbError::Busy => f.write_str("in use by another app"),
+                UsbError::Timeout => f.write_str("no answer"),
                 UsbError::Other(e) => f.write_str(e),
             }
         }
@@ -76,12 +80,8 @@ mod android {
     impl std::error::Error for UsbError {}
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Opened {
-        fd: i32,
-        interface: u8,
-        endpoint_in: u8,
-        endpoint_out: u8,
+    struct ReadReply {
+        data: String,
     }
 
     fn map_err(e: PluginInvokeError) -> UsbError {
@@ -89,7 +89,13 @@ mod android {
             PluginInvokeError::InvokeRejected(r) => match r.code.as_deref() {
                 Some("NOT_FOUND") => UsbError::NotFound,
                 Some("PERMISSION_DENIED") => UsbError::PermissionDenied,
-                _ => UsbError::Other(r.message.unwrap_or_else(|| "USB error".into())),
+                Some("BUSY") => UsbError::Busy,
+                Some("TIMEOUT") => UsbError::Timeout,
+                code => UsbError::Other(format!(
+                    "{} ({})",
+                    r.message.as_deref().unwrap_or("USB error"),
+                    code.unwrap_or("?")
+                )),
             },
             other => UsbError::Other(other.to_string()),
         }
@@ -98,30 +104,40 @@ mod android {
     impl<R: Runtime> BitboxUsb<R> {
         /// Find the BitBox02, ask for USB access if needed (Android shows a
         /// prompt), open it and claim its HID interface.
-        pub async fn open(&self) -> Result<OpenedDevice, UsbError> {
-            let o: Opened = self
-                .0
+        pub async fn open(&self) -> Result<Opened, UsbError> {
+            self.0
                 .run_mobile_plugin_async("open", serde_json::json!({}))
                 .await
-                .map_err(map_err)?;
-            if o.fd < 0 {
-                return Err(UsbError::Other("invalid USB file descriptor".into()));
-            }
-            // Kotlin keeps its UsbDeviceConnection (and so this fd) open
-            // until `close`; we take our own duplicate so its lifetime is ours.
-            // SAFETY: the fd is open and owned by the live connection.
-            let fd = unsafe { BorrowedFd::borrow_raw(o.fd) }
-                .try_clone_to_owned()
-                .map_err(|e| UsbError::Other(e.to_string()))?;
-            Ok(OpenedDevice {
-                fd,
-                interface: o.interface,
-                endpoint_in: o.endpoint_in,
-                endpoint_out: o.endpoint_out,
-            })
+                .map_err(map_err)
         }
 
-        /// Release the interface and close Android's connection.
+        /// Send `data` as 64-byte HID reports (raw: no report-ID byte; the
+        /// last report is zero-padded).
+        pub async fn write(&self, data: &[u8]) -> Result<(), UsbError> {
+            self.0
+                .run_mobile_plugin_async::<serde_json::Value>(
+                    "write",
+                    serde_json::json!({ "data": B64.encode(data) }),
+                )
+                .await
+                .map(|_| ())
+                .map_err(map_err)
+        }
+
+        /// One HID report, as many bytes as arrived, or `Timeout`.
+        pub async fn read(&self, timeout: Duration) -> Result<Vec<u8>, UsbError> {
+            let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+            let r: ReadReply = self
+                .0
+                .run_mobile_plugin_async("read", serde_json::json!({ "timeoutMs": ms }))
+                .await
+                .map_err(map_err)?;
+            B64.decode(r.data)
+                .map_err(|e| UsbError::Other(format!("bad data from the plugin: {e}")))
+        }
+
+        /// Release the interface and close Android's connection. A read in
+        /// progress fails at once.
         pub async fn close(&self) {
             let _ = self
                 .0

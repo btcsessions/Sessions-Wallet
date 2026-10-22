@@ -7,12 +7,32 @@
 //!
 //! Over Bluetooth LE ([`ble`]) the wallet speaks Jade's CBOR RPC ([`rpc`]):
 //! unlock, account xpubs, PSBT signing and address checks. The connected,
-//! unlocked Jade stays connected between calls, so the PIN comes up once.
+//! unlocked Jade stays connected between calls, so the PIN comes up once:
+//! Jade locks itself whenever its Bluetooth link drops.
+//!
+//! Keeping the link: while the app is in the foreground and Jade was used in
+//! the last [`KEEPALIVE_FOR`], a `ping` goes out every [`KEEPALIVE_EVERY`].
+//! That notices a dropped link early (so the next call reconnects instead of
+//! failing) and keeps Jade from powering off mid-task. Pings count as
+//! activity for Jade's idle timer, so they stop after that window (and in
+//! the background): Jade's own idle timeout, its owner's setting, then
+//! decides when it locks and powers off, as it would without this app. The
+//! link itself stays open.
+//!
+//! When the link has dropped (Jade off, out of range), the next call
+//! reconnects by itself ("reconnecting"); a Jade the phone is paired with
+//! isn't paired again. If the pairing went stale (Jade reset or forgot it),
+//! Android re-pairs: the person confirms the number again (see [`ble`]).
 //!
 //! Events for the UI:
-//! * `jade://status` `{ state: "scanning" | "connecting" | "unlock" | "confirm" }`:
-//!   "unlock" means enter the PIN on Jade (the PIN-server relay is automatic);
-//!   "confirm" means check and confirm on Jade's screen.
+//! * `jade://status` `{ state }`, one of
+//!   - "scanning": looking for Jade;
+//!   - "reconnecting": the link dropped since the last call; finding Jade again;
+//!   - "connecting": found it, connecting;
+//!   - "pairing": the phone asks to pair: confirm the same number on Jade and
+//!     the phone (Android; also when re-pairing after a stale pairing);
+//!   - "unlock": enter the PIN on Jade (the PIN-server relay is automatic);
+//!   - "confirm": check and confirm on Jade's screen.
 //! * `jade://connected` `{}`: connected and unlocked.
 
 mod ble;
@@ -20,8 +40,9 @@ mod rpc;
 
 use std::future::Future;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bitcoin::bip32::{Fingerprint, Xpub};
 use bitcoin::Psbt;
@@ -30,7 +51,7 @@ use rail_onchain::descriptors;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sessions_core::{AccountId, Error, Network, Result};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 use crate::config::AccountSpec;
@@ -163,25 +184,116 @@ const CALL_WAIT: Duration = Duration::from_secs(30);
 const FIRST_WAIT: Duration = Duration::from_secs(90);
 /// Waiting on a person: PIN entry, checking a transaction or an address.
 const USER_WAIT: Duration = Duration::from_secs(180);
+/// Ping a connected Jade this often (Android and Jade never drop a link
+/// that carries traffic, and a dead one shows up within this)...
+const KEEPALIVE_EVERY: Duration = Duration::from_secs(15);
+/// ...for this long after the wallet last used it. See the module docs.
+const KEEPALIVE_FOR: Duration = Duration::from_secs(5 * 60);
+/// Jade answers a ping at once.
+const PING_WAIT: Duration = Duration::from_secs(5);
 
 /// A connected, unlocked Jade.
 struct Session {
-    client: rpc::Client,
+    client: Arc<rpc::Client>,
     network: Network,
     fingerprint: Fingerprint,
     version: (u32, u32, u32),
 }
 
+/// The Bluetooth link to Jade, kept between calls.
+struct Conn {
+    /// Tells this link's keepalive task it's still the current one.
+    id: u64,
+    client: Arc<rpc::Client>,
+    /// Once unlocked.
+    session: Option<Arc<Session>>,
+}
+
 /// The Jade connected over Bluetooth, kept between calls.
 pub struct JadeState {
     /// Also serialises device access: one conversation at a time.
-    session: Mutex<Option<Arc<Session>>>,
+    conn: Mutex<Option<Conn>>,
+    next_id: AtomicU64,
+    /// When the wallet last asked Jade for something.
+    last_used: std::sync::Mutex<Instant>,
+    /// The app is on screen (Android tells us when it isn't).
+    foreground: AtomicBool,
+    /// The last link dropped on its own: the next connect is a reconnect.
+    dropped: AtomicBool,
 }
 
 impl JadeState {
     pub fn new() -> Self {
         JadeState {
-            session: Mutex::new(None),
+            conn: Mutex::new(None),
+            next_id: AtomicU64::new(1),
+            last_used: std::sync::Mutex::new(Instant::now()),
+            foreground: AtomicBool::new(true),
+            dropped: AtomicBool::new(false),
+        }
+    }
+
+    fn touch(&self) {
+        if let Ok(mut t) = self.last_used.lock() {
+            *t = Instant::now();
+        }
+    }
+
+    fn idle_for(&self) -> Duration {
+        self.last_used
+            .lock()
+            .map(|t| t.elapsed())
+            .unwrap_or(Duration::MAX)
+    }
+
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn set_foreground(&self, on_screen: bool) {
+        self.foreground.store(on_screen, Ordering::SeqCst);
+    }
+
+    /// Close the link (if any). `lost`: it dropped on its own.
+    async fn close_link(&self, slot: &mut Option<Conn>, lost: bool) {
+        if let Some(c) = slot.take() {
+            c.client.close().await;
+        }
+        if lost {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Whether the keepalive should ping now: on screen, and Jade used recently.
+fn keepalive_due(foreground: bool, idle: Duration) -> bool {
+    foreground && idle < KEEPALIVE_FOR
+}
+
+/// Pings Jade every [`KEEPALIVE_EVERY`] while [`keepalive_due`], for as long
+/// as link `id` is the current one. A ping Jade doesn't answer drops the
+/// link, so the next call reconnects.
+async fn keepalive(app: AppHandle, id: u64) {
+    loop {
+        tokio::time::sleep(KEEPALIVE_EVERY).await;
+        let jade = app.state::<JadeState>();
+        // Busy: a call is talking to Jade, which is traffic enough.
+        let Ok(mut slot) = jade.conn.try_lock() else {
+            continue;
+        };
+        let (client, up) = match slot.as_ref() {
+            Some(c) if c.id == id => (c.client.clone(), c.client.is_up()),
+            _ => return,
+        };
+        if !up {
+            tracing::info!("jade: link {id} dropped");
+            jade.close_link(&mut slot, true).await;
+            return;
+        }
+        if !keepalive_due(jade.foreground.load(Ordering::SeqCst), jade.idle_for()) {
+            continue;
+        }
+        if let Err(e) = client.ping(PING_WAIT).await {
+            tracing::info!("jade: keepalive got no answer ({e:?}); dropping link {id}");
+            jade.close_link(&mut slot, true).await;
+            return;
         }
     }
 }
@@ -225,21 +337,22 @@ fn allow_bluetooth() -> Error {
 
 /// Linux leaves pairing to the desktop's Bluetooth settings.
 #[cfg(any(not(any(target_os = "android", target_os = "ios")), test))]
-const LINUX_PAIR_HINT: &str = "Pair Jade with this computer first: open your system's Bluetooth \
-settings, add Jade and confirm the same number on Jade's screen. Then try again";
+const LINUX_PAIR_HINT: &str = "Jade and this computer aren't paired, or the pairing is out of \
+date (Jade was reset or forgot it). Open your system's Bluetooth settings, remove Jade if it's listed, \
+add it again and confirm the same number on Jade's screen. Then try again";
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn pair_first() -> Error {
     Error::Invalid(if cfg!(target_os = "linux") {
         LINUX_PAIR_HINT.into()
     } else {
-        "Pairing with Jade didn't finish. Remove Jade from your Bluetooth settings if it's listed, \
-         then try again and confirm the same number on Jade"
+        "Jade doesn't recognise this computer's pairing, or pairing didn't finish. Remove Jade \
+         from your Bluetooth settings if it's listed, then try again and confirm the same number on Jade"
             .into()
     })
 }
 
-#[cfg(target_os = "android")]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn forget_and_repair() -> Error {
     Error::Invalid(
         "Jade doesn't recognise this phone's pairing. Forget Jade in your Bluetooth settings, then try again and confirm the number on Jade"
@@ -290,34 +403,6 @@ fn friendly(f: Fail) -> Error {
 
 // --- connection -------------------------------------------------------------
 
-async fn connect(app: &AppHandle, network: Network) -> std::result::Result<Session, Fail> {
-    status(app, "scanning");
-    let link = ble::open(app).await?;
-    let client = rpc::Client::new(link);
-    let unlocked = unlock(
-        &client,
-        network,
-        || status(app, "unlock"),
-        |req| async move { relay(&req).await },
-    )
-    .await;
-    match unlocked {
-        Ok((version, fingerprint)) => {
-            let _ = app.emit("jade://connected", Connected {});
-            Ok(Session {
-                client,
-                network,
-                fingerprint,
-                version,
-            })
-        }
-        Err(e) => {
-            client.close().await;
-            Err(e)
-        }
-    }
-}
-
 /// Check the firmware, unlock (PIN on Jade, relayed to its PIN server by
 /// `relay`) and read the root fingerprint. `asking_pin` runs when Jade is
 /// about to ask for its PIN.
@@ -365,8 +450,9 @@ where
 }
 
 /// Run `op` on the connected Jade, connecting (and unlocking) first if
-/// needed. A stale connection (Jade turned off, out of range, locked) is
-/// dropped and retried once.
+/// needed. A link that dropped since the last call (Jade turned off, out of
+/// range) is reconnected, once, without asking the person to pair again; a
+/// Jade that locked itself is unlocked again on the same link.
 async fn with_jade<T, F, Fut>(
     app: &AppHandle,
     jade: &JadeState,
@@ -377,44 +463,120 @@ where
     F: Fn(Arc<Session>) -> Fut,
     Fut: Future<Output = std::result::Result<T, Fail>>,
 {
-    let mut slot = jade.session.lock().await;
-    if slot.as_ref().is_some_and(|s| s.network != network) {
-        if let Some(old) = slot.take() {
-            old.client.close().await;
-        }
+    let mut slot = jade.conn.lock().await;
+    jade.touch();
+    if slot
+        .as_ref()
+        .and_then(|c| c.session.as_ref())
+        .is_some_and(|s| s.network != network)
+    {
+        // Jade unlocks for one network at a time: start over.
+        jade.close_link(&mut slot, false).await;
+    }
+    if slot.as_ref().is_some_and(|c| !c.client.is_up()) {
+        tracing::info!("jade: link dropped since the last call");
+        jade.close_link(&mut slot, true).await;
     }
     let mut retried = false;
     loop {
-        let (session, fresh) = match slot.as_ref() {
-            Some(s) => (s.clone(), false),
+        let fresh_link = slot.is_none();
+        if fresh_link {
+            let reconnecting = jade.dropped.swap(false, Ordering::SeqCst);
+            status(
+                app,
+                if reconnecting {
+                    "reconnecting"
+                } else {
+                    "scanning"
+                },
+            );
+            let link = ble::open(app).await?;
+            let id = jade.next_id.fetch_add(1, Ordering::Relaxed);
+            *slot = Some(Conn {
+                id,
+                client: Arc::new(rpc::Client::new(link)),
+                session: None,
+            });
+            tauri::async_runtime::spawn(keepalive(app.clone(), id));
+        }
+        let conn = slot.as_mut().expect("connected above");
+        let session = match conn.session.clone() {
+            Some(s) => s,
             None => {
-                let s = Arc::new(connect(app, network).await.map_err(friendly)?);
-                *slot = Some(s.clone());
-                (s, true)
+                let client = conn.client.clone();
+                let unlocked = unlock(
+                    &client,
+                    network,
+                    || status(app, "unlock"),
+                    |req| async move { relay(&req).await },
+                )
+                .await;
+                match unlocked {
+                    Ok((version, fingerprint)) => {
+                        let _ = app.emit("jade://connected", Connected {});
+                        let s = Arc::new(Session {
+                            client,
+                            network,
+                            fingerprint,
+                            version,
+                        });
+                        conn.session = Some(s.clone());
+                        s
+                    }
+                    Err(Fail::Link(m)) => {
+                        tracing::info!("jade: link failed while unlocking ({m})");
+                        jade.close_link(&mut slot, true).await;
+                        if !fresh_link && !retried {
+                            retried = true;
+                            continue;
+                        }
+                        return Err(lost_connection());
+                    }
+                    Err(e) => {
+                        if matches!(e, Fail::Timeout) {
+                            // Jade is still on its PIN screen: hang up so it gives up too.
+                            jade.close_link(&mut slot, false).await;
+                        }
+                        return Err(friendly(e));
+                    }
+                }
             }
         };
         match op(session.clone()).await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                let stale = matches!(
-                    e,
-                    Fail::Link(_)
-                        | Fail::Rpc {
-                            code: rpc::HW_LOCKED,
-                            ..
-                        }
-                );
-                if stale || matches!(e, Fail::Timeout) {
-                    // Jade may still be mid-request: start over next time.
-                    *slot = None;
-                    session.client.close().await;
-                }
-                if stale && !fresh && !retried {
+            Ok(v) => {
+                jade.touch();
+                return Ok(v);
+            }
+            Err(Fail::Link(m)) => {
+                tracing::info!("jade: link failed during a call ({m})");
+                jade.close_link(&mut slot, true).await;
+                if !fresh_link && !retried {
                     retried = true;
                     continue;
                 }
-                return Err(friendly(e));
+                return Err(lost_connection());
             }
+            Err(Fail::Rpc {
+                code: rpc::HW_LOCKED,
+                ..
+            }) if !retried => {
+                // Jade locked itself (from its menu, say): unlock again on this link.
+                tracing::info!("jade: locked; unlocking again");
+                if let Some(c) = slot.as_mut() {
+                    c.session = None;
+                }
+                retried = true;
+            }
+            Err(Fail::Timeout) => {
+                // Nobody confirmed in time. Jade answers pings even mid-request:
+                // if it does, keep the link (and the unlock); its screen still
+                // shows the request, to confirm or cancel there.
+                if session.client.ping(PING_WAIT).await.is_err() {
+                    jade.close_link(&mut slot, true).await;
+                }
+                return Err(timed_out());
+            }
+            Err(e) => return Err(friendly(e)),
         }
     }
 }
@@ -792,6 +954,40 @@ mod tests {
             account_path(ScriptKind::Tr, Network::Testnet, 2),
             vec![86 | HARDENED, 1 | HARDENED, 2 | HARDENED]
         );
+    }
+
+    #[test]
+    fn keepalive_pings_only_while_in_use_and_on_screen() {
+        assert!(keepalive_due(true, Duration::ZERO));
+        assert!(keepalive_due(true, KEEPALIVE_FOR - Duration::from_secs(1)));
+        // Idle a while: let Jade's own idle timeout decide again.
+        assert!(!keepalive_due(true, KEEPALIVE_FOR));
+        // In the background: no pings.
+        assert!(!keepalive_due(false, Duration::ZERO));
+        // Several pings fit in the window, and a ping answers well within a period.
+        assert!(KEEPALIVE_FOR >= KEEPALIVE_EVERY * 4);
+        assert!(PING_WAIT < KEEPALIVE_EVERY);
+    }
+
+    #[test]
+    fn idle_time_counts_from_last_use() {
+        let jade = JadeState::new();
+        *jade.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(600);
+        assert!(jade.idle_for() >= Duration::from_secs(600));
+        jade.touch();
+        assert!(jade.idle_for() < Duration::from_secs(5));
+        jade.set_foreground(false);
+        assert!(!jade.foreground.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn ping_counts_any_answer() {
+        let client = rpc::Client::new(Box::new(rpc::tests::FakeJade::new(|req| {
+            assert_eq!(method(req), "ping");
+            vec![reply(req, Cbor::Integer(0.into()))]
+        })));
+        client.ping(PING_WAIT).await.unwrap();
+        assert!(client.is_up());
     }
 
     #[test]

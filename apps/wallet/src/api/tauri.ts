@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WalletApi } from "./index";
+import type { JadeState } from "./types";
 
 // Command names match apps/wallet/src-tauri/src/commands.rs.
 export const tauriApi: WalletApi = {
@@ -75,7 +76,7 @@ export const tauriApi: WalletApi = {
   jadeShowAddress: (account, index) => invoke("jade_show_address", { account, index }),
   onJade: async (cb) => {
     const offs = await Promise.all([
-      listen<{ state: "scanning" | "connecting" | "unlock" | "confirm" }>("jade://status", (e) => cb({ kind: "status", state: e.payload.state })),
+      listen<{ state: JadeState }>("jade://status", (e) => cb({ kind: "status", state: e.payload.state })),
       listen("jade://connected", () => cb({ kind: "connected" })),
     ]);
     return () => offs.forEach((off) => off());

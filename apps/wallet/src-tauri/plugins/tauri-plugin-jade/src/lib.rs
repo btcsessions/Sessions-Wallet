@@ -1,10 +1,13 @@
 //! Bluetooth LE access to a Blockstream Jade on Android.
 //!
 //! The Kotlin side (`android/`) asks for the Bluetooth permissions, scans for
-//! Jade's UART service, connects, bonds (Android shows the pairing dialog,
-//! Jade shows the matching number), turns on indications and writes. Bytes
-//! Jade sends come back through a channel. The wallet speaks Jade's CBOR RPC
-//! on top.
+//! Jade's UART service, connects (to the Jade the phone is already paired
+//! with, by its identity address, when there is one), bonds if needed
+//! (Android shows the pairing dialog, Jade shows the matching number), turns
+//! on indications and writes. Bytes Jade sends come back through a channel.
+//! The wallet speaks Jade's CBOR RPC on top, and decides what to do when the
+//! link fails ([`LinkFailure`]): retry, re-pair (`connect` with `repair`) or
+//! give up.
 //!
 //! On other platforms the plugin does nothing.
 
@@ -12,7 +15,7 @@ use tauri::plugin::{Builder, TauriPlugin};
 use tauri::Runtime;
 
 #[cfg(target_os = "android")]
-pub use android::{BleError, BleEvent, Connected, JadeBle};
+pub use android::{BleError, BleEvent, ConnectOutcome, Connected, JadeBle, LinkFailure};
 
 /// Register with `tauri::Builder::plugin`.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
@@ -45,22 +48,55 @@ mod android {
     /// What arrives from Jade after `connect`.
     #[derive(Debug)]
     pub enum BleEvent {
-        /// Found a Jade; connecting (and pairing, if needed).
+        /// Found a Jade; connecting.
         Connecting,
+        /// Android is showing its pairing dialog; Jade shows the number.
+        Pairing,
         /// Bytes Jade sent (one indication).
         Data(Vec<u8>),
-        /// The link dropped.
-        Disconnected,
+        /// The link dropped (GATT status / HCI reason).
+        Disconnected(i32),
+        /// The app went to the background (`true`) or came back (`false`).
+        Background(bool),
     }
 
     /// A connected, bonded Jade with indications on.
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[derive(Debug)]
     pub struct Connected {
         /// Advertised name, e.g. "Jade ABCDEF".
         pub name: String,
         /// Negotiated ATT MTU.
         pub mtu: u32,
+    }
+
+    /// Why a connect attempt failed, for the caller to decide what's next.
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct LinkFailure {
+        /// "connect" (no link), "dropped" (link went down while setting up),
+        /// "auth" (Jade refused our keys), "bondLost" (Android dropped the
+        /// pairing).
+        pub kind: String,
+        /// GATT status or HCI reason from Android.
+        pub status: i32,
+        /// The phone was already paired with this Jade before the attempt.
+        pub bonded: bool,
+        /// The attempt paired just now.
+        pub fresh_bond: bool,
+    }
+
+    /// A connect attempt's result.
+    #[derive(Debug)]
+    pub enum ConnectOutcome {
+        Connected(Connected),
+        Failed(LinkFailure),
+    }
+
+    #[derive(Deserialize)]
+    struct ConnectReply {
+        name: Option<String>,
+        mtu: Option<u32>,
+        failure: Option<LinkFailure>,
     }
 
     #[derive(Debug)]
@@ -77,7 +113,8 @@ mod android {
         NotFound,
         /// Pairing was declined or failed.
         PairingFailed,
-        /// Android has a pairing Jade no longer knows: forget it in settings.
+        /// Android has a pairing Jade no longer knows, and couldn't remove it:
+        /// forget Jade in settings.
         PairingStale,
         /// Not connected, or the link dropped.
         Disconnected,
@@ -119,15 +156,20 @@ mod android {
         }
     }
 
-    /// One message from the Kotlin side: `{ data: base64 }`, `{ connecting: true }`
-    /// or `{ disconnected: true }`.
+    /// One message from the Kotlin side: `{ data: base64 }`, `{ connecting: true }`,
+    /// `{ pairing: true }`, `{ disconnected: true, status }` or `{ background: bool }`.
     #[derive(Deserialize)]
     struct Incoming {
         data: Option<String>,
         #[serde(default)]
         connecting: bool,
         #[serde(default)]
+        pairing: bool,
+        #[serde(default)]
         disconnected: bool,
+        #[serde(default)]
+        status: i32,
+        background: Option<bool>,
     }
 
     fn parse(body: InvokeResponseBody) -> Option<BleEvent> {
@@ -136,10 +178,16 @@ mod android {
             InvokeResponseBody::Raw(b) => serde_json::from_slice(&b).ok()?,
         };
         if incoming.disconnected {
-            return Some(BleEvent::Disconnected);
+            return Some(BleEvent::Disconnected(incoming.status));
         }
         if incoming.connecting {
             return Some(BleEvent::Connecting);
+        }
+        if incoming.pairing {
+            return Some(BleEvent::Pairing);
+        }
+        if let Some(b) = incoming.background {
+            return Some(BleEvent::Background(b));
         }
         incoming
             .data
@@ -149,11 +197,22 @@ mod android {
 
     impl<R: Runtime> JadeBle<R> {
         /// Ask for Bluetooth access if needed, scan for up to `scan_ms`,
-        /// connect to the strongest Jade, bond (Android shows its pairing
-        /// dialog) and turn on indications. `on_event` hears `Connecting` once
-        /// a Jade is found, then everything Jade sends, in order, until the
-        /// link drops.
-        pub async fn connect<F>(&self, scan_ms: u64, on_event: F) -> Result<Connected, BleError>
+        /// connect to the paired (else strongest) Jade, bond if needed
+        /// (Android shows its pairing dialog) and turn on indications.
+        /// `repair` first removes the phone's stale pairing with the last
+        /// Jade, so it pairs afresh. `on_event` hears `Connecting` once a Jade
+        /// is found (`Pairing` if the dialog comes up), then everything Jade
+        /// sends, in order, until the link drops.
+        ///
+        /// Link failures come back as [`ConnectOutcome::Failed`] for the
+        /// caller to decide on; other problems (permissions, Bluetooth off, no
+        /// Jade around) as errors.
+        pub async fn connect<F>(
+            &self,
+            scan_ms: u64,
+            repair: bool,
+            on_event: F,
+        ) -> Result<ConnectOutcome, BleError>
         where
             F: Fn(BleEvent) + Send + Sync + 'static,
         {
@@ -163,13 +222,27 @@ mod android {
                 }
                 Ok(())
             });
-            self.0
+            let reply: ConnectReply = self
+                .0
                 .run_mobile_plugin_async(
                     "connect",
-                    serde_json::json!({ "onData": channel, "scanMs": scan_ms }),
+                    serde_json::json!({ "onData": channel, "scanMs": scan_ms, "repair": repair }),
                 )
                 .await
-                .map_err(map_err)
+                .map_err(map_err)?;
+            match reply {
+                ConnectReply {
+                    failure: Some(f), ..
+                } => Ok(ConnectOutcome::Failed(f)),
+                ConnectReply {
+                    name: Some(name),
+                    mtu: Some(mtu),
+                    ..
+                } => Ok(ConnectOutcome::Connected(Connected { name, mtu })),
+                _ => Err(BleError::Other(
+                    "unexpected reply from the Bluetooth plugin".into(),
+                )),
+            }
         }
 
         /// Write bytes to Jade, split to the link's MTU. Returns once every
@@ -206,8 +279,16 @@ mod android {
                 Some(BleEvent::Data(d)) if d == vec![1, 2, 3]
             ));
             assert!(matches!(
-                parse(json(r#"{"disconnected":true}"#)),
-                Some(BleEvent::Disconnected)
+                parse(json(r#"{"disconnected":true,"status":8}"#)),
+                Some(BleEvent::Disconnected(8))
+            ));
+            assert!(matches!(
+                parse(json(r#"{"pairing":true}"#)),
+                Some(BleEvent::Pairing)
+            ));
+            assert!(matches!(
+                parse(json(r#"{"background":true}"#)),
+                Some(BleEvent::Background(true))
             ));
             assert!(matches!(
                 parse(json(r#"{"connecting":true}"#)),

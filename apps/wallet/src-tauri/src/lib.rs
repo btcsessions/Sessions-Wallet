@@ -2,6 +2,8 @@ mod bitbox;
 mod commands;
 mod config;
 mod jade;
+#[cfg(target_os = "android")]
+mod logcat;
 mod state;
 
 use std::sync::Arc;
@@ -10,11 +12,13 @@ use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "android")]
+    logcat::init();
     tauri::Builder::default()
         // Trezor Suite on phones: we open its deep link, it calls us back.
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
-        // BitBox02 over USB on Android (USB permission + device handle).
+        // BitBox02 over USB on Android (USB permission + HID reports).
         .plugin(tauri_plugin_bitbox::init())
         // Blockstream Jade over Bluetooth LE on Android (scan, bond, GATT).
         .plugin(tauri_plugin_jade::init())

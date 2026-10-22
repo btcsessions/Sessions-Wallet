@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { JadeEvent } from "../api/types";
 
-type State = "scanning" | "connecting" | "unlock" | "confirm" | "connected";
+type State = "scanning" | "reconnecting" | "connecting" | "pairing" | "unlock" | "confirm" | "connected";
 
 /** Live progress from Jade over Bluetooth while `active`. */
 export function useJadeProgress(active: boolean): State | null {
@@ -30,6 +30,8 @@ export function JadeProgress({ state, signing }: { state: State | null; signing?
   const text = {
     scanning: "Looking for your Jade. Turn it on, choose Bluetooth, and keep it close.",
     connecting: "Connecting… If asked to pair, check the number matches the one on Jade and confirm on both.",
+    reconnecting: "Reconnecting to your Jade… keep it on and close by.",
+    pairing: "Pair Jade with this phone: check the number on Jade matches the one on your phone, then confirm on both.",
     unlock: "Enter your PIN on Jade. The app checks it with Jade's PIN server automatically.",
     confirm: "Check the amount and address on Jade, then confirm.",
     connected: signing ? "Check the amount and address on Jade, then confirm." : "Connected to Jade.",

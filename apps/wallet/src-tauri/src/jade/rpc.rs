@@ -57,6 +57,10 @@ pub trait Link: Send + Sync {
     async fn send(&self, bytes: &[u8]) -> Result<(), Fail>;
     /// The next bytes Jade sent. Waits; fails once the link is gone.
     async fn recv(&self) -> Result<Vec<u8>, Fail>;
+    /// False once the link is known to have dropped.
+    fn is_up(&self) -> bool {
+        true
+    }
     async fn close(&self);
 }
 
@@ -209,6 +213,20 @@ impl Client {
 
     pub async fn close(&self) {
         self.link.close().await;
+    }
+
+    /// False once the link is known to have dropped.
+    pub fn is_up(&self) -> bool {
+        self.link.is_up()
+    }
+
+    /// Jade answers `ping` at once, even mid-request, without touching the
+    /// screen or the wallet. It does count as activity for Jade's idle timer.
+    pub async fn ping(&self, wait: Duration) -> Result<(), Fail> {
+        match self.call("ping", None, wait).await {
+            Ok(_) | Err(Fail::Rpc { .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     fn new_id(&self) -> String {

@@ -1,9 +1,10 @@
 //! BitBox02 over USB: account descriptors, PSBT signing and address checks.
 //!
 //! Desktop opens the device with hidapi. Android asks for USB access through
-//! `tauri-plugin-bitbox` and talks to the device with nusb over the file
-//! descriptor Android hands back. The unlocked, paired device stays connected
-//! between calls, so the password and pairing code come up only once.
+//! `tauri-plugin-bitbox`, whose Kotlin side moves the raw 64-byte HID reports
+//! (`bulkTransfer`, as the BitBoxApp does). The unlocked, paired device stays
+//! connected between calls, so the password and pairing code come up only
+//! once.
 //!
 //! Events for the UI:
 //! * `bitbox://status` `{ state: "connecting" | "unlock" | "confirm" }`
@@ -39,6 +40,11 @@ type Device = PairedBitBox<TokioRuntime>;
 /// Generous: the user may be typing a password or reading the screen. Long
 /// enough for that, short enough that a forgotten device doesn't hang the UI.
 const TIMEOUT: Duration = Duration::from_secs(180);
+
+/// The first exchange (device info) needs nobody: a BitBox02 that hasn't
+/// answered by then won't, so say so instead of spinning.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ANSWER_WAIT: Duration = Duration::from_secs(15);
 
 /// The connected BitBox02, kept between calls.
 pub struct BitBoxState {
@@ -131,6 +137,11 @@ fn timed_out() -> Error {
     Error::Invalid(
         "The BitBox02 didn't respond in time. Unplug it, plug it back in and try again".into(),
     )
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn not_answering() -> Error {
+    Error::Invalid("The BitBox02 isn't answering. Unplug it, plug it back in and try again".into())
 }
 
 fn lost_connection() -> Error {
@@ -517,97 +528,124 @@ mod transport {
     use async_trait::async_trait;
     use bitbox_api::runtime::TokioRuntime;
     use bitbox_api::{BitBox, CommunicationError, NoiseConfig, ReadWrite};
-    use nusb::transfer::{Buffer, In, Interrupt, Out};
     use sessions_core::{Error, Result};
     use tauri::{AppHandle, Manager};
-    use tauri_plugin_bitbox::{BitboxUsb, OpenedDevice, UsbError};
+    use tauri_plugin_bitbox::{BitboxUsb, UsbError};
 
-    /// One HID report.
-    const REPORT: usize = 64;
-    /// Per USB transfer. The device answers every request at once (with
-    /// "not ready" while it waits for the user), so this is only a safety net.
-    const IO_TIMEOUT: Duration = Duration::from_secs(30);
+    /// Per read. The device answers every request at once (with "not ready"
+    /// while it waits for the user, and bitbox-api polls), so this is only a
+    /// safety net for a device that stopped talking.
+    const READ_TIMEOUT: Duration = Duration::from_secs(30);
+    /// Android's "allow access" prompt waits on the person.
+    const PERMISSION_WAIT: Duration = Duration::from_secs(120);
 
     pub async fn open(
         app: &AppHandle,
         noise: Box<dyn NoiseConfig>,
     ) -> Result<BitBox<TokioRuntime>> {
         let usb = app.state::<BitboxUsb<tauri::Wry>>();
-        let opened = usb.open().await.map_err(|e| match e {
-            UsbError::NotFound => super::plug_in(),
-            UsbError::PermissionDenied => Error::Invalid(
-                "Allow Sessions Wallet to use the BitBox02 when Android asks, then try again"
-                    .into(),
-            ),
-            UsbError::Other(m) => Error::Invalid(format!("Couldn't open the BitBox02: {m}")),
-        })?;
-        let transport = UsbTransport::new(opened).await.map_err(|e| {
-            tracing::warn!("bitbox: usb setup failed: {e}");
-            Error::Invalid(
-                "Couldn't open the BitBox02. Unplug it, plug it back in and try again".into(),
-            )
-        })?;
-        BitBox::<TokioRuntime>::from_transport(Box::new(transport), noise)
+        let opened = tokio::time::timeout(PERMISSION_WAIT, usb.open())
             .await
-            .map_err(super::friendly)
+            .map_err(|_| {
+                tracing::warn!("bitbox: USB open timed out (permission prompt unanswered?)");
+                allow_usb()
+            })?
+            .map_err(|e| {
+                tracing::warn!("bitbox: USB open failed: {e}");
+                match e {
+                    UsbError::NotFound => super::plug_in(),
+                    UsbError::PermissionDenied => allow_usb(),
+                    UsbError::Busy => Error::Invalid(
+                        "Another app is using the BitBox02. Close it (the BitBoxApp, for example) and try again"
+                            .into(),
+                    ),
+                    UsbError::Timeout | UsbError::Other(_) => Error::Invalid(
+                        "Couldn't open the BitBox02. Unplug it, plug it back in and try again"
+                            .into(),
+                    ),
+                }
+            })?;
+        tracing::info!(
+            "bitbox: opened {} over USB, asking for its info",
+            opened.product
+        );
+        let transport = PluginTransport {
+            app: app.clone(),
+            pending: SyncMutex::new(Vec::new()),
+        };
+        // The first exchange needs nobody, so it gets a short leash.
+        match tokio::time::timeout(
+            super::ANSWER_WAIT,
+            BitBox::<TokioRuntime>::from_transport(Box::new(transport), noise),
+        )
+        .await
+        {
+            Ok(Ok(b)) => {
+                tracing::info!("bitbox: device answered");
+                Ok(b)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("bitbox: first exchange failed: {e:?}");
+                Err(if super::is_transport(&e) {
+                    super::not_answering()
+                } else {
+                    super::friendly(e)
+                })
+            }
+            Err(_) => {
+                tracing::warn!("bitbox: no answer within {:?}", super::ANSWER_WAIT);
+                Err(super::not_answering())
+            }
+        }
+    }
+
+    fn allow_usb() -> Error {
+        Error::Invalid(
+            "Allow Sessions Wallet to use the BitBox02 when Android asks, then try again".into(),
+        )
     }
 
     /// Release the interface and Android's connection to the device.
     pub async fn release(app: &AppHandle) {
+        tracing::debug!("bitbox: releasing USB");
         app.state::<BitboxUsb<tauri::Wry>>().close().await;
     }
 
-    /// Raw 64-byte HID reports over the interrupt endpoints. bitbox-api adds
-    /// the U2F-HID framing on top.
-    struct UsbTransport {
-        out_ep: SyncMutex<nusb::Endpoint<Interrupt, Out>>,
-        in_ep: tokio::sync::Mutex<nusb::Endpoint<Interrupt, In>>,
+    /// Raw 64-byte HID reports through the plugin's Kotlin side. bitbox-api
+    /// adds the U2F-HID framing on top.
+    ///
+    /// bitbox-api's `write` is synchronous but always followed by a `read`
+    /// (every exchange is a query), so writes are queued here and sent, in
+    /// one plugin call, by the next `read`. Nothing blocks a tokio worker.
+    struct PluginTransport {
+        app: AppHandle,
+        pending: SyncMutex<Vec<u8>>,
     }
 
-    impl UsbTransport {
-        async fn new(o: OpenedDevice) -> std::result::Result<Self, nusb::Error> {
-            let device = nusb::Device::from_fd(o.fd).await?;
-            // Android already claimed it (detaching the kernel driver); claiming
-            // again on the same descriptor just registers it with nusb.
-            let intf = device.claim_interface(o.interface).await?;
-            Ok(UsbTransport {
-                out_ep: SyncMutex::new(intf.endpoint::<Interrupt, Out>(o.endpoint_out)?),
-                in_ep: tokio::sync::Mutex::new(intf.endpoint::<Interrupt, In>(o.endpoint_in)?),
-            })
-        }
-    }
-
-    impl bitbox_api::Threading for UsbTransport {}
+    impl bitbox_api::Threading for PluginTransport {}
 
     #[async_trait]
-    impl ReadWrite for UsbTransport {
+    impl ReadWrite for PluginTransport {
         fn write(&self, msg: &[u8]) -> std::result::Result<usize, CommunicationError> {
-            let n = msg.len().min(REPORT);
-            let mut report = vec![0u8; REPORT];
-            report[..n].copy_from_slice(&msg[..n]);
-            let mut ep = self.out_ep.lock().map_err(|_| CommunicationError::Write)?;
-            let done = ep.transfer_blocking(Buffer::from(report), IO_TIMEOUT);
-            done.status.map_err(|_| CommunicationError::Write)?;
-            Ok(n)
+            let mut pending = self.pending.lock().map_err(|_| CommunicationError::Write)?;
+            super::queue_reports(&mut pending, msg);
+            Ok(msg.len())
         }
 
         async fn read(&self) -> std::result::Result<Vec<u8>, CommunicationError> {
-            let mut ep = self.in_ep.lock().await;
-            if ep.pending() == 0 {
-                ep.submit(Buffer::new(REPORT));
+            let usb = self.app.state::<BitboxUsb<tauri::Wry>>();
+            let out =
+                std::mem::take(&mut *self.pending.lock().map_err(|_| CommunicationError::Write)?);
+            if !out.is_empty() {
+                usb.write(&out).await.map_err(|e| {
+                    tracing::warn!("bitbox: write of {} bytes failed: {e}", out.len());
+                    CommunicationError::Write
+                })?;
             }
-            match tokio::time::timeout(IO_TIMEOUT, ep.next_complete()).await {
-                Ok(done) => {
-                    done.status.map_err(|_| CommunicationError::Read)?;
-                    let data = done.buffer.into_vec();
-                    Ok(data[..done.actual_len.min(data.len())].to_vec())
-                }
-                Err(_) => {
-                    ep.cancel_all();
-                    let _ = tokio::time::timeout(Duration::from_secs(1), ep.next_complete()).await;
-                    Err(CommunicationError::Read)
-                }
-            }
+            usb.read(READ_TIMEOUT).await.map_err(|e| {
+                tracing::warn!("bitbox: read failed: {e}");
+                CommunicationError::Read
+            })
         }
     }
 }
@@ -630,6 +668,20 @@ mod transport {
     }
 
     pub async fn release(_app: &AppHandle) {}
+}
+
+/// One HID report.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const REPORT: usize = 64;
+
+/// Append `msg` as whole reports (zero-padded): raw USB, so no leading
+/// report-ID byte (hidapi wants one; the wire doesn't).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn queue_reports(pending: &mut Vec<u8>, msg: &[u8]) {
+    for chunk in msg.chunks(REPORT) {
+        pending.extend_from_slice(chunk);
+        pending.resize(pending.len() + (REPORT - chunk.len()), 0);
+    }
 }
 
 /// Shown when Linux won't let us open the device (no udev rule yet).
@@ -660,6 +712,23 @@ mod tests {
         assert!(is_transport(&DeviceError::Noise));
         assert!(!is_transport(&DeviceError::BitBox(BitBoxError::UserAbort)));
         assert!(LINUX_UDEV_HINT.contains("udev"));
+    }
+
+    #[test]
+    fn reports_are_raw_and_padded() {
+        let mut out = Vec::new();
+        queue_reports(&mut out, &[0xff; 64]);
+        assert_eq!(out, vec![0xff; 64]);
+        queue_reports(&mut out, &[1, 2, 3]);
+        assert_eq!(out.len(), 128);
+        // No report-ID byte in front: the frame starts the report.
+        assert_eq!(&out[64..67], &[1, 2, 3]);
+        assert!(out[67..].iter().all(|b| *b == 0));
+        let mut long = Vec::new();
+        queue_reports(&mut long, &[7; 65]);
+        assert_eq!(long.len(), 128);
+        assert_eq!(long[64], 7);
+        assert!(not_answering().to_string().contains("isn't answering"));
     }
 
     #[test]
