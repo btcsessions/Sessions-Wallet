@@ -13,7 +13,7 @@
 //! out a BIP21 URI with `pj=`. The app calls [`OnchainAccount::payjoin_tick`]
 //! periodically to drive open sessions.
 //!
-//! Probing mitigation (receiver): Esplora has no `testmempoolaccept`, so we
+//! Probing mitigation (receiver): our chain servers have no `testmempoolaccept`, so we
 //! can't fully prove the Original is broadcastable. We check that its inputs
 //! exist, are unspent and aren't ours, and then use the library's
 //! non-interactive path. If neither the payjoin nor the Original has appeared
@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use sessions_core::types::Custody;
 
-use crate::{err, now, Inner, OnchainAccount};
+use crate::{now, Inner, OnchainAccount};
 
 /// Default BIP77 payjoin directory (from the rust-payjoin `payjoin-cli` README).
 pub const DEFAULT_DIRECTORY: &str = "https://payjo.in";
@@ -546,11 +546,11 @@ impl OnchainAccount {
 
     /// Broadcast, treating "already known to the server" as success.
     pub(crate) async fn broadcast_idempotent(&self, tx: &Transaction) -> sessions_core::Result<()> {
-        match self.client.broadcast(tx).await {
+        match self.chain.broadcast(tx).await {
             Ok(()) => Ok(()),
-            Err(e) => match self.client.get_tx(&tx.compute_txid()).await {
+            Err(e) => match self.chain.get_tx(tx.compute_txid()).await {
                 Ok(Some(_)) => Ok(()),
-                _ => Err(err(e)),
+                _ => Err(e.into()),
             },
         }
     }
@@ -1025,8 +1025,8 @@ impl OnchainAccount {
         };
         if let Some(pj) = meta.payjoin_txid {
             if self
-                .client
-                .get_tx(&pj)
+                .chain
+                .get_tx(pj)
                 .await
                 .map_err(|e| e.to_string())?
                 .is_some()
@@ -1097,7 +1097,7 @@ impl OnchainAccount {
         Ok(())
     }
 
-    /// Esplora can't `testmempoolaccept`, so check what it can: every input
+    /// The chain server can't `testmempoolaccept`, so check what it can: every input
     /// exists, is unspent and isn't ours. Signatures aren't verified here;
     /// the 10-minute self-broadcast covers a bogus Original.
     async fn original_inputs_look_valid(&self, tx: &Transaction) -> Result<bool, String> {
@@ -1107,8 +1107,8 @@ impl OnchainAccount {
         for txin in &tx.input {
             let op = txin.previous_output;
             let Some(prev) = self
-                .client
-                .get_tx(&op.txid)
+                .chain
+                .get_tx(op.txid)
                 .await
                 .map_err(|e| e.to_string())?
             else {
@@ -1126,12 +1126,12 @@ impl OnchainAccount {
             {
                 return Ok(false);
             }
-            let status = self
-                .client
-                .get_output_status(&op.txid, op.vout as u64)
+            let unspent = self
+                .chain
+                .is_unspent(op, &out.script_pubkey)
                 .await
                 .map_err(|e| e.to_string())?;
-            if status.is_none_or(|s| s.spent) {
+            if !unspent {
                 return Ok(false);
             }
         }
@@ -1292,7 +1292,7 @@ impl OnchainAccount {
                     .into_iter()
                     .chain(history.fallback_tx().map(|t| t.compute_txid()));
                 for id in ids {
-                    if let Some(tx) = self.client.get_tx(&id).await.map_err(|e| s(&e))? {
+                    if let Some(tx) = self.chain.get_tx(id).await.map_err(|e| s(&e))? {
                         found.insert(id, tx);
                     }
                 }
@@ -1384,6 +1384,7 @@ mod tests {
             network: Network::Bitcoin,
             db_path: dir.join(format!("{name}.db")),
             esplora_url: None,
+            electrum_url: None,
             descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, 0).unwrap(),
             custody: Custody::Hot,
             signer: Some(master),

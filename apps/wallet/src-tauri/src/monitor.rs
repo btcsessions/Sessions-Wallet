@@ -1,7 +1,8 @@
-//! Push, not poll: on-chain updates from a mempool.space-style websocket.
+//! Push, not poll: on-chain updates pushed by the chain server.
 //!
-//! While the wallet is unlocked, one websocket stays open to the chain
-//! server (when it's a mempool server, e.g. mempool.space or a self-hosted
+//! While the wallet is unlocked, one connection stays open to the chain
+//! server: Electrum subscriptions (the default), or the websocket of a
+//! mempool server (an Esplora URL like mempool.space or a self-hosted
 //! mempool on Umbrel). It
 //!
 //! * listens for new blocks and then light-syncs every on-chain account
@@ -14,6 +15,12 @@
 //!
 //! Accounts report changes through their change hook (the `wallet://changed`
 //! event). Plain Esplora servers have no websocket: those keep polling.
+//!
+//! Electrum (`blockchain.headers.subscribe`, `blockchain.scripthash.subscribe`):
+//! up to [`MAX_SCRIPTS_ELECTRUM`] scripts, far more than mempool's 10. A
+//! status change means the script's history changed: its history is fetched
+//! and new transactions added to the account. `server.ping` every
+//! [`PING_EVERY`] keeps the connection (and NAT mappings) alive.
 //!
 //! mempool's websocket API (backend `websocket-handler.ts`):
 //! * `{"action":"want","data":["blocks"]}` → `{"blocks":[…]}` now and
@@ -35,7 +42,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use rail_onchain::{OnchainAccount, Txid};
+use rail_onchain::electrum::{self as el, Servers};
+use rail_onchain::push::{Notification, PushConn};
+use rail_onchain::{ChainServer, OnchainAccount, Txid};
 use serde_json::{json, Value};
 use sessions_core::{AccountId, Rail};
 use tokio::sync::mpsc;
@@ -47,6 +56,10 @@ const MAX_ADDRESSES: usize = 10;
 const MAX_SCRIPTS: usize = 10;
 /// Unpaid receive addresses watched per account.
 const PER_ACCOUNT: usize = 5;
+/// The same over Electrum, which allows many more subscriptions.
+const PER_ACCOUNT_ELECTRUM: usize = 20;
+/// Scripts subscribed to over Electrum, in all.
+const MAX_SCRIPTS_ELECTRUM: usize = 100;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const PING_EVERY: Duration = Duration::from_secs(30);
 /// No message (not even a pong) for this long: the connection is dead.
@@ -219,13 +232,29 @@ pub struct Monitor {
 }
 
 impl Monitor {
-    /// Start for the wallet's chain server. Without a mempool websocket it
+    /// Start for the wallet's chain server. Without push (plain Esplora) it
     /// only kicks off first scans (see [`Monitor::set_accounts`]).
-    pub fn start(esplora_url: &str, accounts: Vec<Arc<OnchainAccount>>) -> Self {
+    pub fn start(server: &ChainServer, accounts: Vec<Arc<OnchainAccount>>) -> Self {
         let shared: Accounts = Default::default();
         let (tx, rx) = mpsc::unbounded_channel();
-        let task = match (ws_url(esplora_url), tokio::runtime::Handle::try_current()) {
-            (Some(url), Ok(rt)) => Some(rt.spawn(run(url, shared.clone(), tx.clone(), rx))),
+        let task = match (server, tokio::runtime::Handle::try_current()) {
+            (ChainServer::Electrum(list), Ok(rt)) => match el::pool_for(list) {
+                // The pool's server list: push and requests agree on which
+                // server works.
+                Ok(pool) => Some(rt.spawn(run_electrum(
+                    pool.servers().clone(),
+                    shared.clone(),
+                    tx.clone(),
+                    rx,
+                ))),
+                Err(e) => {
+                    tracing::warn!("no push updates: {e}");
+                    None
+                }
+            },
+            (ChainServer::Esplora(url), Ok(rt)) => {
+                ws_url(url).map(|ws| rt.spawn(run(ws, shared.clone(), tx.clone(), rx)))
+            }
             _ => None,
         };
         let m = Monitor {
@@ -355,24 +384,34 @@ async fn run(
             }
             Err(ConnectError::Other(e)) => tracing::debug!("websocket {url}: {e}"),
         }
-        // Wait before reconnecting, but go at once when a Receive screen
-        // wants an address watched.
-        let wait = tokio::time::sleep(backoff);
-        tokio::pin!(wait);
-        loop {
-            tokio::select! {
-                _ = &mut wait => break,
-                cmd = rx.recv() => match cmd {
-                    None => return,
-                    Some(Cmd::Watch(a, address)) => {
-                        shown.insert(a, address);
-                        break;
-                    }
-                    Some(Cmd::Refresh) => {}
-                },
-            }
+        if !wait_to_reconnect(backoff, &mut rx, &mut shown).await {
+            return;
         }
         backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
+}
+
+/// Wait before reconnecting, but go at once when a Receive screen wants an
+/// address watched. `false` when the monitor was dropped.
+async fn wait_to_reconnect(
+    backoff: Duration,
+    rx: &mut mpsc::UnboundedReceiver<Cmd>,
+    shown: &mut BTreeMap<AccountId, String>,
+) -> bool {
+    let wait = tokio::time::sleep(backoff);
+    tokio::pin!(wait);
+    loop {
+        tokio::select! {
+            _ = &mut wait => return true,
+            cmd = rx.recv() => match cmd {
+                None => return false,
+                Some(Cmd::Watch(a, address)) => {
+                    shown.insert(a, address);
+                    return true;
+                }
+                Some(Cmd::Refresh) => {}
+            },
+        }
     }
 }
 
@@ -534,6 +573,266 @@ impl Session<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Electrum
+// ---------------------------------------------------------------------------
+
+/// The scripts subscribed to over Electrum: who owns each one and its last
+/// known status (a hash of its history; `None` while it has none).
+#[derive(Debug, Default)]
+pub struct ScriptWatch {
+    subs: HashMap<String, (AccountId, Option<String>)>,
+}
+
+impl ScriptWatch {
+    /// Bring the subscriptions in line with `wanted` (script hash → owner).
+    /// Forgets the ones no longer wanted and returns them (to unsubscribe),
+    /// with the new ones (to subscribe). Owners of kept ones are updated.
+    pub fn diff(&mut self, wanted: &HashMap<String, AccountId>) -> (Vec<String>, Vec<String>) {
+        let gone: Vec<String> = self
+            .subs
+            .keys()
+            .filter(|h| !wanted.contains_key(*h))
+            .cloned()
+            .collect();
+        for h in &gone {
+            self.subs.remove(h);
+        }
+        let mut new = Vec::new();
+        for (h, account) in wanted {
+            match self.subs.get_mut(h) {
+                Some(sub) => sub.0 = account.clone(),
+                None => new.push(h.clone()),
+            }
+        }
+        new.sort();
+        (new, gone)
+    }
+
+    /// Subscribed to `hash`: its status now. `true` when it already has a
+    /// history, which for an address we expected to be unused means a
+    /// payment arrived (worth a look).
+    pub fn subscribed(&mut self, hash: String, account: AccountId, status: Option<String>) -> bool {
+        let has_history = status.is_some();
+        self.subs.insert(hash, (account, status));
+        has_history
+    }
+
+    /// The server says `hash` has a new status: its owner when that's a
+    /// real change of a script we watch.
+    pub fn update(&mut self, hash: &str, status: Option<String>) -> Option<AccountId> {
+        let sub = self.subs.get_mut(hash)?;
+        if sub.1 == status {
+            return None;
+        }
+        sub.1 = status;
+        Some(sub.0.clone())
+    }
+
+    #[cfg(test)]
+    pub fn owner(&self, hash: &str) -> Option<&AccountId> {
+        self.subs.get(hash).map(|s| &s.0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.subs.len()
+    }
+}
+
+/// Script hash → owner for a watch plan's addresses.
+fn script_hashes(plan: &WatchPlan) -> HashMap<String, AccountId> {
+    plan.addresses
+        .iter()
+        .filter_map(|a| {
+            let spk = bitcoin::Address::from_str(a)
+                .ok()?
+                .assume_checked()
+                .script_pubkey();
+            Some((el::script_hash(&spk), plan.owner.get(a)?.clone()))
+        })
+        .collect()
+}
+
+async fn run_electrum(
+    servers: Arc<Servers>,
+    accounts: Accounts,
+    tx: mpsc::UnboundedSender<Cmd>,
+    mut rx: mpsc::UnboundedReceiver<Cmd>,
+) {
+    let mut shown = BTreeMap::new();
+    let busy = Arc::new(AtomicBool::new(false));
+    let mut backoff = MIN_BACKOFF;
+    let mut first = true;
+    loop {
+        // No on-chain accounts: nothing to watch, no connection.
+        while list(&accounts).is_empty() {
+            match rx.recv().await {
+                None => return,
+                Some(Cmd::Watch(a, address)) => {
+                    shown.insert(a, address);
+                }
+                Some(Cmd::Refresh) => {}
+            }
+        }
+        let started = Instant::now();
+        match PushConn::connect(&servers).await {
+            Ok((conn, notes)) => {
+                tracing::info!("push updates from Electrum server {}", conn.server());
+                if !first {
+                    // Anything that happened while we were disconnected.
+                    sync_all(&accounts, &tx, &busy);
+                }
+                first = false;
+                let mut s = ElectrumSession {
+                    accounts: &accounts,
+                    tx: &tx,
+                    busy: &busy,
+                    shown: &mut shown,
+                    watch: ScriptWatch::default(),
+                    tip: None,
+                };
+                match s.run(&conn, notes, &mut rx).await {
+                    Ok(()) => return,
+                    Err(why) => tracing::info!("Electrum push connection dropped: {why}"),
+                }
+                if started.elapsed() > MAX_BACKOFF {
+                    backoff = MIN_BACKOFF;
+                }
+            }
+            Err(e) => tracing::info!("no Electrum server for push updates: {e}"),
+        }
+        if !wait_to_reconnect(backoff, &mut rx, &mut shown).await {
+            return;
+        }
+        backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
+}
+
+struct ElectrumSession<'a> {
+    accounts: &'a Accounts,
+    tx: &'a mpsc::UnboundedSender<Cmd>,
+    busy: &'a Arc<AtomicBool>,
+    shown: &'a mut BTreeMap<AccountId, String>,
+    watch: ScriptWatch,
+    tip: Option<u32>,
+}
+
+impl ElectrumSession<'_> {
+    /// `Ok` when the monitor was dropped, `Err` when the connection was lost.
+    async fn run(
+        &mut self,
+        conn: &PushConn,
+        mut notes: mpsc::UnboundedReceiver<Notification>,
+        rx: &mut mpsc::UnboundedReceiver<Cmd>,
+    ) -> Result<(), String> {
+        self.tip = Some(conn.subscribe_headers().await?);
+        self.resubscribe(conn).await?;
+        let mut ping = tokio::time::interval(PING_EVERY);
+        ping.tick().await;
+        let mut refresh = tokio::time::interval(REFRESH_EVERY);
+        refresh.tick().await;
+        loop {
+            tokio::select! {
+                n = notes.recv() => match n {
+                    None => return Err("closed by server".into()),
+                    Some(Notification::Header { height }) => {
+                        if self.tip != Some(height) {
+                            self.tip = Some(height);
+                            sync_all(self.accounts, self.tx, self.busy);
+                        }
+                    }
+                    Some(Notification::Script { hash, status }) => {
+                        if let Some(account) = self.watch.update(&hash, status) {
+                            self.changed(conn, &hash, account).await?;
+                        }
+                    }
+                },
+                cmd = rx.recv() => match cmd {
+                    None => return Ok(()),
+                    Some(Cmd::Watch(a, address)) => {
+                        self.shown.insert(a, address);
+                        self.resubscribe(conn).await?;
+                    }
+                    Some(Cmd::Refresh) => self.resubscribe(conn).await?,
+                },
+                _ = ping.tick() => conn.ping().await?,
+                _ = refresh.tick() => self.resubscribe(conn).await?,
+            }
+        }
+    }
+
+    /// A watched script's history changed: add its new transactions to the
+    /// account (in the background), then refresh the watch set.
+    async fn changed(
+        &mut self,
+        conn: &PushConn,
+        hash: &str,
+        owner: AccountId,
+    ) -> Result<(), String> {
+        let history = conn.history(hash).await?;
+        let Some(account) = list(self.accounts).into_iter().find(|a| *a.id() == owner) else {
+            return Ok(());
+        };
+        let ids: Vec<Txid> = history
+            .iter()
+            .filter_map(|h| Txid::from_str(&h.txid).ok())
+            .collect();
+        let confirmed = history.iter().any(|h| h.height > 0);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            if !ids.is_empty() {
+                if let Err(e) = account.apply_txids(ids).await {
+                    tracing::warn!(account = %account.id(), "pushed transaction: {e}");
+                }
+            }
+            // Confirmations come from a sync.
+            if confirmed {
+                let _ = account.sync().await;
+            }
+            let _ = tx.send(Cmd::Refresh);
+        });
+        Ok(())
+    }
+
+    /// Recompute the watch set and (un)subscribe the difference.
+    async fn resubscribe(&mut self, conn: &PushConn) -> Result<(), String> {
+        let accounts = list(self.accounts);
+        self.shown
+            .retain(|id, _| accounts.iter().any(|a| a.id() == id));
+        let mut candidates = Vec::with_capacity(accounts.len());
+        for a in &accounts {
+            candidates.push((
+                a.id().clone(),
+                a.watch_addresses(PER_ACCOUNT_ELECTRUM).await,
+            ));
+        }
+        let plan = plan_watch(self.shown, &candidates, MAX_SCRIPTS_ELECTRUM, 0);
+        let wanted = script_hashes(&plan);
+        let (new, gone) = self.watch.diff(&wanted);
+        if !gone.is_empty() {
+            conn.unsubscribe_scripts(&gone).await;
+        }
+        if new.is_empty() {
+            return Ok(());
+        }
+        let statuses = conn.subscribe_scripts(&new).await;
+        let mut active = Vec::new();
+        for (hash, status) in new.into_iter().zip(statuses) {
+            let status = status?;
+            let account = wanted[&hash].clone();
+            if self.watch.subscribed(hash.clone(), account.clone(), status) {
+                active.push((hash, account));
+            }
+        }
+        tracing::debug!("watching {} scripts over Electrum", self.watch.len());
+        // Paid while we weren't watching.
+        for (hash, account) in active {
+            self.changed(conn, &hash, account).await?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,5 +984,86 @@ mod tests {
             plan.scripts,
             vec!["001463594b503bb1f42388a628b8cd7fe582b7fc0233".to_string()]
         );
+    }
+
+    #[test]
+    fn electrum_watch_set_diff_and_status_changes() {
+        let mut w = ScriptWatch::default();
+        let wanted: HashMap<String, AccountId> =
+            [("h1".to_string(), id("a")), ("h2".to_string(), id("b"))].into();
+        let (new, gone) = w.diff(&wanted);
+        assert_eq!(new, vec!["h1".to_string(), "h2".to_string()]);
+        assert!(gone.is_empty());
+        // h1 unused (no history); h2 already has history: worth a look.
+        assert!(!w.subscribed("h1".into(), id("a"), None));
+        assert!(w.subscribed("h2".into(), id("b"), Some("s0".into())));
+        assert_eq!(w.len(), 2);
+
+        // Same status again (e.g. a duplicate notification): nothing to do.
+        assert_eq!(w.update("h2", Some("s0".into())), None);
+        // A payment to h1.
+        assert_eq!(w.update("h1", Some("s1".into())), Some(id("a")));
+        assert_eq!(w.update("h1", Some("s1".into())), None);
+        // Replaced / dropped from the mempool: back to no history is a change too.
+        assert_eq!(w.update("h1", None), Some(id("a")));
+        // Not watched (e.g. after unsubscribing on a server that keeps sending).
+        assert_eq!(w.update("h9", Some("x".into())), None);
+
+        // h1 got used: no longer wanted; h3 is the next address.
+        let wanted: HashMap<String, AccountId> =
+            [("h2".to_string(), id("b")), ("h3".to_string(), id("a"))].into();
+        let (new, gone) = w.diff(&wanted);
+        assert_eq!(new, vec!["h3".to_string()]);
+        assert_eq!(gone, vec!["h1".to_string()]);
+        assert_eq!(w.owner("h1"), None);
+        assert_eq!(w.owner("h2"), Some(&id("b")));
+        assert_eq!(w.update("h1", Some("s2".into())), None);
+    }
+
+    #[test]
+    fn electrum_watch_plan_uses_script_hashes_and_its_own_limit() {
+        let addrs: Vec<String> = (0..3)
+            .map(|_| "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu".to_string())
+            .chain(["bc1qnjg0jd8228aq7egyzacy8cys3knf9xvrerkf9g".to_string()])
+            .collect();
+        let plan = plan_watch(
+            &BTreeMap::new(),
+            &[(id("a"), addrs)],
+            MAX_SCRIPTS_ELECTRUM,
+            0,
+        );
+        let hashes = script_hashes(&plan);
+        // Duplicates collapse; each maps to its Electrum script hash.
+        assert_eq!(hashes.len(), 2);
+        let spk = bitcoin::Address::from_str("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+            .unwrap()
+            .assume_checked()
+            .script_pubkey();
+        assert_eq!(hashes[&el::script_hash(&spk)], id("a"));
+        // The cap holds across accounts.
+        let many: Vec<(AccountId, Vec<String>)> = (0..10)
+            .map(|i| {
+                (
+                    id(&format!("acct{i}")),
+                    (0..20)
+                        .map(|j| {
+                            let spk = bitcoin::ScriptBuf::new_p2wpkh(
+                                &bitcoin::hashes::Hash::from_byte_array([(i * 20 + j) as u8; 20]),
+                            );
+                            bitcoin::Address::from_script(&spk, bitcoin::Network::Bitcoin)
+                                .unwrap()
+                                .to_string()
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let plan = plan_watch(&BTreeMap::new(), &many, MAX_SCRIPTS_ELECTRUM, 0);
+        assert_eq!(plan.addresses.len(), MAX_SCRIPTS_ELECTRUM);
+        assert_eq!(script_hashes(&plan).len(), MAX_SCRIPTS_ELECTRUM);
+        // Round robin: every account got its first addresses watched.
+        for i in 0..10 {
+            assert!(plan.owner.values().any(|a| a.0 == format!("acct{i}")));
+        }
     }
 }

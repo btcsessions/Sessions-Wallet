@@ -15,6 +15,7 @@ export function SettingsSheet() {
   const [busy, run] = useBusy();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [server, setServer] = useState("");
+  const [electrum, setElectrum] = useState("");
   const [breezKey, setBreezKey] = useState("");
   const notify = useWallet((s) => s.notify);
 
@@ -24,13 +25,14 @@ export function SettingsSheet() {
       .then((s) => {
         setSettings(s);
         setServer(s.esploraUrl ?? "");
+        setElectrum(s.electrumUrl ?? "");
       })
       .catch(() => {});
   }, []);
 
   const saveConnection = () =>
     run(async () => {
-      await (await api()).saveSettings({ esploraUrl: server.trim() || null, hasBreezKey: false, breezApiKey: breezKey.trim() || null });
+      await (await api()).saveSettings({ esploraUrl: server.trim() || null, electrumUrl: electrum.trim() || null, hasBreezKey: false, breezApiKey: breezKey.trim() || null });
       setBreezKey("");
       setSettings(await (await api()).settings());
       notify("ok", "Saved. Takes effect next time you unlock.");
@@ -86,11 +88,23 @@ export function SettingsSheet() {
       <p className="group-label">Connection</p>
       <div className="group">
         <label className="cell">
-          <span className="grow">Your server</span>
+          <span className="grow">Electrum server</span>
+          <input
+            value={electrum}
+            onChange={(e) => setElectrum(e.target.value)}
+            placeholder="Public servers"
+            inputMode="url"
+            autoCapitalize="off"
+            spellCheck={false}
+            style={{ textAlign: "right" }}
+          />
+        </label>
+        <label className="cell">
+          <span className="grow">Esplora server</span>
           <input
             value={server}
             onChange={(e) => setServer(e.target.value)}
-            placeholder="mempool.space"
+            placeholder="Optional"
             inputMode="url"
             autoCapitalize="off"
             spellCheck={false}
@@ -110,8 +124,16 @@ export function SettingsSheet() {
           />
         </label>
       </div>
-      <p className="group-note">Point at your own Esplora or mempool instance (Umbrel, Start9) so no third party sees your addresses.</p>
-      <button className="btn block" style={{ marginBottom: 22 }} disabled={busy || (server === (settings?.esploraUrl ?? "") && !breezKey.trim())} onClick={saveConnection}>
+      <p className="group-note">
+        Point at your own Electrum server (Umbrel, Start9), e.g. ssl://umbrel.local:50002 or tcp://192.168.1.10:50001, so no third party sees your addresses. Leave empty to use public servers, with automatic fallback.
+        {settings?.chainServer ? ` Connected to ${settings.chainServer}.` : ""}
+      </p>
+      <button
+        className="btn block"
+        style={{ marginBottom: 22 }}
+        disabled={busy || (server === (settings?.esploraUrl ?? "") && electrum === (settings?.electrumUrl ?? "") && !breezKey.trim())}
+        onClick={saveConnection}
+      >
         Save connection
       </button>
       </>

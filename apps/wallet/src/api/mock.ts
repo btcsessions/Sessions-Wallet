@@ -97,7 +97,19 @@ function p(
 let mockLnAddress: LightningAddress | null = null;
 const mockPayjoin = new Set<string>();
 
-let mockSettings: Settings = { esploraUrl: null, hasBreezKey: true };
+const mockElectrumDefaults = [
+  "ssl://electrum.blockstream.info:50002",
+  "ssl://fulcrum.bullbitcoin.com:50002",
+  "ssl://electrum2.bluewallet.io:443",
+  "ssl://electrum.acinq.co:50002",
+];
+let mockSettings: Settings = {
+  esploraUrl: null,
+  electrumUrl: null,
+  chainServer: mockElectrumDefaults[0],
+  defaultElectrumServers: mockElectrumDefaults,
+  hasBreezKey: true,
+};
 
 let layout: Layout = {
   version: 1,
@@ -591,7 +603,19 @@ export const mockApi: WalletApi = {
     return { ...mockSettings };
   },
   async saveSettings(s) {
-    mockSettings = { esploraUrl: s.esploraUrl, hasBreezKey: mockSettings.hasBreezKey || !!s.breezApiKey };
+    let electrumUrl = mockSettings.electrumUrl ?? null;
+    if (s.electrumUrl !== undefined) {
+      const e = s.electrumUrl?.trim() ?? "";
+      if (e && !/^((ssl|tcp|tls):\/\/)?[^\s/@]+(:\d+)?$/i.test(e)) throw new Error("That Electrum server address isn't valid");
+      electrumUrl = e ? (e.includes("://") ? e.replace(/^tls:/i, "ssl:") : `ssl://${e}`) : null;
+    }
+    mockSettings = {
+      ...mockSettings,
+      esploraUrl: s.esploraUrl,
+      electrumUrl,
+      chainServer: electrumUrl ?? s.esploraUrl ?? mockElectrumDefaults[0],
+      hasBreezKey: mockSettings.hasBreezKey || !!s.breezApiKey,
+    };
   },
   async lightningAddress(account) {
     return account === "spending" ? mockLnAddress : null;

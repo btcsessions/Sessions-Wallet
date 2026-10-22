@@ -1,6 +1,6 @@
 //! How on-chain accounts use their chain server.
 //!
-//! * **Lanes.** Every account talking to the same Esplora server shares one
+//! * **Lanes.** Every account talking to the same server shares one
 //!   request budget, so several accounts syncing at once queue instead of
 //!   bursting (bursts get rate limited, and the retries make it worse).
 //!   Long work (first scans, wide syncs), light syncs and quick checks each
@@ -17,18 +17,18 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use bdk_esplora::esplora_client::AsyncClient;
-use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::chain::spk_client::FullScanRequest;
 use bdk_wallet::{KeychainKind, Wallet};
 use sessions_core::{AccountId, Error, Result};
 use tokio::sync::{Mutex, Notify, Semaphore};
 
+use crate::chain::{with_retries, Backend, Known};
 use crate::{err, Inner};
 
 /// Unused addresses in a row before a scan stops (BIP44's gap limit).
 pub const STOP_GAP: usize = 20;
-/// Requests in flight per account job.
-pub const PARALLEL_REQUESTS: usize = 2;
+/// Esplora requests in flight per account job.
+pub const PARALLEL_REQUESTS: usize = crate::chain::ESPLORA_PARALLEL;
 /// Per-request limit, so one stuck connection can't hold a sync for minutes.
 pub const REQUEST_TIMEOUT_SECS: u64 = 15;
 
@@ -60,13 +60,20 @@ pub type ChangeHook = Arc<dyn Fn(&AccountId) + Send + Sync>;
 /// * IPv4 first (IPv6 as a fallback). A common mobile failure is an IPv6 path
 ///   that connects but drops large responses, so every request times out.
 /// * Short connect timeout and TCP keepalive, so dead connections are noticed.
+/// * Connections are only reused within a burst of requests (a scan): one
+///   idle for a few seconds is closed, not reused. A NAT or phone that
+///   silently dropped it would leave the next request writing into a void
+///   until it times out.
+/// * A User-Agent: some servers stall requests that come without one.
 pub fn client(url: &str) -> Result<AsyncClient> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .connect_timeout(Duration::from_secs(8))
         .http1_only()
-        .pool_idle_timeout(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(5))
+        .pool_max_idle_per_host(2)
         .tcp_keepalive(Duration::from_secs(20))
+        .user_agent(concat!("SessionsWallet/", env!("CARGO_PKG_VERSION")))
         .dns_resolver(Arc::new(PreferIpv4))
         .build()
         .map_err(err)?;
@@ -88,12 +95,10 @@ impl reqwest::dns::Resolve for PreferIpv4 {
     }
 }
 
-fn ipv4_first(addrs: &mut [std::net::SocketAddr]) {
-    addrs.sort_by_key(|a| !a.is_ipv4());
-}
+use crate::electrum::ipv4_first;
 
 /// The request budget for one server, shared by every account using it.
-pub(crate) struct Lanes {
+pub struct Lanes {
     pub background: Semaphore,
     pub light: Semaphore,
     pub quick: Semaphore,
@@ -149,7 +154,7 @@ pub(crate) enum Job {
 /// An account's network state, shared with its background job.
 pub(crate) struct Net {
     pub id: AccountId,
-    pub client: AsyncClient,
+    pub chain: Backend,
     pub lanes: Arc<Lanes>,
     /// Written once the first full scan has finished (see [`Inner::scanned`]).
     pub marker: PathBuf,
@@ -172,11 +177,11 @@ pub(crate) struct Net {
 }
 
 impl Net {
-    pub fn new(id: AccountId, url: &str, marker: PathBuf) -> Result<Self> {
+    pub fn new(id: AccountId, chain: Backend, marker: PathBuf) -> Result<Self> {
         Ok(Net {
             id,
-            client: client(url)?,
-            lanes: lanes_for(url),
+            lanes: chain.lanes().clone(),
+            chain,
             marker,
             running: AtomicBool::new(false),
             active: AtomicBool::new(false),
@@ -441,11 +446,25 @@ async fn first_scan(inner: &Mutex<Inner>, net: &Net) -> Result<bool> {
             Instant::now(),
         ));
         tracing::info!(account = %net.id, "first scan: {k:?} keychain");
-        let update = net
-            .client
-            .full_scan(request, STOP_GAP, PARALLEL_REQUESTS)
-            .await
-            .map_err(err)?;
+        let started = Instant::now();
+        let first = std::sync::Mutex::new(Some(request));
+        let update = with_retries("first scan", net.chain.extra_tries(), || async {
+            let first = first.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let request = match first {
+                Some(r) => r,
+                None => keychain_scan(&inner.lock().await.wallet, k),
+            };
+            net.chain
+                .full_scan(request, STOP_GAP, Known::default())
+                .await
+        })
+        .await?;
+        tracing::info!(
+            account = %net.id,
+            "first scan: {k:?} keychain done in {:.1} s ({} transactions)",
+            started.elapsed().as_secs_f32(),
+            update.tx_update.txs.len()
+        );
         let mut guard = inner.lock().await;
         let i = &mut *guard;
         i.wallet.apply_update(update).map_err(err)?;
@@ -466,18 +485,18 @@ async fn first_scan(inner: &Mutex<Inner>, net: &Net) -> Result<bool> {
 }
 
 async fn wide_sync(inner: &Mutex<Inner>, net: &Net) -> Result<bool> {
-    let (request, before) = {
-        let i = inner.lock().await;
-        (
-            i.wallet.start_sync_with_revealed_spks().build(),
-            fingerprint(&i.wallet),
-        )
-    };
-    let update = net
-        .client
-        .sync(request, PARALLEL_REQUESTS)
-        .await
-        .map_err(err)?;
+    let before = fingerprint(&inner.lock().await.wallet);
+    let update = with_retries("wide sync", net.chain.extra_tries(), || async {
+        let (request, known) = {
+            let i = inner.lock().await;
+            (
+                i.wallet.start_sync_with_revealed_spks().build(),
+                Known::of(&i.wallet),
+            )
+        };
+        net.chain.sync(request, known).await
+    })
+    .await?;
     let mut guard = inner.lock().await;
     let i = &mut *guard;
     i.wallet.apply_update(update).map_err(err)?;
@@ -492,6 +511,7 @@ mod tests {
 
     #[test]
     fn ipv4_addresses_come_first() {
+        use crate::electrum::ipv4_first;
         let mut a: Vec<std::net::SocketAddr> = vec![
             "[2001:db8::1]:443".parse().unwrap(),
             "192.0.2.1:443".parse().unwrap(),

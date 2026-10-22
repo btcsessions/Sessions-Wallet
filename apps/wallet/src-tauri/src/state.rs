@@ -213,13 +213,16 @@ impl AppState {
             Err(e) => tracing::warn!("Liquid swaps unavailable: {e}"),
         }
 
-        let monitor = self.notify.as_ref().map(|_| {
-            let url = config
-                .esplora_url
-                .clone()
-                .unwrap_or_else(|| rail_onchain::default_esplora(config.network).to_string());
-            Monitor::start(&url, onchain.values().cloned().collect())
-        });
+        let monitor = match (&self.notify, config.chain_server()) {
+            (Some(_), Ok(server)) => {
+                Some(Monitor::start(&server, onchain.values().cloned().collect()))
+            }
+            (Some(_), Err(e)) => {
+                tracing::warn!("no push updates: {e}");
+                None
+            }
+            (None, _) => None,
+        };
         *self.inner.lock().await = Some(Unlocked {
             seed,
             wallet,
@@ -274,6 +277,7 @@ impl AppState {
                 network: cfg.network,
                 db_path: self.paths.onchain(id),
                 esplora_url: cfg.esplora_url.clone(),
+                electrum_url: cfg.electrum_url.clone(),
                 descriptors,
                 custody,
                 signer,

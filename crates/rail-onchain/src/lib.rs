@@ -11,12 +11,15 @@
 
 pub mod bitbox;
 mod bump;
+pub mod chain;
 pub mod descriptors;
 pub mod discovery;
+pub mod electrum;
 mod labels;
 pub mod net;
 pub mod payjoin;
 pub mod privacy;
+pub mod push;
 pub mod trezor;
 
 use std::path::PathBuf;
@@ -24,8 +27,7 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use bdk_esplora::esplora_client::{self, AsyncClient};
-use bdk_esplora::EsploraAsyncExt;
+pub use bdk_esplora::esplora_client;
 use bdk_wallet::bitcoin::{Address, Amount, FeeRate, OutPoint, Psbt};
 use bdk_wallet::chain::ChainPosition;
 use bdk_wallet::file_store::Store;
@@ -37,6 +39,7 @@ use sessions_core::{Error, Rail, Result};
 
 pub use bdk_wallet::bitcoin::bip32::Xpriv;
 pub use bdk_wallet::bitcoin::Txid;
+pub use chain::{Backend, ChainServer};
 pub use descriptors::DescriptorPair;
 pub use net::ChangeHook;
 pub use payjoin::{PayjoinEndpoints, PjVersion, DEFAULT_DIRECTORY, DEFAULT_RELAYS};
@@ -46,7 +49,6 @@ const RAIL: &str = "on-chain";
 const DB_MAGIC: &[u8] = b"sessions-wallet-onchain-v1";
 
 type Db = Store<ChangeSet>;
-use net::PARALLEL_REQUESTS;
 
 /// How long [`Rail::receive`] waits for a new account's first scan of its
 /// receive addresses, so it doesn't hand out an address that was already
@@ -76,6 +78,10 @@ pub struct OnchainConfig {
     pub db_path: PathBuf,
     /// Esplora base URL. Point this at your own node (Umbrel, Start9) for privacy.
     pub esplora_url: Option<String>,
+    /// Electrum server (`ssl://host:port`, `tcp://host:port`). Wins over
+    /// `esplora_url`; with neither, mainnet uses the public Electrum servers
+    /// (see [`ChainServer::choose`]).
+    pub electrum_url: Option<String>,
     pub descriptors: DescriptorPair,
     pub custody: Custody,
     /// Master key from the app seed, when this device is one of the signers.
@@ -118,7 +124,7 @@ pub struct OnchainAccount {
     network: Network,
     custody: Custody,
     signer: Option<Xpriv>,
-    client: AsyncClient,
+    chain: Backend,
     inner: std::sync::Arc<Mutex<Inner>>,
     pj: payjoin::PayjoinState,
     /// Server budget, background jobs and the change hook.
@@ -196,11 +202,13 @@ impl OnchainAccount {
             ),
         };
 
-        let url = cfg
-            .esplora_url
-            .unwrap_or_else(|| default_esplora(cfg.network).to_string());
-        let net = std::sync::Arc::new(net::Net::new(cfg.id.clone(), &url, marker)?);
-        let client = net.client.clone();
+        let server = ChainServer::choose(
+            cfg.network,
+            cfg.electrum_url.as_deref(),
+            cfg.esplora_url.as_deref(),
+        )?;
+        let chain = server.backend(cfg.network)?;
+        let net = std::sync::Arc::new(net::Net::new(cfg.id.clone(), chain.clone(), marker)?);
 
         let pj = payjoin::PayjoinState::new(&cfg.custody, cfg.payjoin_receive, cfg.payjoin_dir);
         Ok(Self {
@@ -212,7 +220,7 @@ impl OnchainAccount {
             network: cfg.network,
             custody: cfg.custody,
             signer: cfg.signer,
-            client,
+            chain,
             net,
             inner: std::sync::Arc::new(Mutex::new(Inner {
                 wallet,
@@ -262,7 +270,7 @@ impl OnchainAccount {
             FeePriority::Slow => 144,
             FeePriority::Custom(_) => unreachable!(),
         };
-        let estimates = self.client.get_fee_estimates().await.map_err(err)?;
+        let estimates = self.chain.fee_estimates().await?;
         let sat_vb = esplora_client::convert_fee_rate(target, estimates)
             .unwrap_or(2.0)
             .max(1.0);
@@ -275,7 +283,7 @@ impl OnchainAccount {
     /// Current fee rates in sat/vB for (next block, ~1 hour, no rush), from
     /// this account's chain server.
     pub async fn fee_rates(&self) -> Result<(f32, f32, f32)> {
-        let est = self.client.get_fee_estimates().await.map_err(err)?;
+        let est = self.chain.fee_estimates().await?;
         let at = |t| {
             esplora_client::convert_fee_rate(t, est.clone())
                 .unwrap_or(1.0)
@@ -526,7 +534,7 @@ impl Rail for OnchainAccount {
         self.light_sync().await
     }
 
-    /// One esplora request for the address on screen: anything new (even
+    /// One request for the address on screen: anything new (even
     /// still in the mempool) goes straight into the wallet as unconfirmed.
     /// The next full sync adds confirmations.
     async fn check_incoming(&self, watch_id: &str) -> Result<bool> {
@@ -543,10 +551,9 @@ impl Rail for OnchainAccount {
         let spk = address.script_pubkey();
         let seen = {
             let _permit = self.net.lanes.quick.acquire().await.map_err(err)?;
-            self.client.scripthash_txs(&spk, None).await.map_err(err)?
+            self.chain.script_txids(&spk).await?
         };
-        self.apply_txids(seen.iter().map(|t| t.txid).collect())
-            .await
+        self.apply_txids(seen).await
     }
 
     async fn receive(&self, req: ReceiveRequest) -> Result<ReceiveTarget> {
@@ -874,7 +881,7 @@ impl Rail for OnchainAccount {
                 }
             }
             None => {
-                self.client.broadcast(&original).await.map_err(err)?;
+                self.chain.broadcast(&original).await?;
                 (original, false, 0)
             }
         };
@@ -1059,6 +1066,20 @@ impl OnchainAccount {
         self.net.set_hook(hook);
     }
 
+    /// The chain server this account talks to.
+    pub fn chain(&self) -> &Backend {
+        &self.chain
+    }
+
+    /// The server in use: the connected Electrum server (`None` before the
+    /// first connection), or the Esplora URL.
+    pub fn chain_in_use(&self) -> Option<String> {
+        match &self.chain {
+            Backend::Electrum(p, _) => p.conn().connected_to().map(|s| s.to_string()),
+            Backend::Esplora { client, .. } => Some(client.url().to_string()),
+        }
+    }
+
     /// The history is still loading (first full scan not finished).
     pub async fn scanning(&self) -> bool {
         !self.inner.lock().await.scanned
@@ -1111,7 +1132,7 @@ impl OnchainAccount {
         {
             let _permit = self.net.lanes.quick.acquire().await.map_err(err)?;
             for txid in new {
-                if let Some(tx) = self.client.get_tx(&txid).await.map_err(err)? {
+                if let Some(tx) = self.chain.get_tx(txid).await? {
                     txs.push(tx);
                 }
             }
@@ -1144,19 +1165,20 @@ impl OnchainAccount {
     /// [`light_sync_request`]). One at a time per account.
     async fn light_sync(&self) -> Result<()> {
         let _one = self.net.light.lock().await;
-        let (request, before) = {
-            let inner = self.inner.lock().await;
-            (
-                light_sync_request(&inner.wallet),
-                net::fingerprint(&inner.wallet),
-            )
-        };
+        let before = net::fingerprint(&self.inner.lock().await.wallet);
         let update = {
             let _permit = self.net.lanes.light.acquire().await.map_err(err)?;
-            self.client
-                .sync(request, PARALLEL_REQUESTS)
-                .await
-                .map_err(err)?
+            chain::with_retries("sync", self.chain.extra_tries(), || async {
+                let (request, known) = {
+                    let inner = self.inner.lock().await;
+                    (
+                        light_sync_request(&inner.wallet),
+                        chain::Known::of(&inner.wallet),
+                    )
+                };
+                self.chain.sync(request, known).await
+            })
+            .await?
         };
         let mut inner = self.inner.lock().await;
         let Inner { wallet, conn, .. } = &mut *inner;
@@ -1253,6 +1275,7 @@ mod tests {
             network: Network::Bitcoin,
             db_path: dir.join("savings.db"),
             esplora_url: None,
+            electrum_url: None,
             descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, 0).unwrap(),
             custody: Custody::Hot,
             signer: Some(master),
@@ -1343,6 +1366,7 @@ mod tests {
             network: Network::Bitcoin,
             db_path: dir.join(format!("{id}.db")),
             esplora_url: Some(url.into()),
+            electrum_url: None,
             descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, index).unwrap(),
             custody: Custody::Hot,
             signer: Some(master),
@@ -1475,6 +1499,154 @@ mod tests {
                 .await
         );
         until_scanned(&a).await;
+    }
+
+    fn hot_on_electrum(dir: &std::path::Path, id: &str, server: &str) -> OnchainAccount {
+        let master = Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
+        OnchainAccount::open(OnchainConfig {
+            id: id.into(),
+            name: id.into(),
+            network: Network::Bitcoin,
+            db_path: dir.join(format!("{id}.db")),
+            esplora_url: Some("http://127.0.0.1:9".into()),
+            electrum_url: Some(server.into()),
+            descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, 0).unwrap(),
+            custody: Custody::Hot,
+            signer: Some(master),
+            payjoin_receive: false,
+            payjoin_dir: None,
+            group: None,
+            account_index: None,
+        })
+        .unwrap()
+    }
+
+    /// Over Electrum: the first scan finishes in a few batched round trips
+    /// (not a request per address), and later syncs, quick checks and fee
+    /// estimates work on the same connection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn electrum_scans_in_batches_over_one_connection() {
+        let server = crate::push::tests::fake_server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot_on_electrum(dir.path(), "el", &server.url.to_string());
+        assert!(a.chain.electrum().is_some());
+        a.sync().await.unwrap();
+        until_scanned(&a).await;
+        let info = a.info().await.unwrap();
+        assert!(info.scan_error.is_none(), "{:?}", info.scan_error);
+        assert_eq!(info.balance.confirmed, 0);
+        // Light sync, a quick check and fees.
+        a.sync().await.unwrap();
+        assert!(!a
+            .check_incoming("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+            .await
+            .unwrap());
+        let (fast, normal, slow) = a.fee_rates().await.unwrap();
+        for r in [fast, normal, slow] {
+            assert!((r - 10.0).abs() < 1e-3, "{r}");
+        }
+        let seen = server.seen.lock().unwrap().clone();
+        let histories = seen
+            .iter()
+            .filter(|m| *m == "blockchain.scripthash.get_history")
+            .count();
+        // 20 receive + 20 change addresses (+ the light sync and the check).
+        assert!(
+            (40..=70).contains(&histories),
+            "{histories} history requests"
+        );
+        assert_eq!(
+            server.connections.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    /// A connection that drops mid-scan costs one retried call, not the scan.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn electrum_scan_survives_a_dropped_connection() {
+        let server = crate::push::tests::fake_server_dropping(Some(4)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot_on_electrum(dir.path(), "drop", &server.url.to_string());
+        a.sync().await.unwrap();
+        until_scanned(&a).await;
+        let info = a.info().await.unwrap();
+        assert!(info.scan_error.is_none(), "{:?}", info.scan_error);
+        assert!(server.connections.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    }
+
+    /// Live check against the public Electrum servers (manual, needs the
+    /// internet): `cargo test -p rail-onchain live_electrum -- --ignored
+    /// --nocapture`. Scans BIP84 accounts 0 and 1 of the "abandon … about"
+    /// wallet and prints counts and timings. Set
+    /// SESSIONS_ELECTRUM_HTTP_PROXY=host:port behind an HTTP CONNECT proxy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn live_electrum() {
+        let dir = tempfile::tempdir().unwrap();
+        let master = Seed::from_phrase(ABANDON)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap();
+        let open = |index: u32| {
+            OnchainAccount::open(OnchainConfig {
+                id: format!("live-{index}").as_str().into(),
+                name: "live".into(),
+                network: Network::Bitcoin,
+                db_path: dir.path().join(format!("live-{index}.db")),
+                esplora_url: None,
+                electrum_url: std::env::var("SESSIONS_ELECTRUM_URL").ok(),
+                descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, index).unwrap(),
+                custody: Custody::Hot,
+                signer: Some(master),
+                payjoin_receive: false,
+                payjoin_dir: None,
+                group: None,
+                account_index: Some(index),
+            })
+            .unwrap()
+        };
+        let (a0, a1) = (open(0), open(1));
+        let started = std::time::Instant::now();
+        a0.sync().await.unwrap();
+        a1.sync().await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        while a0.scanning().await || a1.scanning().await {
+            assert!(std::time::Instant::now() < deadline, "scan never finished");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let first = started.elapsed();
+        for a in [&a0, &a1] {
+            let i = a.info().await.unwrap();
+            println!(
+                "{}: {} transactions, balance {} sat, error {:?}",
+                i.id,
+                a.payments(10_000).await.unwrap().len(),
+                i.balance.confirmed + i.balance.pending_in,
+                i.scan_error
+            );
+        }
+        println!("first scans: {:.1} s", first.as_secs_f32());
+        let t = std::time::Instant::now();
+        a0.light_sync().await.unwrap();
+        println!("light sync: {:.2} s", t.elapsed().as_secs_f32());
+        let t = std::time::Instant::now();
+        net::start(net::Job::Wide, &a0.inner, &a0.net);
+        while a0.net.running() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        println!("wide sync: {:.2} s", t.elapsed().as_secs_f32());
+        let t = std::time::Instant::now();
+        println!(
+            "fees: {:?} in {:.2} s",
+            a0.fee_rates().await.unwrap(),
+            t.elapsed().as_secs_f32()
+        );
+        if let Some(p) = a0.chain.electrum() {
+            println!("server: {:?}", p.conn().connected_to());
+        }
     }
 
     /// Accounts on the same server share its request budget: first scans
@@ -1671,6 +1843,7 @@ mod tests {
                 network: Network::Bitcoin,
                 db_path: dir.path().join(format!("{name}.db")),
                 esplora_url: None,
+                electrum_url: None,
                 descriptors: pair.clone(),
                 custody: Custody::Multisig {
                     threshold: 2,
@@ -2384,6 +2557,7 @@ mod tests {
             network: Network::Bitcoin,
             db_path: dir.path().join("coldcard.db"),
             esplora_url: None,
+            electrum_url: None,
             descriptors: descriptors::hot_single_sig(&master, Network::Bitcoin, 0).unwrap(),
             custody: Custody::Hardware {
                 device: "Coldcard Q".into(),
@@ -2445,6 +2619,7 @@ mod tests {
             network: Network::Bitcoin,
             db_path: dir.join("bitbox.db"),
             esplora_url: None,
+            electrum_url: None,
             descriptors: descriptors::import(&desc, Network::Bitcoin).unwrap(),
             custody: Custody::Hardware {
                 device: "BitBox02".into(),

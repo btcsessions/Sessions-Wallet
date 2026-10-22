@@ -174,6 +174,17 @@ export interface FeeRates {
 
 export interface Settings {
   esploraUrl: string | null;
+  /**
+   * Your own Electrum server: `ssl://host:50002`, `tcp://host:50001`, or
+   * `host:port` (TLS). Wins over `esploraUrl`; null = the public servers.
+   * On save: leave out to keep it as is, null or "" to clear. Saved in its
+   * full form (e.g. `ssl://host:50002`). Onion addresses are refused.
+   */
+  electrumUrl?: string | null;
+  /** Read only: the server in use now (`ssl://host:port`, or an Esplora URL); null before the first connection. */
+  chainServer?: string | null;
+  /** Read only: the public Electrum servers used when none is set. */
+  defaultElectrumServers?: string[];
   hasBreezKey: boolean;
   /** Write-only. */
   breezApiKey?: string | null;

@@ -5,12 +5,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 
-use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::Wallet;
 use sessions_core::{Error, Network, Result};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
+use crate::chain::{Backend, Known};
 use crate::descriptors::DescriptorPair;
 
 /// Unused addresses in a row before an account's scan stops.
@@ -19,8 +19,6 @@ pub const ADDRESS_GAP: usize = 20;
 pub const ACCOUNT_GAP: u32 = 2;
 /// Accounts scanned at once.
 pub const CONCURRENCY: usize = 4;
-/// Esplora requests in flight per account.
-const PARALLEL_REQUESTS: usize = 2;
 
 /// What a quick scan found for one account.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -39,18 +37,20 @@ fn err(e: impl std::fmt::Display) -> Error {
     Error::rail("discovery", e)
 }
 
-/// Scan one descriptor pair against Esplora without saving anything.
-pub async fn scan(esplora_url: &str, network: Network, pair: &DescriptorPair) -> Result<Activity> {
+/// Scan one descriptor pair without saving anything.
+pub async fn scan(chain: &Backend, network: Network, pair: &DescriptorPair) -> Result<Activity> {
     let mut wallet = Wallet::create(pair.external.clone(), pair.internal.clone())
         .network(network.to_bitcoin())
         .create_wallet_no_persist()
         .map_err(|e| Error::Crypto(e.to_string()))?;
-    let client = crate::net::client(esplora_url)?;
-    let request = wallet.start_full_scan().build();
-    let update = client
-        .full_scan(request, ADDRESS_GAP, PARALLEL_REQUESTS)
-        .await
-        .map_err(err)?;
+    let update = crate::chain::with_retries("discovery scan", chain.extra_tries(), || async {
+        let request = wallet.start_full_scan().build();
+        chain
+            .full_scan(request, ADDRESS_GAP, Known::default())
+            .await
+    })
+    .await
+    .map_err(|e| err(e.message))?;
     wallet.apply_update(update).map_err(err)?;
     Ok(Activity {
         balance_sat: wallet.balance().total().to_sat(),

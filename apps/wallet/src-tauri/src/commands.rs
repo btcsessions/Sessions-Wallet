@@ -264,13 +264,12 @@ pub struct FoundAccount {
 const DISCOVER_MAX: u32 = 20;
 const DISCOVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
-async fn esplora_url(state: &AppState) -> Result<String> {
+/// The wallet's chain server, ready for requests (Electrum connections are
+/// shared with the open accounts).
+async fn chain(state: &AppState) -> Result<rail_onchain::Backend> {
     let guard = state.inner.lock().await;
     let u = guard.as_ref().ok_or(Error::Locked)?;
-    Ok(u.config
-        .esplora_url
-        .clone()
-        .unwrap_or_else(|| rail_onchain::default_esplora(u.config.network).to_string()))
+    u.config.chain_server()?.backend(u.config.network)
 }
 
 /// Hot on-chain accounts (BIP84, numbers 0 to 19) this recovery phrase used
@@ -278,7 +277,7 @@ async fn esplora_url(state: &AppState) -> Result<String> {
 /// with `add_account { kind: "savings", accountIndex }`.
 #[tauri::command]
 pub async fn discover_hot_accounts(state: State<'_, AppState>) -> Result<Vec<FoundAccount>> {
-    let url = esplora_url(&state).await?;
+    let chain = chain(&state).await?;
     let (master, network, known) = {
         let guard = state.inner.lock().await;
         let u = guard.as_ref().ok_or(Error::Locked)?;
@@ -304,8 +303,8 @@ pub async fn discover_hot_accounts(state: State<'_, AppState>) -> Result<Vec<Fou
         |i| {
             // Only the public descriptors go to the scan task.
             let pair = pair(i);
-            let url = url.clone();
-            async move { discovery::scan(&url, network, &pair?).await }
+            let chain = chain.clone();
+            async move { discovery::scan(&chain, network, &pair?).await }
         },
     )
     .await?;
@@ -334,7 +333,7 @@ pub async fn scan_descriptors(
         return Err(Error::Invalid("Scan at most 50 accounts at a time".into()));
     }
     let network = state.network().await?;
-    let url = esplora_url(&state).await?;
+    let chain = chain(&state).await?;
     let pairs = descriptors
         .iter()
         .map(|d| descriptors::import(d, network))
@@ -347,8 +346,8 @@ pub async fn scan_descriptors(
             discovery::CONCURRENCY,
             tokio::time::Instant::now() + DISCOVER_TIMEOUT,
             move |i| {
-                let (pairs, url) = (pairs.clone(), url.clone());
-                async move { discovery::scan(&url, network, &pairs[i as usize]).await }
+                let (pairs, chain) = (pairs.clone(), chain.clone());
+                async move { discovery::scan(&chain, network, &pairs[i as usize]).await }
             },
         )
         .await?
@@ -539,43 +538,22 @@ pub struct FeeRates {
 
 #[tauri::command]
 pub async fn fee_rates(state: State<'_, AppState>) -> Result<FeeRates> {
-    let (account, base) = {
+    let account = {
         let guard = state.inner.lock().await;
         let u = guard.as_ref().ok_or(Error::Locked)?;
-        let base = u
-            .config
-            .esplora_url
-            .clone()
-            .unwrap_or_else(|| rail_onchain::default_esplora(u.config.network).to_string());
-        (u.onchain.values().next().cloned(), base)
+        u.onchain.values().next().cloned()
     };
     if let Some(account) = account {
         let (fast, normal, slow) = account.fee_rates().await?;
         return Ok(FeeRates { fast, normal, slow });
     }
-    // No on-chain account: ask the chain server directly (Esplora fee-estimates,
-    // keyed by confirmation target in blocks).
-    let est: std::collections::HashMap<String, f32> = reqwest::Client::new()
-        .get(format!("{}/fee-estimates", base.trim_end_matches('/')))
-        .timeout(std::time::Duration::from_secs(8))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| Error::rail("fees", e))?
-        .json()
-        .await
-        .map_err(|e| Error::rail("fees", e))?;
-    let at = |target: u32| {
-        est.iter()
-            .filter_map(|(k, v)| {
-                k.parse::<u32>()
-                    .ok()
-                    .filter(|t| *t <= target)
-                    .map(|t| (t, *v))
-            })
-            .max_by_key(|(t, _)| *t)
-            .map(|(_, v)| v.max(1.0))
+    // No on-chain account: ask the chain server directly. Estimates keyed by
+    // confirmation target in blocks.
+    let est = chain(&state).await?.fee_estimates().await?;
+    let at = |target: usize| {
+        rail_onchain::esplora_client::convert_fee_rate(target, est.clone())
             .unwrap_or(1.0)
+            .max(1.0)
     };
     Ok(FeeRates {
         fast: at(1),
@@ -614,6 +592,22 @@ pub async fn btc_price(state: State<'_, AppState>, currency: String) -> Result<O
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     esplora_url: Option<String>,
+    /// Your own Electrum server: `ssl://host:50002`, `tcp://host:50001`,
+    /// `host:port` (TLS). Wins over `esploraUrl`; unset means the public
+    /// servers. On save: missing = leave as is, `null` or "" = clear.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    electrum_url: Option<Option<String>>,
+    /// Read only: the server in use right now (`ssl://host:port`, or the
+    /// Esplora URL); `null` before the first connection.
+    #[serde(default, skip_deserializing)]
+    chain_server: Option<String>,
+    /// Read only: the public Electrum servers used when none is set.
+    #[serde(default, skip_deserializing)]
+    default_electrum_servers: Vec<String>,
     /// Never sent back to the UI; only whether one is set.
     #[serde(default, skip_serializing)]
     breez_api_key: Option<String>,
@@ -621,12 +615,27 @@ pub struct Settings {
     has_breez_key: bool,
 }
 
+/// `Some(value)` whenever the field is present, even as `null`.
+fn present<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
+}
+
 #[tauri::command]
 pub async fn settings(state: State<'_, AppState>) -> Result<Settings> {
     let guard = state.inner.lock().await;
     let u = guard.as_ref().ok_or(Error::Locked)?;
+    let in_use = u.onchain.values().find_map(|a| a.chain_in_use());
     Ok(Settings {
         esplora_url: u.config.esplora_url.clone(),
+        electrum_url: Some(u.config.electrum_url.clone()),
+        chain_server: in_use,
+        default_electrum_servers: rail_onchain::electrum::default_servers(u.config.network)
+            .unwrap_or_default()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         breez_api_key: None,
         has_breez_key: u.config.breez_api_key.is_some(),
     })
@@ -637,7 +646,7 @@ pub async fn settings(state: State<'_, AppState>) -> Result<Settings> {
 pub async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<()> {
     let mut guard = state.inner.lock().await;
     let u = guard.as_mut().ok_or(Error::Locked)?;
-    u.config.esplora_url = match settings
+    let esplora_url = match settings
         .esplora_url
         .map(|s| s.trim().trim_end_matches('/').to_string())
     {
@@ -650,6 +659,15 @@ pub async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Re
         }
         None => None,
     };
+    let electrum_url = match settings.electrum_url {
+        None => u.config.electrum_url.clone(),
+        Some(None) => None,
+        Some(Some(s)) if s.trim().is_empty() => None,
+        // Saved in its full form, e.g. "ssl://host:50002".
+        Some(Some(s)) => Some(rail_onchain::electrum::ServerUrl::parse(&s)?.to_string()),
+    };
+    u.config.esplora_url = esplora_url;
+    u.config.electrum_url = electrum_url;
     if let Some(key) = settings
         .breez_api_key
         .map(|k| k.trim().to_string())
@@ -1035,8 +1053,9 @@ pub async fn check_incoming(
 }
 
 /// The Receive screen shows `address` of `account`: watch it for payments
-/// over the chain server's websocket from now on (mempool servers only; a
-/// no-op otherwise). `check_incoming` polling stays as the fallback.
+/// pushed by the chain server from now on (Electrum subscriptions, or a
+/// mempool server's websocket; a no-op for plain Esplora).
+/// `check_incoming` polling stays as the fallback.
 /// Errors if the address isn't one of the account's.
 #[tauri::command]
 pub async fn watch_address(

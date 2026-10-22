@@ -123,6 +123,11 @@ pub struct Config {
     pub network: Network,
     /// Your own Esplora (Umbrel, Start9, mempool) for privacy.
     pub esplora_url: Option<String>,
+    /// Your own Electrum server (`ssl://host:50002`, `tcp://host:50001`).
+    /// Wins over `esplora_url`. With neither, mainnet uses the public
+    /// Electrum servers (see `rail_onchain::ChainServer::choose`).
+    #[serde(default)]
+    pub electrum_url: Option<String>,
     /// Breez SDK key; falls back to the one baked in at build time.
     pub breez_api_key: Option<String>,
     pub accounts: Vec<AccountSpec>,
@@ -134,11 +139,21 @@ pub struct Config {
 }
 
 impl Config {
+    /// Where on-chain accounts get chain data (see `ChainServer::choose`).
+    pub fn chain_server(&self) -> Result<rail_onchain::ChainServer> {
+        rail_onchain::ChainServer::choose(
+            self.network,
+            self.electrum_url.as_deref(),
+            self.esplora_url.as_deref(),
+        )
+    }
+
     pub fn new(network: Network) -> Self {
         Config {
             version: 1,
             network,
             esplora_url: None,
+            electrum_url: None,
             breez_api_key: None,
             // Spending only. On-chain is for hardware wallets and vaults; a hot
             // on-chain wallet is something the user turns on themselves.
