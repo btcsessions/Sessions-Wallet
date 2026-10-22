@@ -34,6 +34,8 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
   const source = accounts.find((a) => a.id === from);
+  /** "All" from an on-chain account: the wallet sweeps it exactly, no tuning needed. */
+  const drain = all && source?.rail === "onchain" && style !== "private";
 
   useEffect(() => {
     setPlan(null);
@@ -47,8 +49,10 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
         const p = await a.planMove(from, to, amount);
         if (!alive) return;
         setPlan(p);
-        const prep = await a.prepare(p, fee, style);
-        if (alive) setPrepared(prep);
+        const prep = await a.prepare(p, fee, style, drain ? { sendMax: true } : undefined);
+        if (!alive) return;
+        setPrepared(prep);
+        if (drain && prep.amountSat !== amount) setAmount(prep.amountSat);
       } catch (e) {
         if (!alive) return;
         if (style === "private") {
@@ -58,7 +62,7 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
         }
         // Sending everything and it doesn't fit: take the shortfall (or 1%) off and retry.
         const balance = (() => { const x = accounts.find((y) => y.id === from); return x ? held(x) : 0; })();
-        if (allRef.current && tunes.current < 5) {
+        if (allRef.current && !drain && tunes.current < 5) {
           tunes.current += 1;
           const need = /need ([\d,]+)/i.exec(errorText(e))?.[1];
           const over = need ? Number(need.replace(/,/g, "")) - balance : Math.ceil(amount * 0.01);
@@ -72,11 +76,11 @@ export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string;
       alive = false;
       clearTimeout(t);
     };
-  }, [from, to, amount, fee, style]);
+  }, [from, to, amount, fee, style, drain]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sending everything: shrink the amount until amount + fees fits the balance.
   useEffect(() => {
-    if (!all || !prepared || !source || !amount) return;
+    if (!all || drain || !prepared || !source || !amount) return;
     const spend = prepared.quote.amountSat + prepared.quote.feeSat;
     const over = spend - held(source);
     if ((over > 0 || over < -3) && tunes.current < 4) {

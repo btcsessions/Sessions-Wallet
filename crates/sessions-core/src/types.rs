@@ -295,6 +295,9 @@ pub struct SpendOptions {
     pub label: Option<String>,
     /// Coin control: the exact coins (`"txid:vout"`) to spend.
     pub coins: Option<Vec<String>>,
+    /// Send everything (the chosen coins, or the whole account) with the
+    /// fee taken from the amount. On-chain first legs only; ignored otherwise.
+    pub send_max: bool,
 }
 
 /// What a label is attached to (BIP329 record types).

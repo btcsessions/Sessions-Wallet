@@ -487,7 +487,7 @@ export const mockApi: WalletApi = {
     }
     throw "No route between these accounts";
   },
-  async prepare(plan, fee, style) {
+  async prepare(plan, fee, style, spend) {
     await sleep(500);
     const first = find(legFrom(plan.legs[0]));
     const leg = plan.legs[0];
@@ -497,8 +497,10 @@ export const mockApi: WalletApi = {
     const isPrivate = onchain && style === "private" && first.rail === "onchain";
     if (isPrivate && first.custody.type === "hardware") throw "Private send needs coins at two or more different addresses. Use Efficient for this one";
     const feeSat = onchain ? rate * (isPrivate ? 340 : 141) : 3;
-    const amountSat = plan.amountSat + swapFee;
     const have = first.balance.confirmed + first.balance.pendingIn;
+    const drain = !!spend?.sendMax && onchain && first.rail === "onchain" && plan.legs.length === 1 && leg.type !== "viaSwap";
+    if (drain && have <= feeSat) throw `This account's ${have.toLocaleString()} sats don't cover the network fee`;
+    const amountSat = drain ? have - feeSat : plan.amountSat + swapFee;
     if (have < amountSat + feeSat) throw `Not enough funds: need ${(amountSat + feeSat).toLocaleString()} sats, have ${have.toLocaleString()} sats`;
     const hw = first.custody.type === "hardware" || first.custody.type === "multisig";
     return {
@@ -516,7 +518,7 @@ export const mockApi: WalletApi = {
       leg,
       remaining: plan.legs.slice(1),
       hopsAfter: plan.legs.length - 1,
-      amountSat: plan.amountSat,
+      amountSat: drain ? amountSat : plan.amountSat,
       swapFeeSat: swapFee,
     };
   },

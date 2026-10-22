@@ -76,6 +76,9 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
   const pool = (payer: AccountInfo | undefined) => (manual ? coinSum : payer ? held(payer) : 0);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
+  /** "All" from an on-chain account: the wallet sweeps it exactly, no tuning needed. */
+  const payerRail = accounts.find((x) => x.id === from)?.rail;
+  const drain = all && payerRail === "onchain" && style !== "private";
   const [planError, setPlanError] = useState<string | null>(null);
   const [paused, setPaused] = useState<Execution | null>(null);
   const [busy, run] = useBusy();
@@ -109,9 +112,12 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         const p = await a.planPayment(input, amount, from);
         if (!alive) return;
         setPlan(p);
-        const spend = labelSent || manual ? { label: labelSent || null, coins: manual ? [...coins.keys()] : null } : undefined;
+        const spend = labelSent || manual || drain ? { label: labelSent || null, coins: manual ? [...coins.keys()] : null, sendMax: drain } : undefined;
         const prep = await a.prepare(p, fee, style, spend);
-        if (alive) setPrepared(prep);
+        if (!alive) return;
+        setPrepared(prep);
+        // Show what actually arrives once the fee is taken out.
+        if (drain && prep.amountSat !== amount) setAmount(prep.amountSat);
       } catch (e) {
         if (!alive) return;
         if (style === "private") {
@@ -121,7 +127,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           return;
         }
         const payer = accounts.find((x) => x.id === from);
-        if (allRef.current && payer && tunes.current < 5) {
+        if (allRef.current && !drain && payer && tunes.current < 5) {
           tunes.current += 1;
           const need = /need ([\d,]+)/i.exec(errorText(e))?.[1];
           const over = need && !manual ? Number(need.replace(/,/g, "")) - pool(payer) : Math.ceil(amount * 0.01);
@@ -139,7 +145,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
   // Sending everything: shrink the amount until amount + fees is exactly the balance.
   useEffect(() => {
     const payer = accounts.find((x) => x.id === from);
-    if (!all || !prepared || !payer || !amount) return;
+    if (!all || drain || !prepared || !payer || !amount) return;
     const over = prepared.quote.amountSat + prepared.quote.feeSat - pool(payer);
     if ((over > 0 || over < -3) && tunes.current < 5) {
       tunes.current += 1;

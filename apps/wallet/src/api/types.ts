@@ -206,6 +206,8 @@ export interface SpendOptions {
   label?: string | null;
   /** Outpoints ("txid:vout") to spend, exactly these. */
   coins?: string[] | null;
+  /** Send everything (chosen coins or the whole account), fee taken from the amount. On-chain only. */
+  sendMax?: boolean;
 }
 
 /** One coin (UTXO) in an on-chain account. */

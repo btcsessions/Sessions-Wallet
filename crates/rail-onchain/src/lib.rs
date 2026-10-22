@@ -728,12 +728,12 @@ impl Rail for OnchainAccount {
                     }
                 }
                 result.expect("at least one attempt").map_err(|e| match e {
-                    bdk_wallet::error::CreateTxError::CoinSelection(_) => {
-                        Error::InsufficientFunds {
-                            needed: amount.unwrap_or(available),
-                            available,
-                        }
-                    }
+                    bdk_wallet::error::CreateTxError::CoinSelection(_) => match amount {
+                        Some(needed) => Error::InsufficientFunds { needed, available },
+                        None => Error::Invalid(format!(
+                            "This account's {available} sats don't cover the network fee"
+                        )),
+                    },
                     other => err(other),
                 })?
             }

@@ -224,22 +224,43 @@ impl Wallet {
         style: SpendStyle,
         spend: Option<SpendOptions>,
     ) -> Result<Prepared> {
-        let SpendOptions { label, coins } = spend.unwrap_or_default();
+        let SpendOptions {
+            label,
+            coins,
+            send_max,
+        } = spend.unwrap_or_default();
         let label = label
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty());
         let mut legs = plan.legs.into_iter();
         let leg = legs.next().ok_or(Error::NoRoute)?;
-        let (quote, swap_fee_sat) = self
-            .prepare_leg(&leg, plan.amount_sat, fee, style, label.clone(), coins)
-            .await?;
         let remaining: Vec<Leg> = legs.collect();
+        // Draining only makes sense when this leg is the whole payment and
+        // pays straight to an address (not through a swap).
+        let send_max = send_max && remaining.is_empty() && !matches!(leg, Leg::ViaSwap { .. });
+        let (quote, swap_fee_sat) = self
+            .prepare_leg(
+                &leg,
+                plan.amount_sat,
+                fee,
+                style,
+                label.clone(),
+                coins,
+                send_max,
+            )
+            .await?;
+        // Sending everything: the amount is whatever is left after the fee.
+        let amount_sat = if send_max {
+            quote.amount_sat
+        } else {
+            plan.amount_sat
+        };
         Ok(Prepared {
             quote,
             leg,
             hops_after: remaining.len(),
             remaining,
-            amount_sat: plan.amount_sat,
+            amount_sat,
             swap_fee_sat,
             label,
         })
@@ -373,6 +394,7 @@ impl Wallet {
     }
 
     /// Returns the quote for one leg plus any swap fee on top of it.
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_leg(
         &self,
         leg: &Leg,
@@ -381,6 +403,7 @@ impl Wallet {
         style: SpendStyle,
         note: Option<String>,
         coins: Option<Vec<String>>,
+        send_max: bool,
     ) -> Result<(SendQuote, Sats)> {
         let from = self.account(leg.from()).await?;
         let (request, pay_amount, swap_fee) = match leg {
@@ -429,7 +452,7 @@ impl Wallet {
             .prepare_send(SendRequest {
                 destination: request,
                 amount_sat: Some(pay_amount),
-                send_max: false,
+                send_max,
                 fee,
                 note,
                 style,
@@ -459,6 +482,7 @@ impl Wallet {
                     SpendStyle::Efficient,
                     label.clone(),
                     None,
+                    false,
                 )
                 .await?;
             if quote.needs_signature.is_some() {
@@ -691,8 +715,12 @@ mod tests {
             })
         }
         async fn prepare_send(&self, req: SendRequest) -> Result<SendQuote> {
-            let amount = req.amount_sat.ok_or(Error::AmountRequired)?;
             let have = *self.balance.lock().unwrap();
+            let amount = if req.send_max {
+                have.saturating_sub(self.fee)
+            } else {
+                req.amount_sat.ok_or(Error::AmountRequired)?
+            };
             if have < amount + self.fee {
                 return Err(Error::InsufficientFunds {
                     needed: amount + self.fee,
@@ -851,6 +879,39 @@ mod tests {
         assert_eq!(ex.payments[0].direction, Direction::Internal);
         assert_eq!(*savings.balance.lock().unwrap(), 1_000_000 - 100_300);
         assert!(spending.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_all_takes_fee_from_amount() {
+        let (w, savings, _) = wallet().await;
+        let plan = w
+            .plan_payment(
+                "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+                Some(1_000_000),
+                Some("savings".into()),
+            )
+            .await
+            .unwrap();
+        let spend = SpendOptions {
+            send_max: true,
+            ..Default::default()
+        };
+        let prepared = w
+            .prepare_styled(
+                plan,
+                FeePriority::Normal,
+                SpendStyle::Efficient,
+                Some(spend),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prepared.amount_sat, 1_000_000 - 300);
+        assert_eq!(
+            prepared.quote.amount_sat + prepared.quote.fee_sat,
+            1_000_000
+        );
+        w.confirm(prepared, FeePriority::Normal).await.unwrap();
+        assert_eq!(*savings.balance.lock().unwrap(), 0);
     }
 
     #[tokio::test]
