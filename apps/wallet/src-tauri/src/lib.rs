@@ -121,6 +121,7 @@ pub fn run() {
             jade::jade_show_address,
             commands::tx_details,
             commands::sync_account,
+            commands::check_incoming,
             commands::prepare_bump,
             commands::confirm_quote,
             commands::list_utxos,

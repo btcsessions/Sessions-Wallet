@@ -269,6 +269,10 @@ export const mockApi: WalletApi = {
     return a;
   },
   async syncAccount() {},
+  async checkIncoming() {
+    await sleep(150);
+    return false;
+  },
   async renameAccount(id, name) {
     const a = find(id);
     a.name = name.trim();

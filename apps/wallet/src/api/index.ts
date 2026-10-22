@@ -66,6 +66,8 @@ export interface WalletApi {
   jadeQrPin(request: Uint8Array): Promise<Uint8Array>;
   /** Sync one account now (the Receive screen polls this while it waits). */
   syncAccount(id: string): Promise<void>;
+  /** Quick check for a payment to a receive target (its `watchId`); true when something new arrived. */
+  checkIncoming(account: string, watchId: string): Promise<boolean>;
   /** On-chain transaction details; null for other rails. */
   txDetails(account: string, txid: string): Promise<TxDetails | null>;
   /** Speed up (RBF or CPFP) or cancel (RBF back to ourselves) an unconfirmed transaction. */

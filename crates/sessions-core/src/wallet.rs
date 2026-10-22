@@ -70,6 +70,12 @@ impl Wallet {
         self.swaps.write().await.push(p);
     }
 
+    /// Quick check for a payment to a receive target on screen. See
+    /// [`Rail::check_incoming`].
+    pub async fn check_incoming(&self, id: &AccountId, watch_id: &str) -> Result<bool> {
+        self.account(id).await?.check_incoming(watch_id).await
+    }
+
     pub async fn account(&self, id: &AccountId) -> Result<Arc<dyn Rail>> {
         self.accounts
             .read()

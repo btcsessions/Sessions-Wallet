@@ -129,21 +129,39 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       (p.account === accountId || (swap && ready && p.account === spendingId && (!amount || p.amountSat === amount))),
   );
 
-  // While a request is on screen, check for the payment every few seconds
-  // (Lightning also pushes an event the moment it lands).
+  // While a request is on screen, watch for the payment. An on-chain address
+  // is checked every 2 seconds with one cheap request, so a payment shows the
+  // moment it reaches the mempool. Everything else (Lightning, swaps) syncs
+  // every 4 seconds; Lightning also pushes an event the moment it lands.
   useEffect(() => {
     if (!target || !account || received) return;
     let alive = true;
+    let busy = false;
+    let tick = 0;
+    const address = target.method === "bitcoinAddress" && !swap && target.watchId ? target.watchId : null;
     const watched = swap && spendingId ? [account.id, spendingId] : [account.id];
     const t = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      tick += 1;
       try {
         const a = await api();
-        await Promise.all(watched.map((id) => a.syncAccount(id)));
-        if (alive) await useWallet.getState().refresh();
+        let changed = false;
+        if (address) {
+          changed = await a.checkIncoming(account.id, address);
+          // A full sync now and then catches anything the quick check can't.
+          if (!changed && tick % 15 === 0) await a.syncAccount(account.id);
+        } else if (tick % 2 === 0) {
+          await Promise.all(watched.map((id) => a.syncAccount(id)));
+          changed = true;
+        }
+        if (alive && (changed || tick % 15 === 0)) await useWallet.getState().refresh();
       } catch {
         /* the next tick tries again */
+      } finally {
+        busy = false;
       }
-    }, 4000);
+    }, 2000);
     return () => {
       alive = false;
       clearInterval(t);

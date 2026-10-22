@@ -50,6 +50,7 @@ export const tauriApi: WalletApi = {
   scanDescriptors: (descriptors) => invoke("scan_descriptors", { descriptors }),
   jadeQrPin: async (request) => new Uint8Array(await invoke<number[]>("jade_qr_pin", { request: Array.from(request) })),
   syncAccount: (id) => invoke("sync_account", { id }),
+  checkIncoming: (account, watchId) => invoke("check_incoming", { account, watchId }),
   txDetails: (account, txid) => invoke("tx_details", { account, txid }),
   prepareBump: (account, txid, action, fee) => invoke("prepare_bump", { account, txid, action, fee }),
   confirmQuote: (quote) => invoke("confirm_quote", { quote }),

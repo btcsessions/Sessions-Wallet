@@ -241,7 +241,14 @@ export function SpendStyleSwitch({
         <button aria-pressed={value === "efficient"} onClick={() => onChange("efficient")}>
           Efficient
         </button>
-        <button aria-pressed={value === "private"} disabled={!!unavailable} onClick={() => (unavailable ? setWhy(!why) : onChange("private"))} className={unavailable ? "unavailable" : undefined}>
+        {/* Not `disabled`: a disabled button swallows taps, and tapping is how you find out why. */}
+        <button
+          aria-pressed={value === "private"}
+          aria-disabled={!!unavailable}
+          aria-expanded={unavailable ? why : undefined}
+          onClick={() => (unavailable ? setWhy(!why) : onChange("private"))}
+          className={unavailable ? "unavailable" : undefined}
+        >
           Private
           {unavailable && (
             <span
@@ -257,9 +264,9 @@ export function SpendStyleSwitch({
           )}
         </button>
       </div>
-      <p className="group-note" style={{ margin: "0 16px 18px" }}>
+      <p className="group-note" style={{ margin: "0 16px 18px" }} role={unavailable && why ? "status" : undefined}>
         {unavailable && why
-          ? unavailable
+          ? `Private isn't available for this payment. ${unavailable.replace(/\.?$/, ".")}`
           : value === "private"
             ? "Looks like a two-person coinjoin, so observers can't tell which output is the payment. Uses more coins and costs about 2–3× the fee."
             : "Fewest coins and the lowest fee."}

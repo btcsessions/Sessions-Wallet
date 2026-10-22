@@ -20,6 +20,13 @@ pub trait Rail: Send + Sync {
     /// Pull fresh state from the network.
     async fn sync(&self) -> Result<()>;
 
+    /// Quick check for a payment to one receive target (its `watch_id`),
+    /// much cheaper than a full sync. `true` when something new turned up
+    /// (now in the account's balance and activity). Default: nothing to check.
+    async fn check_incoming(&self, _watch_id: &str) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Produce something a payer can pay (address, invoice…).
     async fn receive(&self, req: ReceiveRequest) -> Result<ReceiveTarget>;
 

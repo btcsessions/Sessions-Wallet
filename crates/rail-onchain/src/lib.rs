@@ -89,6 +89,9 @@ struct Inner {
     conn: Db,
     /// Set after the first successful full scan; later syncs are incremental.
     scanned: bool,
+    /// When every revealed address was last checked. In between, syncs only
+    /// look where something can change (see [`light_sync_request`]).
+    last_wide_sync: Option<std::time::Instant>,
     /// Labels and frozen coins, saved next to the wallet database.
     labels: labels::Labels,
     /// Labels waiting for their quoted transaction to be broadcast.
@@ -113,6 +116,31 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// How often a sync checks every revealed address (catching payments to
+/// old, reused addresses). Syncs in between are light.
+const WIDE_SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// A sync that only asks about what can change between wide syncs: unused
+/// addresses (where new payments land), unconfirmed transactions (waiting to
+/// confirm) and our unspent coins (spent from another device). Far fewer
+/// server requests than checking every revealed address, so it finishes
+/// quickly even with several accounts syncing at once.
+fn light_sync_request(wallet: &Wallet) -> bdk_wallet::chain::spk_client::SyncRequest<(KeychainKind, u32)> {
+    let unused: Vec<_> = wallet.spk_index().unused_spks().collect();
+    let unconfirmed: Vec<_> = wallet
+        .transactions()
+        .filter(|t| !t.chain_position.is_confirmed())
+        .map(|t| t.tx_node.txid)
+        .collect();
+    let outpoints: Vec<_> = wallet.list_unspent().map(|u| u.outpoint).collect();
+    bdk_wallet::chain::spk_client::SyncRequest::builder()
+        .chain_tip(wallet.local_chain().tip())
+        .spks_with_indexes(unused)
+        .txids(unconfirmed)
+        .outpoints(outpoints)
+        .build()
 }
 
 fn err(e: impl std::fmt::Display) -> Error {
@@ -171,6 +199,7 @@ impl OnchainAccount {
                 wallet,
                 conn,
                 scanned,
+                last_wide_sync: None,
                 labels,
                 pending: Default::default(),
             }),
@@ -445,10 +474,15 @@ impl Rail for OnchainAccount {
         let (request_full, request_sync) = {
             let inner = self.inner.lock().await;
             if inner.scanned {
-                (
-                    None,
-                    Some(inner.wallet.start_sync_with_revealed_spks().build()),
-                )
+                let wide = inner
+                    .last_wide_sync
+                    .is_none_or(|t| t.elapsed() >= WIDE_SYNC_EVERY);
+                let req = if wide {
+                    inner.wallet.start_sync_with_revealed_spks().build()
+                } else {
+                    light_sync_request(&inner.wallet)
+                };
+                (None, Some((req, wide)))
             } else {
                 (Some(inner.wallet.start_full_scan().build()), None)
             }
@@ -463,12 +497,13 @@ impl Rail for OnchainAccount {
             let mut inner = self.inner.lock().await;
             inner.wallet.apply_update(update).map_err(err)?;
             inner.scanned = true;
+            inner.last_wide_sync = Some(std::time::Instant::now());
             let Inner { wallet, conn, .. } = &mut *inner;
             wallet
                 .persist(conn)
                 .map_err(|e| Error::Storage(e.to_string()))?;
         }
-        if let Some(req) = request_sync {
+        if let Some((req, wide)) = request_sync {
             let update = self
                 .client
                 .sync(req, PARALLEL_REQUESTS)
@@ -476,12 +511,65 @@ impl Rail for OnchainAccount {
                 .map_err(err)?;
             let mut inner = self.inner.lock().await;
             inner.wallet.apply_update(update).map_err(err)?;
+            if wide {
+                inner.last_wide_sync = Some(std::time::Instant::now());
+            }
             let Inner { wallet, conn, .. } = &mut *inner;
             wallet
                 .persist(conn)
                 .map_err(|e| Error::Storage(e.to_string()))?;
         }
         Ok(())
+    }
+
+    /// One esplora request for the address on screen: anything new (even
+    /// still in the mempool) goes straight into the wallet as unconfirmed.
+    /// The next full sync adds confirmations.
+    async fn check_incoming(&self, watch_id: &str) -> Result<bool> {
+        let address = Address::from_str(
+            watch_id
+                .trim_start_matches("bitcoin:")
+                .split('?')
+                .next()
+                .unwrap_or(""),
+        )
+        .map_err(err)?
+        .require_network(self.network.to_bitcoin())
+        .map_err(|_| Error::Network("that address is for a different network".into()))?;
+        let spk = address.script_pubkey();
+        let seen = self.client.scripthash_txs(&spk, None).await.map_err(err)?;
+        let new: Vec<_> = {
+            let inner = self.inner.lock().await;
+            seen.iter()
+                .map(|t| t.txid)
+                .filter(|txid| inner.wallet.get_tx(*txid).is_none())
+                .collect()
+        };
+        if new.is_empty() {
+            return Ok(false);
+        }
+        let mut txs = Vec::new();
+        for txid in new {
+            if let Some(tx) = self.client.get_tx(&txid).await.map_err(err)? {
+                txs.push(tx);
+            }
+        }
+        if txs.is_empty() {
+            return Ok(false);
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut inner = self.inner.lock().await;
+        inner
+            .wallet
+            .apply_unconfirmed_txs(txs.into_iter().map(|tx| (tx, now)));
+        let Inner { wallet, conn, .. } = &mut *inner;
+        wallet
+            .persist(conn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        Ok(true)
     }
 
     async fn receive(&self, req: ReceiveRequest) -> Result<ReceiveTarget> {

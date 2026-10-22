@@ -1010,8 +1010,29 @@ pub async fn confirm_quote(
     wallet(&state).await?.confirm_quote(quote).await
 }
 
-/// Sync one account now. The Receive screen calls this every few seconds
-/// while a request is showing, so a payment appears as soon as possible.
+/// Quick check for a payment to the request on screen (one server request for
+/// an on-chain address). The Receive screen calls this every couple of seconds
+/// so a payment shows the moment it reaches the mempool. `true` if new.
+#[tauri::command]
+pub async fn check_incoming(
+    state: State<'_, AppState>,
+    account: AccountId,
+    watch_id: String,
+) -> Result<bool> {
+    let w = wallet(&state).await?;
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        w.check_incoming(&account, &watch_id),
+    )
+    .await
+    {
+        Ok(r) => r,
+        // Slow server: the next poll tries again.
+        Err(_) => Ok(false),
+    }
+}
+
+/// Sync one account now.
 #[tauri::command]
 pub async fn sync_account(state: State<'_, AppState>, id: AccountId) -> Result<()> {
     let rail = wallet(&state).await?.account(&id).await?;
