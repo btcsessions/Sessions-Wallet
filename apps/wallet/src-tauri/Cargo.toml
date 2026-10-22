@@ -16,6 +16,7 @@ tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
 sessions-core.workspace = true
+sessions-backup.workspace = true
 rail-onchain.workspace = true
 rail-spark.workspace = true
 rail-liquid.workspace = true
@@ -32,6 +33,9 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-bitbox = { path = "plugins/tauri-plugin-bitbox" }
 tauri-plugin-jade = { path = "plugins/tauri-plugin-jade" }
+# Passkeys (WebAuthn PRF) via Android Credential Manager, for passkey wallets.
+tauri-plugin-passkey = { path = "plugins/tauri-plugin-passkey" }
+rand = "0.8"
 async-trait.workspace = true
 bitcoin.workspace = true
 # BitBox02. USB (hidapi) on desktop only; Android goes through tauri-plugin-bitbox.

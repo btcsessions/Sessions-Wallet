@@ -5,12 +5,15 @@ import { Sheet, useBusy } from "../components/ui";
 import { useWallet } from "../state/store";
 import { THEMES, type Appearance } from "../theme";
 import { ModeSwitch } from "../components/ModeSwitch";
+import { BackupSection } from "../components/BackupSection";
+import type { BackupStatus } from "../api/types";
 
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
 
 export function SettingsSheet() {
   const { currencies, setCurrencies, layout, setStatus, close, setSpendStyle } = useWallet();
   const [phrase, setPhrase] = useState<string | null>(null);
+  const [backup, setBackup] = useState<BackupStatus | null>(null);
   const [passcode, setPasscode] = useState("");
   const [busy, run] = useBusy();
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -139,6 +142,11 @@ export function SettingsSheet() {
       </>
       )}
 
+      <BackupSection onStatus={setBackup} />
+
+      {/* Passkey wallets keep their words out of sight in Basic mode. */}
+      {(layout?.advanced || backup?.seedOrigin !== "passkey") && (
+      <>
       <p className="group-label">Recovery phrase</p>
       {phrase ? (
         <>
@@ -147,6 +155,15 @@ export function SettingsSheet() {
               <li key={i}>{w}</li>
             ))}
           </ol>
+          {backup && !backup.phrase && (
+            <button
+              className="btn primary block"
+              style={{ marginBottom: 10 }}
+              onClick={async () => setBackup(await (await api()).setPhraseBackedUp(true))}
+            >
+              I've written them down
+            </button>
+          )}
           <button className="btn block" onClick={() => setPhrase(null)}>
             Hide
           </button>
@@ -171,6 +188,8 @@ export function SettingsSheet() {
             Show recovery phrase
           </button>
         </>
+      )}
+      </>
       )}
 
       <div style={{ height: 22 }} />

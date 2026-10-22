@@ -2,7 +2,7 @@
 // reviewed without a native build. Never ships in the Tauri app.
 
 import type { WalletApi } from "./index";
-import type { AccountInfo, BitboxEvent, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Settings } from "./types";
+import type { AccountInfo, BackupStatus, BitboxEvent, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bitboxListeners = new Set<(e: BitboxEvent) => void>();
@@ -31,6 +31,23 @@ const DEMO_PHRASE =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 let status: "empty" | "locked" | "unlocked" = "empty";
+
+// Backup: succeeds after a short delay, like a good connection to the relays.
+const MOCK_RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net", "wss://nostr.mom", "wss://relay.snort.social", "wss://nostr-pub.wellorder.net"];
+let backup: BackupStatus = { passkey: false, phrase: false, seedOrigin: "phrase", lastBackupAt: null, lastError: null, pending: false, relays: [] };
+const backupListeners = new Set<(s: BackupStatus) => void>();
+let mockPrefs: Prefs = {};
+function setBackup(patch: Partial<BackupStatus>) {
+  backup = { ...backup, ...patch };
+  backupListeners.forEach((cb) => cb({ ...backup }));
+}
+/** A change to the wallet: back up a moment later. */
+function mockBackupSoon() {
+  if (status !== "unlocked") return;
+  setBackup({ pending: true });
+  setTimeout(() => setBackup({ pending: false, lastBackupAt: now(), lastError: null, relays: MOCK_RELAYS }), 1500);
+}
+const MOCK_RESTORED: RestoreResult = { found: true, version: 1_761_000_000, backedUpAt: now() - 3 * 86_400, accounts: 4, labels: 12, error: null };
 
 let accounts: AccountInfo[] = [];
 let activity: Payment[] = [];
@@ -229,6 +246,8 @@ export const mockApi: WalletApi = {
     accounts.forEach((a) => (a.balance = { confirmed: 0, pendingIn: 0, pendingOut: 0 }));
     activity = [];
     status = "unlocked";
+    setBackup({ passkey: false, phrase: false, seedOrigin: "phrase", lastBackupAt: null, lastError: null, relays: [] });
+    mockBackupSoon();
     return DEMO_PHRASE;
   },
   async restoreWallet(phrase) {
@@ -236,6 +255,67 @@ export const mockApi: WalletApi = {
     if (phrase.trim().split(/\s+/).length < 12) throw "That recovery phrase is too short. It should be 12 or 24 words.";
     seedDemo();
     status = "unlocked";
+    setBackup({ passkey: false, phrase: true, seedOrigin: "phrase", lastBackupAt: null, lastError: null, pending: true, relays: [] });
+  },
+  async passkeySupported() {
+    return true;
+  },
+  async createPasskeyWallet(passcode) {
+    if (passcode.length < 6) throw "Use a passcode of at least 6 digits";
+    await sleep(900);
+    seedDemo();
+    accounts = accounts.filter((a) => a.rail === "spark");
+    accounts.forEach((a) => (a.balance = { confirmed: 0, pendingIn: 0, pendingOut: 0 }));
+    activity = [];
+    status = "unlocked";
+    setBackup({ passkey: true, phrase: false, seedOrigin: "passkey", lastBackupAt: null, lastError: null, relays: [] });
+    mockBackupSoon();
+  },
+  async restoreWithPasskey(passcode) {
+    if (passcode.length < 6) throw "Use a passcode of at least 6 digits";
+    await sleep(1200);
+    seedDemo();
+    status = "unlocked";
+    setBackup({ passkey: true, phrase: false, seedOrigin: "passkey", lastBackupAt: MOCK_RESTORED.backedUpAt, lastError: null, pending: false, relays: MOCK_RELAYS });
+    return { ...MOCK_RESTORED };
+  },
+  async restoreState() {
+    await sleep(900);
+    setBackup({ pending: false, lastBackupAt: MOCK_RESTORED.backedUpAt, relays: MOCK_RELAYS });
+    return { ...MOCK_RESTORED };
+  },
+  async enablePasskeyBackup() {
+    await sleep(900);
+    setBackup({ passkey: true });
+    return { ...backup };
+  },
+  async backupStatus() {
+    return { ...backup };
+  },
+  async backupNow() {
+    setBackup({ pending: true });
+    await sleep(800);
+    setBackup({ pending: false, lastBackupAt: now(), lastError: null, relays: MOCK_RELAYS });
+    return { ...backup };
+  },
+  async setPhraseBackedUp(done) {
+    setBackup({ phrase: done });
+    mockBackupSoon();
+    return { ...backup };
+  },
+  async onBackupStatus(cb) {
+    backupListeners.add(cb);
+    return () => backupListeners.delete(cb);
+  },
+  async onStateRestored() {
+    return () => {};
+  },
+  async prefs() {
+    return structuredClone(mockPrefs);
+  },
+  async savePrefs(p) {
+    mockPrefs = structuredClone(p);
+    mockBackupSoon();
   },
   async unlock(passcode) {
     await sleep(300);
@@ -253,6 +333,7 @@ export const mockApi: WalletApi = {
     return structuredClone(accounts);
   },
   async addAccount(spec) {
+    mockBackupSoon();
     await sleep(500);
     const base = { balance: { confirmed: 0, pendingIn: 0, pendingOut: 0 } };
     let a: AccountInfo;
@@ -287,6 +368,7 @@ export const mockApi: WalletApi = {
   },
   async watchAddress() {},
   async renameAccount(id, name) {
+    mockBackupSoon();
     const a = find(id);
     a.name = name.trim();
     return a;
@@ -322,11 +404,13 @@ export const mockApi: WalletApi = {
     return mockUtxos.get(account)!;
   },
   async setLabel(account, kind, reference, label) {
+    mockBackupSoon();
     if (kind !== "output") return;
     const u = mockUtxos.get(account)?.find((x) => x.outpoint === reference);
     if (u) u.label = label;
   },
   async setFrozen(account, outpoint, frozen) {
+    mockBackupSoon();
     const u = mockUtxos.get(account)?.find((x) => x.outpoint === outpoint);
     if (u) u.frozen = frozen;
   },
@@ -463,6 +547,7 @@ export const mockApi: WalletApi = {
     else mockPayjoin.delete(account);
   },
   async removeAccount(id) {
+    mockBackupSoon();
     accounts = accounts.filter((a) => a.id !== id);
     layout = { ...layout, modules: layout.modules.filter((m) => !m.id.endsWith(`:${id}`)) };
   },
@@ -597,12 +682,14 @@ export const mockApi: WalletApi = {
     return structuredClone(layout);
   },
   async saveLayout(l) {
+    mockBackupSoon();
     layout = structuredClone(l);
   },
   async settings() {
     return { ...mockSettings };
   },
   async saveSettings(s) {
+    mockBackupSoon();
     let electrumUrl = mockSettings.electrumUrl ?? null;
     if (s.electrumUrl !== undefined) {
       const e = s.electrumUrl?.trim() ?? "";

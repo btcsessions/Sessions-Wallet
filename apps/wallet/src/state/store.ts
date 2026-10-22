@@ -53,6 +53,8 @@ interface State {
   /** `manual`: the user asked, so say if it fails. Background syncs stay quiet. */
   sync(manual?: boolean): Promise<void>;
   setStatus(s: WalletStatus): void;
+  /** Apply the preferences saved in the wallet (restored from backup or set on another device). */
+  loadPrefs(): Promise<void>;
   /** Set right after restoring from a phrase: look for accounts with history. */
   restored: boolean;
   cycleUnit(): void;
@@ -82,12 +84,43 @@ function loadPref<T>(key: string, fallback: T): T {
   }
 }
 
+/** Preferences that travel with the wallet backup (not just this device). */
+const SYNCED_PREFS = ["unit", "currency", "currencies", "theme", "appearance", "qrDensity"] as const;
+let prefsTimer: ReturnType<typeof setTimeout> | undefined;
+let prefsReady = false;
+
+function readPref(key: string): unknown {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? undefined : JSON.parse(v);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Save this device's synced preferences into the wallet (and so its backup), debounced. */
+export function pushPrefs() {
+  if (!prefsReady) return;
+  clearTimeout(prefsTimer);
+  prefsTimer = setTimeout(() => {
+    const prefs: Record<string, unknown> = {};
+    for (const k of SYNCED_PREFS) {
+      const v = readPref(k);
+      if (v !== undefined) prefs[k] = v;
+    }
+    void api()
+      .then((a) => a.savePrefs(prefs))
+      .catch(() => {});
+  }, 1500);
+}
+
 function savePref(key: string, v: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(v));
   } catch {
     /* preferences are best-effort */
   }
+  if ((SYNCED_PREFS as readonly string[]).includes(key)) pushPrefs();
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -154,10 +187,17 @@ export const useWallet = create<State>((set, get) => {
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error("The wallet engine didn't respond within 15 seconds.")), 15_000)),
         ]);
         set({ isMock: a.isMock, status });
-        if (status === "unlocked") await get().refresh();
+        if (status === "unlocked") {
+          await get().refresh();
+          void get().loadPrefs();
+        }
         // Refresh as soon as an account reports a change (debounced).
         if (!unlisten) {
           let t: ReturnType<typeof setTimeout> | undefined;
+          void a.onStateRestored(() => {
+            void get().refresh();
+            void get().loadPrefs();
+          });
           unlisten = await a.onChange(() => {
             clearTimeout(t);
             t = setTimeout(() => {
@@ -206,7 +246,37 @@ export const useWallet = create<State>((set, get) => {
 
     setStatus(status) {
       set({ status });
-      if (status === "unlocked") void get().refresh();
+      if (status === "unlocked") {
+        void get().refresh();
+        void get().loadPrefs();
+      } else prefsReady = false;
+    },
+
+    async loadPrefs() {
+      try {
+        const saved = await (await api()).prefs();
+        if (Object.keys(saved).length) {
+          for (const k of SYNCED_PREFS) if (k in saved) localStorage.setItem(k, JSON.stringify(saved[k]));
+          const theme = (saved.theme as ThemeId) ?? get().theme;
+          const appearance = (saved.appearance as Appearance) ?? get().appearance;
+          applyTheme(theme, appearance);
+          set({
+            theme,
+            appearance,
+            unit: (saved.unit as Unit) ?? get().unit,
+            currency: (saved.currency as string) ?? get().currency,
+            currencies: (saved.currencies as string[]) ?? get().currencies,
+          });
+          prefsReady = true;
+          void get().refresh();
+        } else {
+          // First time: this device's choices become the wallet's.
+          prefsReady = true;
+          pushPrefs();
+        }
+      } catch {
+        prefsReady = true;
+      }
     },
 
     cycleUnit() {

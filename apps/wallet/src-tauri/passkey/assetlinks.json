@@ -1,0 +1,15 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "io.btcsessions.wallet",
+      "sha256_cert_fingerprints": [
+        "27:34:E9:29:BD:B0:BB:02:A2:BC:0D:38:3D:00:5E:27:10:CA:3D:4B:FA:45:50:26:C2:D4:59:AB:91:D9:14:F2"
+      ]
+    }
+  }
+]

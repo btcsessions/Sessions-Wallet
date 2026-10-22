@@ -27,6 +27,9 @@ import type {
   Settings,
   SpendStyle,
   WalletStatus,
+  BackupStatus,
+  RestoreResult,
+  Prefs,
 } from "./types";
 
 /**
@@ -41,7 +44,38 @@ export interface WalletApi {
   restoreWallet(phrase: string, passcode: string): Promise<void>;
   unlock(passcode: string): Promise<void>;
   lock(): Promise<void>;
+  /** Also works for passkey wallets (their phrase is derived from the passkey). */
   revealPhrase(passcode: string): Promise<string>;
+
+  /** Whether this device can make passkeys (Android 9+). Desktop and iOS: false for now. */
+  passkeySupported(): Promise<boolean>;
+  /**
+   * Basic setup: make a passkey and a wallet whose seed comes from it (no phrase to write down). The passcode
+   * still unlocks the app day to day. Rejects with a plain message if the passkey manager can't do it
+   * ("Your passkey manager doesn't support passkey wallets yet; use a recovery phrase"), or the user cancels.
+   */
+  createPasskeyWallet(passcode: string): Promise<void>;
+  /**
+   * Sign in with a passkey on a new phone: brings back its wallet (a passkey wallet, or a phrase backed up with
+   * that passkey) and the wallet's state. Rejects if the backup servers can't be reached (nothing is created).
+   */
+  restoreWithPasskey(passcode: string): Promise<RestoreResult>;
+  /** Call right after `restoreWallet`: finds the wallet's state backup and applies it (accounts, labels, layout…). Never rejects. */
+  restoreState(): Promise<RestoreResult>;
+  /** Back up this phrase wallet's recovery phrase with a new passkey too (Advanced "both", or later in Settings). */
+  enablePasskeyBackup(): Promise<BackupStatus>;
+  backupStatus(): Promise<BackupStatus>;
+  /** Back up the state now and wait for the result. */
+  backupNow(): Promise<BackupStatus>;
+  /** The user confirmed they wrote the recovery phrase down. */
+  setPhraseBackedUp(done: boolean): Promise<BackupStatus>;
+  /** `backup://status` events. Returns an unsubscribe. */
+  onBackupStatus(cb: (s: BackupStatus) => void): Promise<() => void>;
+  /** `backup://restored`: the app restored the wallet's state on its own (a retry after being offline). Reload everything. */
+  onStateRestored(cb: (r: RestoreResult) => void): Promise<() => void>;
+  /** UI preferences, kept with the wallet (and in its backup) instead of localStorage. Unlocked only. */
+  prefs(): Promise<Prefs>;
+  savePrefs(prefs: Prefs): Promise<void>;
 
   accounts(): Promise<AccountInfo[]>;
   addAccount(spec: NewAccount): Promise<AccountInfo>;

@@ -11,7 +11,8 @@ use sessions_core::keystore::{child, KdfParams, Seed, Vault};
 use sessions_core::{AccountId, Custody, Error, Network, Result, Wallet};
 use tokio::sync::Mutex;
 
-use crate::config::{check_name, write_atomic, AccountSpec, Config};
+use crate::backup::Backup;
+use crate::config::{check_name, write_atomic, AccountSpec, BackupFlags, Config};
 use crate::monitor::Monitor;
 
 /// Called with an account's id when it reports a change (e.g. a payment
@@ -37,6 +38,11 @@ impl Paths {
     }
     fn onchain(&self, id: &AccountId) -> PathBuf {
         self.root.join("onchain").join(format!("{id}.db"))
+    }
+    /// An on-chain account's labels and frozen coins (BIP329 JSON), as
+    /// `rail_onchain` keeps them next to its database.
+    pub fn labels(&self, id: &AccountId) -> PathBuf {
+        self.onchain(id).with_extension("labels.json")
     }
     fn spark(&self, id: &AccountId) -> PathBuf {
         self.root.join("spark").join(&id.0)
@@ -86,6 +92,8 @@ pub struct AppState {
     notify: Option<Notify>,
     pub inner: Mutex<Option<Unlocked>>,
     failures: Mutex<(u32, Option<Instant>)>,
+    /// The encrypted state backup on relays.
+    pub backup: Arc<Backup>,
 }
 
 impl AppState {
@@ -97,6 +105,7 @@ impl AppState {
 
     pub fn new(root: PathBuf, notify: Option<Notify>) -> Self {
         AppState {
+            backup: Arc::new(Backup::new(&root, notify.is_some())),
             paths: Paths { root },
             notify,
             inner: Mutex::new(None),
@@ -148,7 +157,22 @@ impl AppState {
         }
     }
 
+    /// A new phrase wallet (not yet confirmed written down).
     pub async fn create(&self, seed: Seed, passcode: &str) -> Result<()> {
+        self.create_with(seed, passcode, BackupFlags::new_phrase(), false)
+            .await
+    }
+
+    /// Seal `seed` under the passcode and open the wallet. `flags` say how
+    /// it's backed up; `restored` holds state uploads until its old backup
+    /// is found or ruled out (see `backup::restore_state`).
+    pub async fn create_with(
+        &self,
+        seed: Seed,
+        passcode: &str,
+        flags: BackupFlags,
+        restored: bool,
+    ) -> Result<()> {
         if self.has_vault() {
             return Err(Error::Invalid(
                 "A wallet already exists on this device".into(),
@@ -161,8 +185,11 @@ impl AppState {
         })
         .await
         .map_err(|e| Error::Crypto(e.to_string()))??;
-        let config = Config::load(&self.paths.config())?.unwrap_or_else(|| Config::new(NETWORK));
+        let mut config =
+            Config::load(&self.paths.config())?.unwrap_or_else(|| Config::new(NETWORK));
+        config.backup = flags;
         config.save(&self.paths.config())?;
+        self.backup.reset(restored);
         write_atomic(
             &self.paths.vault(),
             &serde_json::to_vec(&vault).map_err(|e| Error::Storage(e.to_string()))?,
@@ -179,6 +206,7 @@ impl AppState {
         let mut unavailable = Vec::new();
 
         let master = seed.master_xpriv(config.network)?;
+        let backup_keys = sessions_backup::keys::StateKeys::from_master(&master)?;
         for spec in &config.accounts {
             match self.open_account(spec, &seed, &master, &config).await {
                 Ok(Opened::Onchain(a)) => {
@@ -223,6 +251,7 @@ impl AppState {
             }
             (None, _) => None,
         };
+        let backup_config = config.clone();
         *self.inner.lock().await = Some(Unlocked {
             seed,
             wallet,
@@ -233,6 +262,14 @@ impl AppState {
             unavailable,
             monitor,
         });
+        self.backup.unlocked(backup_keys, &backup_config);
+        Ok(())
+    }
+
+    /// Save the config, and back it up.
+    pub fn save_config(&self, config: &Config) -> Result<()> {
+        config.save(&self.paths.config())?;
+        self.backup.config_saved(config);
         Ok(())
     }
 
@@ -416,7 +453,7 @@ impl AppState {
             }
         }
         u.config.accounts.push(spec);
-        u.config.save(&self.paths.config())?;
+        self.save_config(&u.config)?;
         Ok(id)
     }
 
@@ -436,7 +473,7 @@ impl AppState {
             live.set_name(&name)?;
         }
         *spec.name_mut() = name;
-        u.config.save(&self.paths.config())
+        self.save_config(&u.config)
     }
 
     /// Turn payjoin receiving on or off for a hot on-chain account.
@@ -463,7 +500,7 @@ impl AppState {
             .cloned()
             .ok_or_else(|| Error::AccountNotFound(id.0.clone()))?;
         *payjoin_receive = account.set_payjoin_receive(enabled);
-        u.config.save(&self.paths.config())
+        self.save_config(&u.config)
     }
 
     /// Hot on-chain accounts. Their payjoin sessions are driven even after
@@ -484,6 +521,9 @@ impl AppState {
     }
 
     pub async fn lock(&self) {
+        // A change still waiting goes out now; the keys go with the lock.
+        crate::backup::flush_on_lock(self).await;
+        self.backup.locked();
         // Dropping Unlocked drops the seed and all rails.
         *self.inner.lock().await = None;
     }

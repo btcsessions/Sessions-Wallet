@@ -31,6 +31,7 @@ export function AnimatedPsbtQR({ psbt, adjustable = false }: { psbt: string; adj
     setLevel(v);
     try {
       localStorage.setItem("qrDensity", String(v));
+      void import("../state/store").then((m) => m.pushPrefs());
     } catch {
       /* best effort */
     }

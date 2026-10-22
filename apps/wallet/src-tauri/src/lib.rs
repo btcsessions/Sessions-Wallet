@@ -1,3 +1,4 @@
+mod backup;
 mod bitbox;
 mod commands;
 mod config;
@@ -5,6 +6,7 @@ mod jade;
 #[cfg(target_os = "android")]
 mod logcat;
 mod monitor;
+mod passkey;
 mod state;
 
 use std::sync::Arc;
@@ -23,6 +25,8 @@ pub fn run() {
         .plugin(tauri_plugin_bitbox::init())
         // Blockstream Jade over Bluetooth LE on Android (scan, bond, GATT).
         .plugin(tauri_plugin_jade::init())
+        // Passkeys with PRF (Android Credential Manager), for passkey wallets.
+        .plugin(tauri_plugin_passkey::init())
         // The QR scanner uses the camera from inside the webview.
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
@@ -54,7 +58,24 @@ pub fn run() {
             });
             app.manage(bitbox::BitBoxState::new(&dir));
             app.manage(jade::JadeState::new());
-            app.manage(state::AppState::new(dir, Some(notify)));
+            let state = state::AppState::new(dir, Some(notify));
+            // `backup://status` (BackupStatus) whenever it changes, and
+            // `backup://restored` (RestoreResult) when the backup loop
+            // restored a wallet's state on its own.
+            let emitter = app.handle().clone();
+            state
+                .backup
+                .set_emitter(Arc::new(move |event: &str, payload| {
+                    let _ = emitter.emit(event, payload);
+                }));
+            app.manage(state);
+
+            // Keep the encrypted state backup up to date.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<state::AppState>();
+                backup::run(&state).await;
+            });
 
             // Keep swaps moving in the background: Boltz hold invoices only
             // settle after we claim, so this can't wait for a manual refresh.
@@ -139,6 +160,16 @@ pub fn run() {
             commands::list_utxos,
             commands::set_label,
             commands::set_frozen,
+            commands::backup_status,
+            commands::backup_now,
+            commands::set_phrase_backed_up,
+            commands::restore_state,
+            commands::prefs,
+            commands::save_prefs,
+            passkey::passkey_supported,
+            passkey::create_passkey_wallet,
+            passkey::restore_with_passkey,
+            passkey::enable_passkey_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

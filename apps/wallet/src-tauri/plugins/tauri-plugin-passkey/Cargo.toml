@@ -1,0 +1,20 @@
+[package]
+name = "tauri-plugin-passkey"
+description = "Passkeys with the WebAuthn PRF extension (Android Credential Manager) for Sessions Wallet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+# Lets tauri-build find the Android library under android/.
+links = "tauri-plugin-passkey"
+
+[dependencies]
+tauri = { version = "2.12", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+zeroize = "1"
+
+[build-dependencies]
+tauri-plugin = { version = "2.7", features = ["build"] }

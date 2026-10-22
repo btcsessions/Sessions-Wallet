@@ -291,3 +291,45 @@ export type JadeEvent =
   | { kind: "status"; state: JadeState }
   /** Connected and unlocked. */
   | { kind: "connected" };
+
+/** Where the wallet's seed came from: a random recovery phrase, or derived from a passkey. */
+export type SeedOrigin = "phrase" | "passkey";
+
+/**
+ * How the wallet is backed up (`backup_status`, and Tauri event `backup://status` whenever it changes).
+ * The wallet's state (accounts, hardware wallets, vaults, labels, frozen coins, layout, settings, prefs) is
+ * backed up encrypted to Nostr relays in every case; `passkey`/`phrase` say what brings the seed back.
+ */
+export interface BackupStatus {
+  /** A passkey restores this wallet (a passkey wallet, or the phrase sealed under a passkey). */
+  passkey: boolean;
+  /** The user confirmed writing the recovery phrase down (or restored from it). */
+  phrase: boolean;
+  seedOrigin: SeedOrigin;
+  /** Unix seconds of the last state backup that reached a relay; null = never. */
+  lastBackupAt: number | null;
+  /** Why the last backup failed, or a note (e.g. labels left out for size); null when fine. */
+  lastError: string | null;
+  /** Changes not backed up yet (also true while a restored wallet still looks for its old backup). */
+  pending: boolean;
+  /** Relays that took the last backup. */
+  relays: string[];
+}
+
+/** What restoring the wallet's state found (`restore_state`, `restore_with_passkey`, event `backup://restored`). */
+export interface RestoreResult {
+  /** A backup was found (and applied unless `error`). */
+  found: boolean;
+  version: number | null;
+  /** Unix seconds when that backup was made. */
+  backedUpAt: number | null;
+  /** Accounts restored (including Spending). */
+  accounts: number;
+  /** Labels restored (addresses, transactions, coins). */
+  labels: number;
+  /** e.g. "Couldn't reach the backup servers" (the app keeps trying in the background). */
+  error: string | null;
+}
+
+/** The UI's own preferences (theme, currencies, unit…). Stored with the wallet so they're backed up. */
+export type Prefs = Record<string, unknown>;

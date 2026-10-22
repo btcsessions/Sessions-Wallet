@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WalletApi } from "./index";
-import type { JadeState } from "./types";
+import type { BackupStatus, JadeState, RestoreResult } from "./types";
 
 // Command names match apps/wallet/src-tauri/src/commands.rs.
 export const tauriApi: WalletApi = {
@@ -12,6 +12,19 @@ export const tauriApi: WalletApi = {
   unlock: (passcode) => invoke("unlock", { passcode }),
   lock: () => invoke("lock"),
   revealPhrase: (passcode) => invoke("reveal_phrase", { passcode }),
+
+  passkeySupported: () => invoke("passkey_supported"),
+  createPasskeyWallet: (passcode) => invoke("create_passkey_wallet", { passcode }),
+  restoreWithPasskey: (passcode) => invoke("restore_with_passkey", { passcode }),
+  restoreState: () => invoke("restore_state"),
+  enablePasskeyBackup: () => invoke("enable_passkey_backup"),
+  backupStatus: () => invoke("backup_status"),
+  backupNow: () => invoke("backup_now"),
+  setPhraseBackedUp: (done) => invoke("set_phrase_backed_up", { done }),
+  onBackupStatus: (cb) => listen<BackupStatus>("backup://status", (e) => cb(e.payload)),
+  onStateRestored: (cb) => listen<RestoreResult>("backup://restored", (e) => cb(e.payload)),
+  prefs: () => invoke("prefs"),
+  savePrefs: (prefs) => invoke("save_prefs", { prefs }),
 
   accounts: () => invoke("accounts"),
   addAccount: (spec) => invoke("add_account", { spec }),

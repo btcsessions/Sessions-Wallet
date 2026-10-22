@@ -7823,6 +7823,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "sessions-backup"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bitcoin",
+ "chacha20poly1305",
+ "flate2",
+ "futures-util",
+ "hkdf",
+ "rand 0.8.8",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sessions-core",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tracing",
+ "webpki-roots 1.0.10",
+ "zeroize",
+]
+
+[[package]]
 name = "sessions-core"
 version = "0.1.0"
 dependencies = [
@@ -7855,9 +7878,11 @@ dependencies = [
  "rail-liquid",
  "rail-onchain",
  "rail-spark",
+ "rand 0.8.8",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sessions-backup",
  "sessions-core",
  "tauri",
  "tauri-build",
@@ -7865,6 +7890,7 @@ dependencies = [
  "tauri-plugin-deep-link",
  "tauri-plugin-jade",
  "tauri-plugin-opener",
+ "tauri-plugin-passkey",
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.28.0",
@@ -8639,6 +8665,18 @@ dependencies = [
  "url",
  "windows",
  "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-passkey"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "zeroize",
 ]
 
 [[package]]

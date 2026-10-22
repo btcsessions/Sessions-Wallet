@@ -136,6 +136,62 @@ pub struct Config {
     pub next_multisig_account: u32,
     /// Monotonic counter for account ids.
     pub next_id: u32,
+    /// How the wallet's seed is backed up (passkey, written-down phrase).
+    #[serde(default = "BackupFlags::legacy")]
+    pub backup: BackupFlags,
+    /// Nostr relays that hold the encrypted backup.
+    #[serde(default = "sessions_backup::default_relays")]
+    pub backup_relays: Vec<String>,
+    /// The UI's own preferences (theme, currencies, units…), opaque here.
+    /// Kept in the config so they're in the backup.
+    #[serde(default)]
+    pub prefs: serde_json::Value,
+}
+
+/// Where the wallet's seed came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeedOrigin {
+    /// A random recovery phrase (new or restored).
+    Phrase,
+    /// Derived from a passkey's PRF output.
+    Passkey,
+}
+
+/// How the seed is backed up. The wallet *state* is backed up to relays in
+/// every case; these say who can bring the seed back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupFlags {
+    /// A passkey restores the seed: a passkey wallet, or a phrase sealed in
+    /// an envelope only the passkey opens.
+    pub passkey: bool,
+    /// The user has the phrase written down (confirmed), or restored from it.
+    pub phrase: bool,
+    pub seed_origin: SeedOrigin,
+    /// The passkey's credential id (base64url), when one was made here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+}
+
+impl BackupFlags {
+    /// Wallets made before passkeys: the phrase was shown at setup.
+    pub fn legacy() -> Self {
+        BackupFlags {
+            passkey: false,
+            phrase: true,
+            seed_origin: SeedOrigin::Phrase,
+            credential_id: None,
+        }
+    }
+
+    /// A new phrase wallet: backed up once the user confirms the phrase.
+    pub fn new_phrase() -> Self {
+        BackupFlags {
+            phrase: false,
+            ..BackupFlags::legacy()
+        }
+    }
 }
 
 impl Config {
@@ -164,6 +220,9 @@ impl Config {
             layout: Layout::default(),
             next_multisig_account: 0,
             next_id: 1,
+            backup: BackupFlags::new_phrase(),
+            backup_relays: sessions_backup::default_relays(),
+            prefs: serde_json::Value::Null,
         }
     }
 
@@ -355,6 +414,24 @@ mod tests {
             descriptors: pair("73c5da0a/84h/0h/3h"),
         };
         assert!(c.check_new(&w).is_err());
+    }
+
+    #[test]
+    fn older_configs_get_backup_defaults() {
+        let mut v = serde_json::to_value(Config::new(Network::Bitcoin)).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("backup");
+        o.remove("backupRelays");
+        o.remove("prefs");
+        let c: Config = serde_json::from_value(v).unwrap();
+        assert_eq!(c.backup, BackupFlags::legacy());
+        assert!(c.backup_relays.len() >= 4);
+        assert!(c.prefs.is_null());
+        let json = serde_json::to_value(&c.backup).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "passkey": false, "phrase": true, "seedOrigin": "phrase" })
+        );
     }
 
     #[test]

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Passkeys need no permissions. The app's domain vouches for it in
+     https://<rp id>/.well-known/assetlinks.json (see passkey/assetlinks.json). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

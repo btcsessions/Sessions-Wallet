@@ -16,7 +16,8 @@ use sessions_core::{
 };
 use tauri::State;
 
-use crate::config::{check_name, AccountSpec};
+use crate::backup::{self, BackupStatus, RestoreResult, MAX_PREFS_BYTES};
+use crate::config::{check_name, AccountSpec, BackupFlags, SeedOrigin};
 use crate::state::AppState;
 
 async fn wallet(state: &AppState) -> Result<Arc<Wallet>> {
@@ -63,7 +64,21 @@ pub async fn restore_wallet(
 ) -> Result<()> {
     check_passcode(&passcode)?;
     let seed = Seed::from_phrase(&phrase)?;
-    state.create(seed, &passcode).await
+    // Its old state backup is looked up by `restore_state` (the UI calls it
+    // next; the backup loop keeps trying if the relays can't be reached).
+    state
+        .create_with(
+            seed,
+            &passcode,
+            BackupFlags {
+                passkey: false,
+                phrase: true,
+                seed_origin: SeedOrigin::Phrase,
+                credential_id: None,
+            },
+            true,
+        )
+        .await
 }
 
 #[tauri::command]
@@ -85,7 +100,7 @@ pub async fn reveal_phrase(state: State<'_, AppState>, passcode: String) -> Resu
     Ok(seed.phrase().to_string())
 }
 
-fn check_passcode(p: &str) -> Result<()> {
+pub(crate) fn check_passcode(p: &str) -> Result<()> {
     if p.len() < 6 {
         return Err(Error::Invalid("Use a passcode of at least 6 digits".into()));
     }
@@ -459,7 +474,10 @@ pub async fn confirm(
     prepared: Prepared,
     fee: FeePriority,
 ) -> Result<Execution> {
-    wallet(&state).await?.confirm(prepared, fee).await
+    let r = wallet(&state).await?.confirm(prepared, fee).await;
+    // A send's note becomes its transaction's label.
+    state.backup.touch();
+    r
 }
 
 #[tauri::command]
@@ -469,7 +487,9 @@ pub async fn resume(
     signed_psbt: String,
     fee: FeePriority,
 ) -> Result<Execution> {
-    wallet(&state).await?.resume(paused, signed_psbt, fee).await
+    let r = wallet(&state).await?.resume(paused, signed_psbt, fee).await;
+    state.backup.touch();
+    r
 }
 
 #[tauri::command]
@@ -480,10 +500,13 @@ pub async fn receive(
     amount_sat: Option<Sats>,
     description: Option<String>,
 ) -> Result<ReceiveTarget> {
-    wallet(&state)
+    let target = wallet(&state)
         .await?
         .receive(&into, method, amount_sat, description)
-        .await
+        .await?;
+    // A description becomes the address's label.
+    state.backup.touch();
+    Ok(target)
 }
 
 #[tauri::command]
@@ -526,7 +549,7 @@ pub async fn save_layout(state: State<'_, AppState>, layout: Layout) -> Result<(
     let mut guard = state.inner.lock().await;
     let u = guard.as_mut().ok_or(Error::Locked)?;
     u.config.layout = layout;
-    u.config.save(&state.paths.config())
+    state.save_config(&u.config)
 }
 
 #[derive(Serialize)]
@@ -675,7 +698,7 @@ pub async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Re
     {
         u.config.breez_api_key = Some(key);
     }
-    u.config.save(&state.paths.config())
+    state.save_config(&u.config)
 }
 
 #[derive(Serialize)]
@@ -786,7 +809,7 @@ pub async fn remove_account(state: State<'_, AppState>, id: AccountId) -> Result
         .layout
         .modules
         .retain(|m| !m.id.ends_with(&format!(":{}", id.0)));
-    u.config.save(&state.paths.config())
+    state.save_config(&u.config)
 }
 
 /// Whether a hot on-chain account offers payjoin when receiving.
@@ -1126,7 +1149,9 @@ pub async fn set_label(
     wallet(&state)
         .await?
         .set_label(&account, kind, &reference, label)
-        .await
+        .await?;
+    state.backup.touch();
+    Ok(())
 }
 
 /// Freeze (never spend automatically) or unfreeze an on-chain coin.
@@ -1140,5 +1165,66 @@ pub async fn set_frozen(
     wallet(&state)
         .await?
         .set_frozen(&account, &outpoint, frozen)
-        .await
+        .await?;
+    state.backup.touch();
+    Ok(())
+}
+
+/// How the wallet is backed up, and how the last state backup went.
+#[tauri::command]
+pub async fn backup_status(state: State<'_, AppState>) -> Result<BackupStatus> {
+    Ok(state.backup.status())
+}
+
+/// Back up the wallet's state now and wait for the result.
+#[tauri::command]
+pub async fn backup_now(state: State<'_, AppState>) -> Result<BackupStatus> {
+    backup::backup_now(&state).await
+}
+
+/// The user confirmed they wrote the recovery phrase down (or took it back).
+#[tauri::command]
+pub async fn set_phrase_backed_up(state: State<'_, AppState>, done: bool) -> Result<BackupStatus> {
+    {
+        let mut guard = state.inner.lock().await;
+        let u = guard.as_mut().ok_or(Error::Locked)?;
+        u.config.backup.phrase = done;
+        state.save_config(&u.config)?;
+    }
+    Ok(state.backup.status())
+}
+
+/// Look for this wallet's state backup and apply it (call right after
+/// `restore_wallet`). Never fails; the result says what happened.
+#[tauri::command]
+pub async fn restore_state(state: State<'_, AppState>) -> Result<RestoreResult> {
+    Ok(backup::restore_state(&state).await)
+}
+
+/// The UI's preferences (theme, currencies, unit…), backed up with the wallet.
+#[tauri::command]
+pub async fn prefs(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    Ok(match &u.config.prefs {
+        serde_json::Value::Null => serde_json::json!({}),
+        p => p.clone(),
+    })
+}
+
+#[tauri::command]
+pub async fn save_prefs(state: State<'_, AppState>, prefs: serde_json::Value) -> Result<()> {
+    if !prefs.is_object() {
+        return Err(Error::Invalid("Preferences must be an object".into()));
+    }
+    if prefs.to_string().len() > MAX_PREFS_BYTES {
+        return Err(Error::Invalid("Preferences are too large".into()));
+    }
+    let mut guard = state.inner.lock().await;
+    let u = guard.as_mut().ok_or(Error::Locked)?;
+    if u.config.prefs == prefs {
+        return Ok(());
+    }
+    u.config.prefs = prefs;
+    state.save_config(&u.config)
 }

@@ -54,6 +54,14 @@ impl Seed {
         Ok(Self { mnemonic })
     }
 
+    /// The phrase for this BIP39 entropy (16 bytes: 12 words, 32: 24).
+    /// Passkey wallets derive their entropy from the passkey.
+    pub fn from_entropy(entropy: &[u8]) -> Result<Self> {
+        let mnemonic = Mnemonic::from_entropy_in(Language::English, entropy)
+            .map_err(|e| Error::InvalidMnemonic(e.to_string()))?;
+        Ok(Self { mnemonic })
+    }
+
     pub fn phrase(&self) -> Zeroizing<String> {
         Zeroizing::new(self.mnemonic.to_string())
     }
