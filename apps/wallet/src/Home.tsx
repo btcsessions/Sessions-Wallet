@@ -120,6 +120,14 @@ export function Home() {
     return () => clearInterval(t);
   }, [sync]);
 
+  // While a wallet's history is loading, keep its progress note fresh.
+  const loading = useWallet((s) => s.accounts.some((a) => a.scanning));
+  useEffect(() => {
+    if (!loading) return;
+    const t = setInterval(() => void useWallet.getState().refresh(), 5_000);
+    return () => clearInterval(t);
+  }, [loading]);
+
   if (!layout) return null;
   const ids = layout.modules.map((m) => m.id);
 

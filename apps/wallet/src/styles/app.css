@@ -2433,3 +2433,6 @@ button {
   background: var(--fill);
   color: var(--label-2);
 }
+.loading-chip.retrying {
+  color: var(--accent-ink, var(--accent));
+}

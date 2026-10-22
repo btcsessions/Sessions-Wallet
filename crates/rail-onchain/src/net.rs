@@ -28,14 +28,25 @@ use crate::{err, Inner};
 /// Unused addresses in a row before a scan stops (BIP44's gap limit).
 pub const STOP_GAP: usize = 20;
 /// Requests in flight per account job.
-pub const PARALLEL_REQUESTS: usize = 3;
+pub const PARALLEL_REQUESTS: usize = 2;
 /// Per-request limit, so one stuck connection can't hold a sync for minutes.
 pub const REQUEST_TIMEOUT_SECS: u64 = 15;
 /// Retries on 429 / 5xx (backoff 0.25 s, 0.5 s, 1 s, 2 s).
 pub const MAX_RETRIES: usize = 4;
 
+/// Longest a background job may take before it's stopped and retried.
+const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// First-scan retries: 10 s, 20 s, 40 s, then every 80 s.
+#[cfg(not(test))]
+const RETRY_BASE: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const RETRY_BASE: Duration = Duration::from_millis(20);
+const RETRY_MAX: Duration = Duration::from_secs(80);
+
 /// Long jobs (first scans, wide syncs) at once per server.
-const BACKGROUND_PERMITS: usize = 1;
+// Three at a time, so small wallets don't wait behind one big one
+// (with 2 requests each, at most 6 long-job requests in flight).
+pub(crate) const BACKGROUND_PERMITS: usize = 3;
 /// Light syncs at once per server.
 const LIGHT_PERMITS: usize = 2;
 /// Quick checks (an address on screen, a pushed transaction) at once per server.
@@ -86,6 +97,18 @@ pub(crate) fn lanes_for(url: &str) -> Arc<Lanes> {
         .clone()
 }
 
+/// What a background job is doing.
+#[derive(Debug, Clone)]
+pub(crate) enum Phase {
+    Idle,
+    /// Waiting for a free slot on the server.
+    Queued(Instant),
+    /// Talking to the server about these addresses.
+    Scanning(&'static str, Instant),
+    /// Failed with this error; the next attempt is at this time.
+    Retrying(String, Instant),
+}
+
 /// A background job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Job {
@@ -111,6 +134,10 @@ pub(crate) struct Net {
     /// One light sync at a time per account.
     pub light: Mutex<()>,
     hook: std::sync::RwLock<Option<ChangeHook>>,
+    /// What the background job is doing, for the "Loading history" note.
+    phase: std::sync::Mutex<Phase>,
+    /// Why the last background job failed (cleared when one succeeds).
+    error: std::sync::Mutex<Option<String>>,
     /// The background job, stopped when the account is closed so it never
     /// writes to a database another (re-opened) account now owns.
     job: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
@@ -128,6 +155,8 @@ impl Net {
             progress: Notify::new(),
             light: Mutex::new(()),
             hook: std::sync::RwLock::new(None),
+            error: std::sync::Mutex::new(None),
+            phase: std::sync::Mutex::new(Phase::Idle),
             job: std::sync::Mutex::new(None),
         })
     }
@@ -146,6 +175,36 @@ impl Net {
         if let Some(job) = self.job.lock().unwrap_or_else(|e| e.into_inner()).take() {
             job.abort();
         }
+    }
+
+    pub(crate) fn set_phase(&self, p: Phase) {
+        *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    }
+
+    /// Plain words for what the history scan is doing right now.
+    pub fn status(&self) -> Option<String> {
+        let secs = |t: &Instant| t.elapsed().as_secs();
+        match &*self.phase.lock().unwrap_or_else(|e| e.into_inner()) {
+            Phase::Idle => None,
+            Phase::Queued(t) => Some(format!(
+                "Waiting for other wallets to finish loading ({} s)",
+                secs(t)
+            )),
+            Phase::Scanning(what, t) => Some(format!("Checking {what} ({} s)", secs(t))),
+            Phase::Retrying(e, at) => Some(format!(
+                "Couldn't load it: {e}. Trying again in {} s",
+                at.saturating_duration_since(Instant::now()).as_secs()
+            )),
+        }
+    }
+
+    /// Why the last background job failed, if it did.
+    pub fn last_error(&self) -> Option<String> {
+        self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set_error(&self, e: Option<String>) {
+        *self.error.lock().unwrap_or_else(|e| e.into_inner()) = e;
     }
 
     pub fn set_hook(&self, hook: ChangeHook) {
@@ -183,6 +242,14 @@ pub(crate) fn fingerprint(w: &Wallet) -> Fingerprint {
     )
 }
 
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Start `job` in the background unless one is already queued or running.
 /// Returns `true` when a job (this one or an earlier one) is under way.
 pub(crate) fn start(job: Job, inner: &Arc<Mutex<Inner>>, net: &Arc<Net>) -> bool {
@@ -196,23 +263,70 @@ pub(crate) fn start(job: Job, inner: &Arc<Mutex<Inner>>, net: &Arc<Net>) -> bool
     let mut slot = net.job.lock().unwrap_or_else(|e| e.into_inner());
     let (inner, net) = (inner.clone(), net.clone());
     let handle = rt.spawn(async move {
-        let started = Instant::now();
-        let res = run(job, &inner, &net).await;
-        net.active.store(false, Ordering::SeqCst);
-        net.running.store(false, Ordering::SeqCst);
-        net.progress.notify_waiters();
-        match res {
-            Ok(changed) => {
-                tracing::info!(
-                    account = %net.id,
-                    "{job:?} finished in {:.1} s",
-                    started.elapsed().as_secs_f32()
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            let started = Instant::now();
+            if job == Job::FirstScan {
+                net.set_phase(Phase::Queued(started));
+            }
+            // Its own task, so a panic can't leave `running` stuck at true;
+            // and a time limit, so a hung connection can't hold the server
+            // lane (and every other account's scan) forever.
+            let (i, n) = (inner.clone(), net.clone());
+            let task =
+                tokio::spawn(
+                    async move { tokio::time::timeout(JOB_TIMEOUT, run(job, &i, &n)).await },
                 );
-                if changed {
+            // If this job is aborted (account closing), stop the inner task too.
+            let _stop = AbortOnDrop(task.abort_handle());
+            let res = match task.await {
+                Ok(Ok(r)) => r,
+                Ok(Err(_)) => Err(Error::Network(format!(
+                    "the server didn't finish within {} minutes",
+                    JOB_TIMEOUT.as_secs() / 60
+                ))),
+                Err(e) if e.is_panic() => {
+                    Err(Error::Storage("internal error while scanning".into()))
+                }
+                Err(_) => return, // aborted: the account is closing
+            };
+            net.active.store(false, Ordering::SeqCst);
+            match res {
+                Ok(changed) => {
+                    tracing::info!(
+                        account = %net.id,
+                        "{job:?} finished in {:.1} s",
+                        started.elapsed().as_secs_f32()
+                    );
+                    let had_error = net.last_error().is_some();
+                    net.set_error(None);
+                    net.set_phase(Phase::Idle);
+                    net.running.store(false, Ordering::SeqCst);
+                    net.progress.notify_waiters();
+                    if changed || had_error {
+                        net.changed();
+                    }
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(account = %net.id, "{job:?} attempt {attempt} failed: {e}");
+                    net.set_error(Some(e.to_string()));
+                    net.progress.notify_waiters();
                     net.changed();
+                    // Only the first scan is worth retrying on its own; a wide
+                    // sync just runs again on its schedule.
+                    if job != Job::FirstScan {
+                        net.running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                    let wait =
+                        (RETRY_BASE * 2u32.saturating_pow(attempt.min(4) - 1)).min(RETRY_MAX);
+                    net.set_phase(Phase::Retrying(short_error(&e), Instant::now() + wait));
+                    net.changed();
+                    tokio::time::sleep(wait).await;
                 }
             }
-            Err(e) => tracing::warn!(account = %net.id, "{job:?} failed: {e}"),
         }
     });
     *slot = Some(handle.abort_handle());
@@ -250,6 +364,17 @@ async fn run(job: Job, inner: &Mutex<Inner>, net: &Net) -> Result<bool> {
     }
 }
 
+/// An error short enough for a one-line note.
+fn short_error(e: &Error) -> String {
+    let s = e.to_string().replace('\n', " ");
+    let s = s.trim();
+    if s.chars().count() > 120 {
+        s.chars().take(120).collect::<String>() + "…"
+    } else {
+        s.to_string()
+    }
+}
+
 fn storage(e: impl std::fmt::Display) -> Error {
     Error::Storage(e.to_string())
 }
@@ -279,6 +404,15 @@ async fn first_scan(inner: &Mutex<Inner>, net: &Net) -> Result<bool> {
             }
             keychain_scan(&inner.wallet, k)
         };
+        net.set_phase(Phase::Scanning(
+            if k == KeychainKind::External {
+                "receive addresses"
+            } else {
+                "change addresses"
+            },
+            Instant::now(),
+        ));
+        tracing::info!(account = %net.id, "first scan: {k:?} keychain");
         let update = net
             .client
             .full_scan(request, STOP_GAP, PARALLEL_REQUESTS)

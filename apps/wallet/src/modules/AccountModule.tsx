@@ -99,9 +99,9 @@ export function AccountModule({ module }: ModuleProps) {
           </button>
         )}
         {siblings.some((a) => a.scanning) && (
-          <span className="loading-chip" title="Loading this wallet's history">
+          <span className={`loading-chip${siblings.some((a) => a.scanError) ? " retrying" : ""}`} title={siblings.find((a) => a.scanError)?.scanError ?? "Loading this wallet's history"}>
             <span className="spinner small" aria-hidden />
-            Loading history
+            {siblings.some((a) => a.scanError) ? "Retrying history" : "Loading history"}
           </span>
         )}
         {account.custody.type === "hardware" ? <HardwareBadge device={account.custody.device} compact={module.size === "small" || multi} /> : !multi && accountKind(account)}

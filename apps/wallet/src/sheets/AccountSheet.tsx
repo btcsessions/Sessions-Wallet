@@ -58,7 +58,15 @@ export function AccountSheet({ id }: { id: string }) {
       {a.scanning && (
         <p className="device-progress" style={{ flexDirection: "row", justifyContent: "center", padding: "10px 14px" }}>
           <span className="spinner small" aria-hidden />
-          Loading this wallet's history. Past payments and the balance fill in when it's done.
+          <span>
+            Loading this wallet's history. Past payments and the balance fill in when it's done.
+            {(a.scanStatus || a.scanError) && (
+              <>
+                <br />
+                <small style={{ color: "var(--label-2)" }}>{a.scanStatus ?? a.scanError}</small>
+              </>
+            )}
+          </span>
         </p>
       )}
       <div className="amount-entry" style={{ paddingTop: 4 }}>

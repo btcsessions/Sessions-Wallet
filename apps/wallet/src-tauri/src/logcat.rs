@@ -25,6 +25,8 @@ pub fn init() {
     let targets = Targets::new()
         .with_default(LevelFilter::WARN)
         .with_target("sessions_wallet_lib", LevelFilter::DEBUG)
+        .with_target("rail_onchain", LevelFilter::INFO)
+        .with_target("sessions_core", LevelFilter::INFO)
         .with_target("tauri_plugin_bitbox", LevelFilter::DEBUG)
         .with_target("tauri_plugin_jade", LevelFilter::DEBUG);
     let fmt = tracing_subscriber::fmt::layer()

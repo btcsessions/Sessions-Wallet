@@ -369,6 +369,8 @@ impl Rail for SparkAccount {
             group: None,
             account_index: None,
             scanning: false,
+            scan_error: None,
+            scan_status: None,
         })
     }
 

@@ -483,6 +483,16 @@ impl Rail for OnchainAccount {
             group: self.group.clone(),
             account_index: self.account_index,
             scanning: !inner.scanned,
+            scan_error: if inner.scanned {
+                None
+            } else {
+                self.net.last_error()
+            },
+            scan_status: if inner.scanned {
+                None
+            } else {
+                self.net.status()
+            },
         })
     }
 
@@ -1352,6 +1362,27 @@ mod tests {
         }
     }
 
+    /// A scan that can't reach the server says why, and keeps retrying by
+    /// itself instead of waiting for the next sync round.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_first_scan_reports_why_and_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = hot_on(dir.path(), "down", 0, "http://127.0.0.1:9");
+        a.sync().await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let i = a.info().await.unwrap();
+            if i.scan_error.is_some() {
+                assert!(i.scanning);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no error reported");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        // Still retrying on its own.
+        assert!(a.net.running());
+    }
+
     /// The first scan runs in the background: a caller that gives up (like
     /// the sync round's time limit) doesn't cancel it, and once it's done it
     /// is remembered across restarts.
@@ -1446,21 +1477,27 @@ mod tests {
         until_scanned(&a).await;
     }
 
-    /// Accounts on the same server share its request budget: two first
-    /// scans queue rather than run at once.
+    /// Accounts on the same server share its request budget: first scans
+    /// never put more than (long-job slots × requests each) on the server.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn scans_on_one_server_take_turns() {
         use std::sync::atomic::Ordering::SeqCst;
         let server = fake_esplora(std::time::Duration::from_millis(15)).await;
         let dir = tempfile::tempdir().unwrap();
-        let a = hot_on(dir.path(), "a", 0, &server.url);
-        let b = hot_on(dir.path(), "b", 1, &server.url);
-        a.sync().await.unwrap();
-        b.sync().await.unwrap();
-        until_scanned(&a).await;
-        until_scanned(&b).await;
+        let accounts: Vec<_> = (0..5)
+            .map(|i| hot_on(dir.path(), &format!("a{i}"), i, &server.url))
+            .collect();
+        for a in &accounts {
+            a.sync().await.unwrap();
+        }
+        for a in &accounts {
+            until_scanned(a).await;
+        }
         let peak = server.peak.load(SeqCst);
-        assert!(peak <= net::PARALLEL_REQUESTS, "peak {peak}");
+        assert!(
+            peak <= net::BACKGROUND_PERMITS * net::PARALLEL_REQUESTS,
+            "peak {peak}"
+        );
     }
 
     #[tokio::test]

@@ -39,6 +39,10 @@ export interface AccountInfo {
   accountIndex?: number | null;
   /** History still loading: an on-chain account's first full scan hasn't finished (balance/activity may be incomplete). */
   scanning?: boolean;
+  /** Why loading the history failed, while it retries on its own. */
+  scanError?: string | null;
+  /** What loading the history is doing right now, in plain words. */
+  scanStatus?: string | null;
 }
 
 /** An account with history found while scanning a wallet. */

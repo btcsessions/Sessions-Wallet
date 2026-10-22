@@ -113,6 +113,14 @@ pub struct AccountInfo {
     /// incomplete. Always `false` for other rails.
     #[serde(default)]
     pub scanning: bool,
+    /// Why the last attempt to load the history failed, while it's being
+    /// retried. `None` when there's no problem.
+    #[serde(default)]
+    pub scan_error: Option<String>,
+    /// What loading the history is doing right now, in plain words (while
+    /// `scanning`).
+    #[serde(default)]
+    pub scan_status: Option<String>,
 }
 
 /// A way of moving sats. The planner matches these up between accounts.

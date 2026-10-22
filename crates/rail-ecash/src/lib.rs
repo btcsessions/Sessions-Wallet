@@ -343,6 +343,8 @@ impl sessions_core::Rail for EcashAccount {
             group: None,
             account_index: None,
             scanning: false,
+            scan_error: None,
+            scan_status: None,
         })
     }
 
