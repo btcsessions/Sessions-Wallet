@@ -151,7 +151,7 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
             {more}. Check the amount and address on its screen, then scan the signed transaction it shows.
           </p>
           <div className="qr-wrap">
-            <AnimatedPsbtQR psbt={ns.psbtBase64} />
+            <AnimatedPsbtQR psbt={ns.psbtBase64} adjustable />
           </div>
           {signed ? (
             <>

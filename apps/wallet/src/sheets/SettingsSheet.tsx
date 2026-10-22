@@ -9,7 +9,7 @@ import { ModeSwitch } from "../components/ModeSwitch";
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
 
 export function SettingsSheet() {
-  const { currency, layout, setStatus, close, refresh, setSpendStyle } = useWallet();
+  const { currencies, setCurrencies, layout, setStatus, close, setSpendStyle } = useWallet();
   const [phrase, setPhrase] = useState<string | null>(null);
   const [passcode, setPasscode] = useState("");
   const [busy, run] = useBusy();
@@ -49,27 +49,23 @@ export function SettingsSheet() {
 
       <ThemePicker />
 
-      <p className="group-label">Currency</p>
+      <p className="group-label">Currencies</p>
       <div className="chips" style={{ flexWrap: "wrap" }}>
-        {CURRENCIES.map((c) => (
-          <button
-            key={c}
-            className="chip"
-            aria-pressed={c === currency}
-            onClick={() => {
-              try {
-                localStorage.setItem("currency", JSON.stringify(c));
-              } catch {
-                /* best effort */
-              }
-              useWallet.setState({ currency: c });
-              void refresh();
-            }}
-          >
-            {c}
-          </button>
-        ))}
+        {CURRENCIES.map((c) => {
+          const on = currencies.includes(c);
+          return (
+            <button
+              key={c}
+              className="chip"
+              aria-pressed={on}
+              onClick={() => setCurrencies(on ? currencies.filter((x) => x !== c) : CURRENCIES.filter((x) => x === c || currencies.includes(x)))}
+            >
+              {c}
+            </button>
+          );
+        })}
       </div>
+      <p className="group-note">Pick one or more. Tap your balance to switch between sats, BTC and each of these.</p>
 
       <div style={{ height: 8 }} />
       {layout?.advanced && (

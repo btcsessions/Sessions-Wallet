@@ -30,7 +30,12 @@ interface State {
   activity: Payment[];
   layout: Layout | null;
   unit: Unit;
+  /** The fiat currency shown right now (and under amounts). One of `currencies`. */
   currency: string;
+  /** Fiat currencies the user picked; tapping a balance cycles sats, BTC, then each of these. */
+  currencies: string[];
+  setCurrencies(list: string[]): void;
+  prices: Record<string, number | null>;
   theme: ThemeId;
   appearance: Appearance;
   setTheme(t: ThemeId): void;
@@ -102,6 +107,20 @@ export const useWallet = create<State>((set, get) => {
     layout: null,
     unit: loadPref<Unit>("unit", "sats"),
     currency: loadPref("currency", "CAD"),
+    currencies: (() => {
+      const list = loadPref<string[]>("currencies", []);
+      const main = loadPref("currency", "CAD");
+      return list.length ? list : [main];
+    })(),
+    prices: {},
+    setCurrencies(list) {
+      if (!list.length) return;
+      const currency = list.includes(get().currency) ? get().currency : list[0];
+      savePref("currencies", list);
+      savePref("currency", currency);
+      set({ currencies: list, currency, price: get().prices[currency] ?? null });
+      void get().refresh();
+    },
     restored: false,
     theme: loadPref<ThemeId>("theme", "sessions"),
     appearance: loadPref<Appearance>("appearance", "dark"),
@@ -154,14 +173,16 @@ export const useWallet = create<State>((set, get) => {
     async refresh() {
       const a = await api();
       try {
-        const [accounts, activity, layout, price, unavailable] = await Promise.all([
+        const fiats = get().currencies;
+        const [accounts, activity, layout, priceList, unavailable] = await Promise.all([
           a.accounts(),
           a.activity(50),
           a.layout(),
-          a.btcPrice(get().currency).catch(() => null),
+          Promise.all(fiats.map((c) => a.btcPrice(c).catch(() => null))),
           a.unavailableAccounts().catch(() => []),
         ]);
-        set({ accounts, activity, layout, price, unavailable });
+        const prices = Object.fromEntries(fiats.map((c, i) => [c, priceList[i]]));
+        set({ accounts, activity, layout, prices, price: prices[get().currency] ?? null, unavailable });
       } catch (e) {
         get().fail(e);
       }
@@ -189,9 +210,22 @@ export const useWallet = create<State>((set, get) => {
     },
 
     cycleUnit() {
-      const unit = UNITS[(UNITS.indexOf(get().unit) + 1) % UNITS.length];
-      savePref("unit", unit);
-      set({ unit });
+      // sats → BTC → each chosen fiat currency → sats
+      const { unit, currency, currencies, prices } = get();
+      const i = currencies.indexOf(currency);
+      if (unit === "fiat" && i >= 0 && i < currencies.length - 1) {
+        const next = currencies[i + 1];
+        savePref("currency", next);
+        set({ currency: next, price: prices[next] ?? null });
+        return;
+      }
+      const nextUnit = UNITS[(UNITS.indexOf(unit) + 1) % UNITS.length];
+      savePref("unit", nextUnit);
+      if (nextUnit === "fiat" && currencies.length) {
+        const first = currencies[0];
+        savePref("currency", first);
+        set({ unit: nextUnit, currency: first, price: prices[first] ?? null });
+      } else set({ unit: nextUnit });
     },
 
     setEditing(editing) {

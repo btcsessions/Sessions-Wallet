@@ -83,8 +83,8 @@ export function AccountModule({ module }: ModuleProps) {
         {title}
       </div>
       <div className="balance-line">
-        <button style={{ textAlign: "left" }} onClick={() => open({ name: "account", id: account.id })} aria-label={`${title}: ${value} ${suffix}${multi ? `, ${siblings.length} accounts` : ""}`}>
-        <div className="big-stat num">
+        <button style={{ textAlign: "left" }} data-tile-open onClick={() => open({ name: "account", id: account.id })} aria-label={`${title}: ${value} ${suffix}${multi ? `, ${siblings.length} accounts` : ""}`}>
+        <div className="big-stat num fit" style={{ ["--len" as string]: value.length }}>
           {value}
           {suffix && <span className="balance-unit">{suffix}</span>}
         </div>

@@ -66,12 +66,22 @@ export function Scanner({
     if (!video.current) return;
     const scanner = new QrScanner(video.current, (r) => void handle(r.data), {
       preferredCamera: "environment",
-      maxScansPerSecond: 15,
+      maxScansPerSecond: 20,
       returnDetailedScanResult: true,
       highlightScanRegion: false,
       highlightCodeOutline: false,
-      // Whole frame: animated codes on a laptop screen are rarely centred.
-      calculateScanRegion: (v) => ({ x: 0, y: 0, width: v.videoWidth, height: v.videoHeight, downScaledWidth: 640, downScaledHeight: Math.round((640 * v.videoHeight) / Math.max(1, v.videoWidth)) }),
+      // Phones: the middle of the frame at near full resolution, so small,
+      // dense codes on a hardware wallet's screen stay sharp enough to read.
+      // Computers: the whole frame, since codes held to a webcam are rarely centred.
+      calculateScanRegion: (v) => {
+        if (/android|iphone|ipad/i.test(navigator.userAgent)) {
+          const side = Math.round(Math.min(v.videoWidth, v.videoHeight) * 0.85);
+          const scaled = Math.min(side, 800);
+          return { x: Math.round((v.videoWidth - side) / 2), y: Math.round((v.videoHeight - side) / 2), width: side, height: side, downScaledWidth: scaled, downScaledHeight: scaled };
+        }
+        const w = Math.min(v.videoWidth, 960);
+        return { x: 0, y: 0, width: v.videoWidth, height: v.videoHeight, downScaledWidth: w, downScaledHeight: Math.round((w * v.videoHeight) / Math.max(1, v.videoWidth)) };
+      },
     });
     scanner.start().catch((e: unknown) => {
       const msg = String(e instanceof Error ? e.message : e);

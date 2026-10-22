@@ -7,6 +7,8 @@ import type { AccountInfo, BitboxEvent, JadeEvent, Layout, Leg, LightningAddress
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bitboxListeners = new Set<(e: BitboxEvent) => void>();
 let bitboxPaired = false;
+/** Stand-in for a real unsigned PSBT, about the size of a one-input payment. */
+const MOCK_PSBT = "cHNidP8LMFV6n8TpDjNYfaLH7BE2W4Clyu8UOV6DqM3yFzxhhqvQ9Ro/ZImu0/gdQmeMsdb7IEVqj7TZ/iNIbZK33AEmS3CVut8EKU5zmL3iByxRdpvA5QovVHmew+gNMld8ocbrEDVaf6TJ7hM4XYKnzPEWO2CFqs/0GT5jiK3S9xxBZouw1fofRGmOs9j9IkdskbbbACVKb5S53gMoTXKXvOEGK1B1mr/kCS5TeJ3C5wwxVnugxeoPNFl+o8jtEjdcgabL8BU6X4SpzvMYPWKHrNH2G0Bliq/U+R5DaI2y1/whRmuQtdr/JEluk7jdAidMcZa74AUqT3SZvuMILVJ3nMHmCzBVep/E6Q4zWH2ix+wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW+yBFao+02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn+kye4TOF2Cp8zxFjtgharP9Bk+Y4it0vccQWaLsNX6H0RpjrPY/SJHbJG22wAlSm+Uud4DKE1yl7zhBitQdZq/5AkuU3idwucMMVZ7oMXqDzRZfqPI7RI3XIGmy/AVOl+Eqc7zGD1ih6zR9htAZYqv1PkeQ2iNstf8IUZrkLXa/yRJbpO43QInTHGWu+AFKk90mb7jCC1Sd5zB5gswVXqfxOkOM1h9osfsETZbgKXK7xQ5XoOozfIXPGGGq9D1Gj9kia7T+B1CZ4yx1g==";
 const mockBitbox = (e: BitboxEvent) => bitboxListeners.forEach((cb) => cb(e));
 const jadeListeners = new Set<(e: JadeEvent) => void>();
 const mockJade = (e: JadeEvent) => jadeListeners.forEach((cb) => cb(e));
@@ -510,7 +512,7 @@ export const mockApi: WalletApi = {
         amountSat,
         feeSat,
         handle: "mock",
-        needsSignature: hw ? { psbtBase64: "cHNidP8BAHECAAAAAWZtb2NrcHNidG1vY2twc2J0bW9ja3BzYnRtb2NrcHNidG1vY2s=", signaturesNeeded: 1 } : null,
+        needsSignature: hw ? { psbtBase64: MOCK_PSBT, signaturesNeeded: 1 } : null,
         private: isPrivate,
         payjoin: false,
         notes: isPrivate ? [] : [],

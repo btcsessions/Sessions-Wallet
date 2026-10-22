@@ -44,6 +44,15 @@ function Tile({ module, editing }: { module: InstalledModule; editing: boolean }
     if (press.current) clearTimeout(press.current.timer);
     press.current = null;
   }
+  // Tapping anywhere on a card (not on one of its buttons) does what tapping
+  // its main area does, e.g. opens the account.
+  const tap = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (editing) return;
+    const target = e.target as HTMLElement;
+    const own = target.closest("button, a, input, select, textarea, label, [role=button], [data-no-tap]");
+    if (own && own !== e.currentTarget && e.currentTarget.contains(own)) return;
+    e.currentTarget.querySelector<HTMLElement>("[data-tile-open]")?.click();
+  };
   const movePress = (e: React.PointerEvent) => {
     const p = press.current;
     if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 8) cancelPress();
@@ -61,6 +70,7 @@ function Tile({ module, editing }: { module: InstalledModule; editing: boolean }
       onPointerCancel={cancelPress}
       onPointerMove={movePress}
       onContextMenu={(e) => e.preventDefault()}
+      onClick={tap}
       {...(editing ? { ...attributes, ...listeners, "aria-label": `${def.name}. Drag to reorder.` } : {})}
     >
       {editing && (

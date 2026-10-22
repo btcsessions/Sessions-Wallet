@@ -2368,3 +2368,53 @@ button {
     transform: rotate(360deg);
   }
 }
+
+/* Bigger QR for hardware wallets to scan */
+.qr.large {
+  width: min(340px, 86vw);
+  padding: 12px;
+}
+
+/* QR density slider */
+.density {
+  display: grid;
+  gap: 6px;
+  width: min(340px, 86vw);
+  font-size: 14px;
+  color: var(--label-2);
+}
+.density-head {
+  display: flex;
+  justify-content: space-between;
+}
+.density-head strong {
+  color: var(--label);
+  font-weight: 600;
+}
+.density input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.density-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+/* Cards that open something when tapped anywhere */
+.tile:has([data-tile-open]) {
+  cursor: pointer;
+}
+.app:not(.editing) .tile:has([data-tile-open]):active:not(:has(button:active)) {
+  transform: scale(0.985);
+  transition: transform 0.12s ease;
+}
+
+/* Account balances stay on one line: long values (BTC, fiat) shrink to fit. */
+.big-stat.fit {
+  white-space: nowrap;
+  font-size: clamp(16px, min(15cqi, calc(150cqi / var(--len, 9))), 30px);
+}
+[data-skin="sessions"] .big-stat.fit {
+  font-size: clamp(18px, min(20cqi, calc(190cqi / var(--len, 9))), 38px);
+}

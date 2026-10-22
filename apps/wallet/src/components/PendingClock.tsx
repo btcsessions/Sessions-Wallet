@@ -23,7 +23,7 @@ export function PendingClock({ sats, size = 16 }: { sats: number; size?: number 
 
   if (sats <= 0) return null;
   return (
-    <span className="pending-clock" ref={ref}>
+    <span className="pending-clock" ref={ref} data-no-tap>
       <button
         type="button"
         aria-label={`${formatSats(sats)} sats waiting for confirmation`}
