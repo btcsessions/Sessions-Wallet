@@ -781,6 +781,63 @@ pub async fn register_lightning_address(
         .await
 }
 
+async fn spending(state: &AppState, id: &AccountId) -> Result<Arc<rail_spark::SparkAccount>> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    u.spark
+        .get(id)
+        .cloned()
+        .ok_or_else(|| Error::Unsupported("receive bitcoin deposits to claim".into()))
+}
+
+/// On-chain deposits to a Spending account that aren't in its balance yet:
+/// waiting for confirmations, being claimed, or needing the user (a claim
+/// fee over the automatic limit, a failed claim). Empty most of the time.
+#[tauri::command]
+pub async fn spending_deposits(
+    state: State<'_, AppState>,
+    account: AccountId,
+) -> Result<Vec<rail_spark::Deposit>> {
+    spending(&state, &account).await?.deposits().await
+}
+
+/// Claim a Spending deposit, paying up to `max_fee_sat` (taken from the
+/// deposit). `instant`: claim it before it has its confirmations, for the
+/// provider's spread (`instantFeeSat`); without it a deposit that isn't
+/// confirmed enough is refused.
+#[tauri::command]
+pub async fn claim_deposit(
+    state: State<'_, AppState>,
+    account: AccountId,
+    txid: String,
+    vout: u32,
+    max_fee_sat: Sats,
+    instant: Option<bool>,
+) -> Result<rail_spark::ClaimResult> {
+    spending(&state, &account)
+        .await?
+        .claim_deposit(&txid, vout, max_fee_sat, instant.unwrap_or(false))
+        .await
+}
+
+/// Send a Spending deposit back to an on-chain `address` instead of
+/// claiming it (one too small to be worth the claim fee), at
+/// `fee_rate_sat_vb`. Returns the refund's txid.
+#[tauri::command]
+pub async fn refund_deposit(
+    state: State<'_, AppState>,
+    account: AccountId,
+    txid: String,
+    vout: u32,
+    address: String,
+    fee_rate_sat_vb: u64,
+) -> Result<String> {
+    spending(&state, &account)
+        .await?
+        .refund_deposit(&txid, vout, &address, fee_rate_sat_vb)
+        .await
+}
+
 /// Remove an account that holds nothing. Spending can't be removed.
 /// Its keys still derive from the recovery phrase, so adding it back later
 /// recovers any funds that arrive in the meantime.
@@ -804,7 +861,11 @@ pub async fn remove_account(state: State<'_, AppState>, id: AccountId) -> Result
     if u.onchain.remove(&id).is_some() {
         u.refresh_monitor();
     }
-    u.spark.remove(&id);
+    if u.spark.remove(&id).is_some() {
+        if let Some(m) = &u.monitor {
+            m.watcher().unwatch_external(&id);
+        }
+    }
     u.config
         .layout
         .modules

@@ -2,7 +2,7 @@
 // reviewed without a native build. Never ships in the Tauri app.
 
 import type { WalletApi } from "./index";
-import type { AccountInfo, BackupStatus, BitboxEvent, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
+import type { AccountInfo, BackupStatus, BitboxEvent, ClaimResult, Deposit, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bitboxListeners = new Set<(e: BitboxEvent) => void>();
@@ -112,6 +112,22 @@ function p(
 }
 
 let mockLnAddress: LightningAddress | null = null;
+/** One deposit stuck over the automatic claim-fee limit, so the UI can be built. */
+let mockDeposits: Deposit[] = [
+  {
+    txid: "5e3b7c1f0a9d2e4b6c8a1f3e5d7b9c0a2e4f6a8c0e2d4b6a8c0e2f4a6c8e0d2b",
+    vout: 1,
+    amountSat: 85_000,
+    confirmations: 4,
+    confirmationsNeeded: 3,
+    status: "needsApproval",
+    claimFeeSat: 1_200,
+    instantFeeSat: null,
+    instantConfirmations: null,
+    error: "Claiming it costs 1200 sats in network fees right now, more than the automatic limit. Approve the fee to claim it, or wait for fees to drop.",
+    refundTxid: null,
+  },
+];
 const mockPayjoin = new Set<string>();
 
 const mockElectrumDefaults = [
@@ -715,6 +731,49 @@ export const mockApi: WalletApi = {
     await sleep(500);
     mockLnAddress = { address: `${username.toLowerCase()}@breez.tips`, username: username.toLowerCase(), lnurl: "lnurl1dp68gurn8ghj7ctsdyhxgetkd9h8vmmfvdjjuer9wchxvef0wejk" };
     return mockLnAddress;
+  },
+  async spendingDeposits(account) {
+    await sleep(200);
+    return account === "spending" ? mockDeposits.map((d) => ({ ...d })) : [];
+  },
+  async claimDeposit(account, txid, vout, maxFeeSat, instant): Promise<ClaimResult> {
+    await sleep(600);
+    const d = account === "spending" ? mockDeposits.find((x) => x.txid === txid && x.vout === vout) : undefined;
+    if (!d) throw new Error("That deposit can't be found on the bitcoin network");
+    const mature = (d.confirmations ?? 0) >= d.confirmationsNeeded;
+    if (!mature && !instant) throw new Error(`This deposit has ${d.confirmations ?? 0} of the ${d.confirmationsNeeded} confirmations it needs. Wait for them, or claim it instantly`);
+    const fee = mature ? (d.claimFeeSat ?? 0) : (d.instantFeeSat ?? 0);
+    if (fee > maxFeeSat) {
+      return { status: "deferred", payment: null, message: `Claiming it costs ${fee} sats right now, more than the ${maxFeeSat} sats allowed.`, requiredFeeSat: fee };
+    }
+    mockDeposits = mockDeposits.filter((x) => x !== d);
+    const payment: Payment = {
+      id: `claim-${txid.slice(0, 8)}`,
+      account: "spending",
+      direction: "incoming",
+      amountSat: d.amountSat - fee,
+      feeSat: fee,
+      status: mature ? "complete" : "pending",
+      method: "bitcoinAddress",
+      timestamp: Math.floor(Date.now() / 1000),
+      description: null,
+    };
+    return mature
+      ? { status: "claimed", payment, message: null, requiredFeeSat: null }
+      : { status: "submitted", payment: null, message: "Claimed early. It reaches your balance in a moment.", requiredFeeSat: null };
+  },
+  async refundDeposit(account, txid, vout, address, feeRateSatVb) {
+    await sleep(600);
+    const d = account === "spending" ? mockDeposits.find((x) => x.txid === txid && x.vout === vout) : undefined;
+    if (!d) throw new Error("That deposit can't be found on the bitcoin network");
+    if (!address.trim()) throw new Error("Enter a bitcoin address");
+    if (feeRateSatVb < 1) throw new Error("The fee rate must be at least 1 sat/vB");
+    const refundTxid = "9c".repeat(32);
+    d.status = "refunding";
+    d.refundTxid = refundTxid;
+    d.claimFeeSat = null;
+    d.error = null;
+    return refundTxid;
   },
   async onChange() {
     return () => {};

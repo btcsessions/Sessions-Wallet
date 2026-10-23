@@ -11,6 +11,7 @@ import type { DetailRow } from "../api/types";
 import { DeviceIcon, HardwareBadge } from "../hw/devices";
 import { accountColor, accountKind, amountParts, errorText, formatFiat, held } from "../format";
 import { PendingClock } from "../components/PendingClock";
+import { SpendingDeposits } from "../components/SpendingDeposits";
 import { useWallet } from "../state/store";
 
 export function AccountSheet({ id }: { id: string }) {
@@ -105,6 +106,8 @@ export function AccountSheet({ id }: { id: string }) {
           </button>
         )}
       </div>
+
+      {a.rail === "spark" && <SpendingDeposits account={a.id} />}
 
       {a.rail === "spark" && (
         <>

@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 sessions-core = { workspace = true }
+# The app's Electrum connection, as the SDK's chain backend.
+rail-onchain = { workspace = true }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

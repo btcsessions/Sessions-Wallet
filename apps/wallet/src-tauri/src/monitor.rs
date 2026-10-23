@@ -16,6 +16,10 @@
 //! Accounts report changes through their change hook (the `wallet://changed`
 //! event). Plain Esplora servers have no websocket: those keep polling.
 //!
+//! Addresses outside the on-chain accounts can be watched too (see
+//! [`Watcher::watch_external`]): the Spending account's bitcoin deposit
+//! address, whose owner is told about payments to it and about new blocks.
+//!
 //! Electrum (`blockchain.headers.subscribe`, `blockchain.scripthash.subscribe`):
 //! up to [`MAX_SCRIPTS_ELECTRUM`] scripts, far more than mempool's 10. A
 //! status change means the script's history changed: its history is fetched
@@ -224,11 +228,105 @@ enum Cmd {
 
 type Accounts = Arc<std::sync::RwLock<Vec<Arc<OnchainAccount>>>>;
 
+/// What the chain server reported, for an externally watched address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    /// A transaction to (or from) the address appeared or confirmed.
+    Payment,
+    /// A new block.
+    Block,
+}
+
+/// Told about [`Activity`] on an externally watched address. Called on the
+/// monitor's task: it must not block (spawn the work).
+pub type ActivityHook = Arc<dyn Fn(Activity) + Send + Sync>;
+
+/// Externally watched addresses, by owner: (address, hook).
+type Extras = Arc<std::sync::RwLock<BTreeMap<AccountId, (String, ActivityHook)>>>;
+
+fn extras_list(extras: &Extras) -> Vec<(AccountId, String, ActivityHook)> {
+    extras
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(id, (a, h))| (id.clone(), a.clone(), h.clone()))
+        .collect()
+}
+
+/// Tell every external watcher about `activity`.
+fn tell_extras(extras: &Extras, activity: Activity) {
+    for (_, _, hook) in extras_list(extras) {
+        hook(activity);
+    }
+}
+
+/// `owner`'s external watch, if it has one: tell it about a payment.
+fn tell_extra(extras: &Extras, owner: &AccountId) -> bool {
+    let hook = extras
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(owner)
+        .map(|(_, h)| h.clone());
+    match hook {
+        Some(h) => {
+            h(Activity::Payment);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The external watches first (always watched), then the accounts'.
+fn with_extras(
+    extras: &Extras,
+    accounts: Vec<(AccountId, Vec<String>)>,
+) -> Vec<(AccountId, Vec<String>)> {
+    extras_list(extras)
+        .into_iter()
+        .map(|(id, address, _)| (id, vec![address]))
+        .chain(accounts)
+        .collect()
+}
+
 /// The running monitor. Dropping it (locking the wallet) closes the socket.
 pub struct Monitor {
     tx: mpsc::UnboundedSender<Cmd>,
     accounts: Accounts,
+    extras: Extras,
     task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Adds external watches to a running monitor; usable from other tasks.
+/// Does nothing once the monitor is gone.
+#[derive(Clone)]
+pub struct Watcher {
+    tx: mpsc::UnboundedSender<Cmd>,
+    extras: Extras,
+}
+
+impl Watcher {
+    /// Watch `address` for `owner` (not an on-chain account), replacing any
+    /// address it watched before: `hook` hears about payments to it and
+    /// about new blocks.
+    pub fn watch_external(&self, owner: AccountId, address: String, hook: ActivityHook) {
+        self.extras
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(owner, (address, hook));
+        let _ = self.tx.send(Cmd::Refresh);
+    }
+
+    pub fn unwatch_external(&self, owner: &AccountId) {
+        if self
+            .extras
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(owner)
+            .is_some()
+        {
+            let _ = self.tx.send(Cmd::Refresh);
+        }
+    }
 }
 
 impl Monitor {
@@ -236,6 +334,7 @@ impl Monitor {
     /// only kicks off first scans (see [`Monitor::set_accounts`]).
     pub fn start(server: &ChainServer, accounts: Vec<Arc<OnchainAccount>>) -> Self {
         let shared: Accounts = Default::default();
+        let extras: Extras = Default::default();
         let (tx, rx) = mpsc::unbounded_channel();
         let task = match (server, tokio::runtime::Handle::try_current()) {
             (ChainServer::Electrum(list), Ok(rt)) => match el::pool_for(list) {
@@ -244,6 +343,7 @@ impl Monitor {
                 Ok(pool) => Some(rt.spawn(run_electrum(
                     pool.servers().clone(),
                     shared.clone(),
+                    extras.clone(),
                     tx.clone(),
                     rx,
                 ))),
@@ -252,14 +352,14 @@ impl Monitor {
                     None
                 }
             },
-            (ChainServer::Esplora(url), Ok(rt)) => {
-                ws_url(url).map(|ws| rt.spawn(run(ws, shared.clone(), tx.clone(), rx)))
-            }
+            (ChainServer::Esplora(url), Ok(rt)) => ws_url(url)
+                .map(|ws| rt.spawn(run(ws, shared.clone(), extras.clone(), tx.clone(), rx))),
             _ => None,
         };
         let m = Monitor {
             tx,
             accounts: shared,
+            extras,
             task,
         };
         m.set_accounts(accounts);
@@ -288,6 +388,14 @@ impl Monitor {
     /// Watch `address` of `account` (shown on a Receive screen) from now on.
     pub fn watch(&self, account: AccountId, address: String) {
         let _ = self.tx.send(Cmd::Watch(account, address));
+    }
+
+    /// For adding external watches from another task.
+    pub fn watcher(&self) -> Watcher {
+        Watcher {
+            tx: self.tx.clone(),
+            extras: self.extras.clone(),
+        }
     }
 }
 
@@ -345,6 +453,7 @@ async fn connect(url: &str) -> Result<Ws, ConnectError> {
 async fn run(
     url: String,
     accounts: Accounts,
+    extras: Extras,
     tx: mpsc::UnboundedSender<Cmd>,
     mut rx: mpsc::UnboundedReceiver<Cmd>,
 ) {
@@ -364,6 +473,7 @@ async fn run(
                 first = false;
                 let mut s = Session {
                     accounts: &accounts,
+                    extras: &extras,
                     tx: &tx,
                     busy: &busy,
                     shown: &mut shown,
@@ -417,6 +527,7 @@ async fn wait_to_reconnect(
 
 struct Session<'a> {
     accounts: &'a Accounts,
+    extras: &'a Extras,
     tx: &'a mpsc::UnboundedSender<Cmd>,
     busy: &'a Arc<AtomicBool>,
     shown: &'a mut BTreeMap<AccountId, String>,
@@ -486,6 +597,7 @@ impl Session<'_> {
         match ev {
             Event::Block => {
                 sync_all(self.accounts, self.tx, self.busy);
+                tell_extras(self.extras, Activity::Block);
                 false
             }
             Event::Pong => false,
@@ -522,6 +634,7 @@ impl Session<'_> {
                 };
                 let Some(account) = list(self.accounts).into_iter().find(|a| a.id() == owner)
                 else {
+                    tell_extra(self.extras, owner);
                     return false;
                 };
                 let tx = self.tx.clone();
@@ -556,6 +669,7 @@ impl Session<'_> {
         for a in &accounts {
             candidates.push((a.id().clone(), a.watch_addresses(PER_ACCOUNT).await));
         }
+        let candidates = with_extras(self.extras, candidates);
         let plan = plan_watch(self.shown, &candidates, self.limits.0, self.limits.1);
         let mut out = Vec::new();
         if plan.addresses != self.plan.addresses {
@@ -656,6 +770,7 @@ fn script_hashes(plan: &WatchPlan) -> HashMap<String, AccountId> {
 async fn run_electrum(
     servers: Arc<Servers>,
     accounts: Accounts,
+    extras: Extras,
     tx: mpsc::UnboundedSender<Cmd>,
     mut rx: mpsc::UnboundedReceiver<Cmd>,
 ) {
@@ -664,8 +779,8 @@ async fn run_electrum(
     let mut backoff = MIN_BACKOFF;
     let mut first = true;
     loop {
-        // No on-chain accounts: nothing to watch, no connection.
-        while list(&accounts).is_empty() {
+        // Nothing to watch: no connection.
+        while list(&accounts).is_empty() && extras_list(&extras).is_empty() {
             match rx.recv().await {
                 None => return,
                 Some(Cmd::Watch(a, address)) => {
@@ -685,6 +800,7 @@ async fn run_electrum(
                 first = false;
                 let mut s = ElectrumSession {
                     accounts: &accounts,
+                    extras: &extras,
                     tx: &tx,
                     busy: &busy,
                     shown: &mut shown,
@@ -710,6 +826,7 @@ async fn run_electrum(
 
 struct ElectrumSession<'a> {
     accounts: &'a Accounts,
+    extras: &'a Extras,
     tx: &'a mpsc::UnboundedSender<Cmd>,
     busy: &'a Arc<AtomicBool>,
     shown: &'a mut BTreeMap<AccountId, String>,
@@ -739,6 +856,7 @@ impl ElectrumSession<'_> {
                         if self.tip != Some(height) {
                             self.tip = Some(height);
                             sync_all(self.accounts, self.tx, self.busy);
+                            tell_extras(self.extras, Activity::Block);
                         }
                     }
                     Some(Notification::Script { hash, status }) => {
@@ -769,6 +887,10 @@ impl ElectrumSession<'_> {
         hash: &str,
         owner: AccountId,
     ) -> Result<(), String> {
+        // An external watch: its owner looks for itself.
+        if tell_extra(self.extras, &owner) {
+            return Ok(());
+        }
         let history = conn.history(hash).await?;
         let Some(account) = list(self.accounts).into_iter().find(|a| *a.id() == owner) else {
             return Ok(());
@@ -806,6 +928,7 @@ impl ElectrumSession<'_> {
                 a.watch_addresses(PER_ACCOUNT_ELECTRUM).await,
             ));
         }
+        let candidates = with_extras(self.extras, candidates);
         let plan = plan_watch(self.shown, &candidates, MAX_SCRIPTS_ELECTRUM, 0);
         let wanted = script_hashes(&plan);
         let (new, gone) = self.watch.diff(&wanted);
@@ -1018,6 +1141,47 @@ mod tests {
         assert_eq!(w.owner("h1"), None);
         assert_eq!(w.owner("h2"), Some(&id("b")));
         assert_eq!(w.update("h1", Some("s2".into())), None);
+    }
+
+    #[test]
+    fn external_watches_are_planned_first_and_told() {
+        use std::sync::Mutex;
+        let extras: Extras = Default::default();
+        let heard: Arc<Mutex<Vec<Activity>>> = Default::default();
+        let h = heard.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let watcher = Watcher {
+            tx,
+            extras: extras.clone(),
+        };
+        // A Spending deposit address (taproot).
+        let deposit = "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297".to_string();
+        watcher.watch_external(
+            id("spending"),
+            deposit.clone(),
+            Arc::new(move |a| h.lock().unwrap().push(a)),
+        );
+        let onchain = vec![(
+            id("savings"),
+            vec!["bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu".to_string()],
+        )];
+        let candidates = with_extras(&extras, onchain);
+        // Even with room for one script only, the deposit address is it.
+        let plan = plan_watch(&BTreeMap::new(), &candidates, 1, 0);
+        assert_eq!(plan.addresses, vec![deposit.clone()]);
+        let hashes = script_hashes(&plan);
+        assert_eq!(hashes.values().collect::<Vec<_>>(), vec![&id("spending")]);
+
+        // A payment to it reaches its owner; an on-chain account isn't one.
+        assert!(tell_extra(&extras, &id("spending")));
+        assert!(!tell_extra(&extras, &id("savings")));
+        tell_extras(&extras, Activity::Block);
+        assert_eq!(
+            *heard.lock().unwrap(),
+            vec![Activity::Payment, Activity::Block]
+        );
+        watcher.unwatch_external(&id("spending"));
+        assert!(extras_list(&extras).is_empty());
     }
 
     #[test]

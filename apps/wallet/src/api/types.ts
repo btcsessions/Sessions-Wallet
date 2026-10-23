@@ -196,6 +196,51 @@ export interface LightningAddress {
   lnurl: string;
 }
 
+/**
+ * Where an on-chain deposit to a Spending account stands:
+ * - `waiting`: fewer than `confirmationsNeeded` confirmations; claimed on its
+ *   own once it has them (or now, for `instantFeeSat`, if offered).
+ * - `claiming`: being claimed, or will be on the next sync (about a minute).
+ * - `needsApproval`: claiming costs `claimFeeSat`, over the automatic limit.
+ * - `failed`: the last claim failed (`error`); retried on every sync.
+ * - `refunding`: being sent back on-chain (`refundTxid`).
+ */
+export type DepositStatus = "waiting" | "claiming" | "needsApproval" | "failed" | "refunding";
+
+/** An on-chain deposit to a Spending account that isn't in its balance yet. */
+export interface Deposit {
+  txid: string;
+  vout: number;
+  amountSat: number;
+  /** Null when the chain couldn't be read just now. */
+  confirmations: number | null;
+  /** 3 on mainnet. */
+  confirmationsNeeded: number;
+  status: DepositStatus;
+  /** Network fee to claim it now (taken from the deposit), when known. */
+  claimFeeSat: number | null;
+  /** Fee to claim it early (before `confirmationsNeeded`), when offered. */
+  instantFeeSat: number | null;
+  /** Depth the early claim is offered at (often 0 or 1). */
+  instantConfirmations: number | null;
+  /** Why it's stuck, in plain English. */
+  error: string | null;
+  refundTxid: string | null;
+}
+
+/**
+ * - `claimed`: in the balance now (`payment`).
+ * - `submitted`: claimed early (or already being claimed); arrives in a moment.
+ * - `deferred`: nothing claimed (`message`); `requiredFeeSat` when it cost
+ *   more than allowed. It still claims itself later.
+ */
+export interface ClaimResult {
+  status: "claimed" | "submitted" | "deferred";
+  payment: Payment | null;
+  message: string | null;
+  requiredFeeSat: number | null;
+}
+
 export interface DescriptorPreview {
   descriptor: string;
   fingerprint: string;

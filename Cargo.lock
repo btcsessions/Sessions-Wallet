@@ -6823,6 +6823,7 @@ dependencies = [
  "bip39",
  "bitcoin",
  "breez-sdk-spark",
+ "rail-onchain",
  "serde",
  "serde_json",
  "sessions-core",

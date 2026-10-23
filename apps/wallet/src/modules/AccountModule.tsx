@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { api } from "../api";
 import { Icon } from "../components/Icon";
 import { DeviceIcon, HardwareBadge } from "../hw/devices";
 import { useWallet } from "../state/store";
@@ -98,6 +100,7 @@ export function AccountModule({ module }: ModuleProps) {
             {siblings.length} accounts
           </button>
         )}
+        {account.rail === "spark" && <DepositChip account={account.id} pending={account.balance.pendingIn} />}
         {siblings.some((a) => a.scanning) && (
           <span className={`loading-chip${siblings.some((a) => a.scanError) ? " retrying" : ""}`} title={siblings.find((a) => a.scanError)?.scanError ?? "Loading this wallet's history"}>
             <span className="spinner small" aria-hidden />
@@ -127,5 +130,30 @@ export function AccountModule({ module }: ModuleProps) {
         )}
       </div>
     </>
+  );
+}
+
+/** On the Spending card: an on-chain deposit is on its way, or needs a tap. */
+function DepositChip({ account, pending }: { account: string; pending: number }) {
+  const [state, setState] = useState<"none" | "arriving" | "approve">("none");
+  useEffect(() => {
+    if (pending <= 0) {
+      setState("none");
+      return;
+    }
+    let alive = true;
+    api()
+      .then((a) => a.spendingDeposits(account))
+      .then((ds) => alive && setState(ds.some((d) => d.status === "needsApproval" || d.status === "failed") ? "approve" : ds.length ? "arriving" : "none"))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [account, pending]);
+  if (state === "none") return null;
+  return (
+    <span className={`loading-chip${state === "approve" ? " retrying" : ""}`}>
+      {state === "approve" ? "Deposit: tap to add" : "Deposit arriving"}
+    </span>
   );
 }

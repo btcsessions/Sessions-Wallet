@@ -31,9 +31,13 @@ Pass `storage_dir` as a directory that holds only this account. The SDK's built-
 
 That one file holds payments, deposits, cached state and the Spark leaf tree, including the data needed for unilateral exit. Funds are always recoverable from the phrase. Deleting the file only loses local metadata, such as LNURL descriptions, and forces a full resync.
 
+## Chain backend
+
+`SparkConfig::chain` picks where the SDK reads the chain (deposit detection, claims, refunds, claim-fee rates). `SparkChain::Electrum` serves it from the app's shared Electrum connection (`chain::ElectrumChainService`), `SparkChain::Esplora` from your own Esplora or mempool server, and `SparkChain::Default` keeps the SDK's built-in mempool.space. Test networks always use the SDK's default.
+
 ## Notes
 
 - Send quotes are kept in memory, so a `SendQuote` can only be used in this process and doesn't survive a restart. Its id doubles as the SDK idempotency key, so retrying a failed `send` can't pay twice.
 - A Lightning send waits up to 20 s for settlement and returns `Pending` if it hasn't settled by then.
-- On-chain deposits are claimed automatically only if the claim fee is at or below the SDK default ceiling of 1 sat/vB. Until then they show as `pending_in`. Use `SparkAccount::sdk()` for manual claims, refunds, or registering a Lightning address.
+- On-chain deposits are claimed automatically once they have 3 confirmations, if the claim fee is at or below the network's next-block rate plus 1 sat/vB. Until then they show as `pending_in`. `SparkAccount::deposits()` lists them with their status; `claim_deposit` claims one with a fee the user approved (or early, for the provider's spread), and `refund_deposit` sends one back on-chain.
 - Call `SparkAccount::disconnect()` before you drop an account.

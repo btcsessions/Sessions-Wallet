@@ -1162,7 +1162,7 @@ button {
   background: var(--material);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border-radius: var(--r-pill);
+  border-radius: 18px;
   padding: 12px 20px;
   font-size: 15px;
   font-weight: 500;
@@ -1171,6 +1171,9 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  line-height: 1.35;
   max-width: calc(100vw - 32px);
   white-space: nowrap;
   animation: fade 0.2s ease;

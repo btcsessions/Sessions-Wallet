@@ -56,6 +56,11 @@ export const tauriApi: WalletApi = {
   lightningAddress: (account) => invoke("lightning_address", { account }),
   lightningAddressAvailable: (account, username) => invoke("lightning_address_available", { account, username }),
   registerLightningAddress: (account, username) => invoke("register_lightning_address", { account, username }),
+  spendingDeposits: (account) => invoke("spending_deposits", { account }),
+  claimDeposit: (account, txid, vout, maxFeeSat, instant) =>
+    invoke("claim_deposit", { account, txid, vout, maxFeeSat, instant: instant ?? false }),
+  refundDeposit: (account, txid, vout, address, feeRateSatVb) =>
+    invoke("refund_deposit", { account, txid, vout, address, feeRateSatVb }),
   listUtxos: (account) => invoke("list_utxos", { account }),
   setLabel: (account, kind, reference, label) => invoke("set_label", { account, kind, reference, label }),
   setFrozen: (account, outpoint, frozen) => invoke("set_frozen", { account, outpoint, frozen }),

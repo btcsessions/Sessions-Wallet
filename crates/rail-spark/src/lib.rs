@@ -5,28 +5,32 @@
 //! supplied by the caller. The SDK keeps its own SQLite database under
 //! `storage_dir`; see the crate README for the layout.
 
+pub mod chain;
+mod deposits;
 mod forward;
 mod map;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use breez_sdk_spark::{
-    AssetFilter, BreezSdk, ConnectRequest, FeePolicy, GetInfoRequest, InputType,
-    ListPaymentsRequest, ListUnclaimedDepositsRequest, LnurlPayRequest, OnchainConfirmationSpeed,
-    PaymentStatus as SdkStatus, PaymentType, PrepareLnurlPayRequest, PrepareLnurlPayResponse,
-    PrepareSendPaymentRequest, PrepareSendPaymentResponse, ReceivePaymentMethod,
-    ReceivePaymentRequest, SdkError, Seed, SendPaymentMethod, SendPaymentOptions,
-    SendPaymentRequest, SyncWalletRequest,
+    AssetFilter, BitcoinChainService, BreezSdk, FeePolicy, FetchClaimDepositQuoteResponse,
+    GetInfoRequest, InputType, ListPaymentsRequest, ListUnclaimedDepositsRequest, LnurlPayRequest,
+    OnchainConfirmationSpeed, PaymentStatus as SdkStatus, PaymentType, PrepareLnurlPayRequest,
+    PrepareLnurlPayResponse, PrepareSendPaymentRequest, PrepareSendPaymentResponse,
+    ReceivePaymentMethod, ReceivePaymentRequest, SdkError, Seed, SendPaymentMethod,
+    SendPaymentOptions, SendPaymentRequest, SyncWalletRequest,
 };
 use sessions_core::{
     AccountId, AccountInfo, Balance, Custody, Error, Method, Network, Payment, Rail, RailKind,
     ReceiveRequest, ReceiveTarget, Result, Sats, SendQuote, SendRequest,
 };
 
+pub use chain::{ElectrumChainService, SparkChain};
+pub use deposits::{ClaimResult, ClaimStatus, Deposit, DepositStatus, CONFIRMATIONS_NEEDED};
 pub use forward::{ForwardRecord, ForwardStatus, ForwardStore, SparkForwarder};
 pub use map::{PAYS, RECEIVES};
 
@@ -56,6 +60,9 @@ use map::{QuoteHandle, RAIL};
 const QUOTE_TTL: Duration = Duration::from_secs(60 * 60);
 /// How long a Lightning send waits for settlement before returning `Pending`.
 const LIGHTNING_COMPLETION_TIMEOUT_SECS: u32 = 20;
+/// The static deposit address, remembered next to the SDK's database so the
+/// app can watch it without asking the Spark operators at every start.
+const DEPOSIT_ADDRESS_FILE: &str = "deposit-address.txt";
 
 pub struct SparkConfig {
     pub id: AccountId,
@@ -66,6 +73,8 @@ pub struct SparkConfig {
     pub storage_dir: PathBuf,
     /// Breez API key. Required on mainnet; free from Breez (see README).
     pub api_key: String,
+    /// Where the SDK reads the chain (deposits, claims, refunds, fees).
+    pub chain: SparkChain,
 }
 
 #[derive(Clone)]
@@ -92,6 +101,15 @@ pub struct SparkAccount {
     quotes: Mutex<HashMap<String, PendingQuote>>,
     /// A background sync is running; don't start another.
     syncing: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The SDK's chain backend, for confirmation counts (`None`: the SDK's
+    /// own default, which we can't reach from here).
+    chain_service: Option<Arc<dyn BitcoinChainService>>,
+    /// The Electrum backend, when that's the one in use.
+    electrum: Option<rail_onchain::electrum_chain::ElectrumChain>,
+    storage_dir: PathBuf,
+    /// Recent claim quotes, by deposit outpoint.
+    #[allow(clippy::type_complexity)]
+    deposit_quotes: Mutex<HashMap<(String, u32), (Instant, FetchClaimDepositQuoteResponse)>>,
 }
 
 fn rail_err(e: SdkError) -> Error {
@@ -131,26 +149,131 @@ impl SparkAccount {
             leeway_sat_per_vbyte: 1,
         });
 
-        let sdk = breez_sdk_spark::connect(ConnectRequest {
-            config: sdk_config,
-            seed: Seed::Mnemonic {
+        let mut builder = breez_sdk_spark::SdkBuilder::new(
+            sdk_config,
+            Seed::Mnemonic {
                 mnemonic: phrase,
                 passphrase: None,
             },
-            storage_dir,
-        })
-        .await
-        .map_err(rail_err)?;
+        )
+        .with_default_storage(storage_dir);
+        // The SDK's chain backend: every deposit lookup, claim, refund and
+        // claim-fee estimate goes through it. Test networks keep the SDK's own.
+        let mainnet = network == breez_sdk_spark::Network::Mainnet;
+        let (chain_service, electrum) = match (&config.chain, mainnet) {
+            (SparkChain::Electrum(chain), true) => (
+                Some(ElectrumChainService::new(chain.clone()).into_arc()),
+                Some(chain.clone()),
+            ),
+            (SparkChain::Esplora { url, mempool }, true) => {
+                let api = if *mempool {
+                    breez_sdk_spark::ChainApiType::MempoolSpace
+                } else {
+                    breez_sdk_spark::ChainApiType::Esplora
+                };
+                let service = breez_sdk_spark::new_rest_chain_service(
+                    url.trim().trim_end_matches('/').to_string(),
+                    network,
+                    api,
+                    None,
+                    Default::default(),
+                )
+                .await
+                .map_err(rail_err)?;
+                (Some(service), None)
+            }
+            _ => (None, None),
+        };
+        if let Some(service) = &chain_service {
+            builder = builder.with_chain_service(service.clone());
+        }
+        let sdk = builder.build().await.map_err(rail_err)?;
 
-        tracing::info!(account = %config.id, ?network, "spark account connected");
-        Ok(Self {
+        tracing::info!(
+            account = %config.id,
+            ?network,
+            chain = match (&chain_service, &electrum) {
+                (_, Some(_)) => "electrum",
+                (Some(_), None) => "esplora",
+                _ => "sdk default",
+            },
+            "spark account connected"
+        );
+        let account = Self {
             id: config.id,
             name: std::sync::RwLock::new(config.name),
             network,
             sdk,
             quotes: Mutex::new(HashMap::new()),
             syncing: Default::default(),
-        })
+            chain_service,
+            electrum,
+            storage_dir: config.storage_dir,
+            deposit_quotes: Mutex::new(HashMap::new()),
+        };
+        if let (Some(e), Some(a)) = (&account.electrum, account.cached_deposit_address()) {
+            let _ = e.prefer_address(&a);
+        }
+        Ok(account)
+    }
+
+    fn cached_deposit_address(&self) -> Option<String> {
+        std::fs::read_to_string(self.storage_dir.join(DEPOSIT_ADDRESS_FILE))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn remember_deposit_address(&self, address: &str) {
+        if self.cached_deposit_address().as_deref() != Some(address) {
+            if let Err(e) = std::fs::write(self.storage_dir.join(DEPOSIT_ADDRESS_FILE), address) {
+                tracing::warn!("couldn't save the deposit address: {e}");
+            }
+        }
+        if let Some(e) = &self.electrum {
+            let _ = e.prefer_address(address);
+        }
+    }
+
+    /// The account's static bitcoin deposit address (it never changes):
+    /// remembered from an earlier call, or asked of the Spark operators.
+    pub async fn deposit_address(&self) -> Result<String> {
+        if let Some(a) = self.cached_deposit_address() {
+            return Ok(a);
+        }
+        let resp = self
+            .sdk
+            .receive_payment(ReceivePaymentRequest {
+                payment_method: ReceivePaymentMethod::BitcoinAddress { new_address: None },
+            })
+            .await
+            .map_err(rail_err)?;
+        self.remember_deposit_address(&resp.payment_request);
+        Ok(resp.payment_request)
+    }
+
+    /// The chain server saw activity: `payment` when a transaction touched
+    /// the deposit address (sync now, so the deposit is found and claimed
+    /// at once), else a new block (sync if a deposit is waiting for
+    /// confirmations, so it's claimed as soon as it matures).
+    pub async fn chain_activity(&self, payment: bool) {
+        if !payment {
+            let waiting = self
+                .sdk
+                .list_unclaimed_deposits(ListUnclaimedDepositsRequest {})
+                .await
+                .map(|r| r.deposits.iter().any(|d| d.refund_tx_id.is_none()))
+                .unwrap_or(false);
+            if !waiting {
+                return;
+            }
+        }
+        tracing::info!(
+            account = %self.id,
+            "{}: syncing deposits",
+            if payment { "payment to the deposit address" } else { "new block" }
+        );
+        let _ = self.sync().await;
     }
 
     /// Stop the SDK's background tasks. Call before dropping the account.
@@ -214,6 +337,8 @@ impl SparkAccount {
                         | PaymentPending { .. }
                         | PaymentFailed { .. }
                         | ClaimedDeposits { .. }
+                        | UnclaimedDeposits { .. }
+                        | NewDeposits { .. }
                 ) {
                     (self.0)();
                 }
@@ -453,6 +578,7 @@ impl Rail for SparkAccount {
             Method::BitcoinAddress => {
                 // The claim fee is set by on-chain conditions when funds arrive.
                 target.watch_id = Some(target.request.clone());
+                self.remember_deposit_address(&target.request);
             }
             _ => unreachable!("rejected above"),
         }
@@ -776,6 +902,7 @@ mod tests {
             network,
             storage_dir: std::env::temp_dir().join("rail-spark-never-created"),
             api_key: api_key.into(),
+            chain: SparkChain::Default,
         }
     }
 

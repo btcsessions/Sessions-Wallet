@@ -139,7 +139,7 @@ fn from_esplora(e: &esplora_client::Error) -> ChainError {
     }
 }
 
-fn from_electrum(e: &electrum::electrum_client::Error) -> ChainError {
+pub(crate) fn from_electrum(e: &electrum::electrum_client::Error) -> ChainError {
     ChainError {
         message: match e {
             electrum::electrum_client::Error::AllAttemptsErrored(v) => v

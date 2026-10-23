@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 use rail_ecash::{EcashAccount, EcashConfig};
 use rail_liquid::{BoltzConfig, BoltzSwaps};
 use rail_onchain::{descriptors, OnchainAccount, OnchainConfig};
-use rail_spark::{SparkAccount, SparkConfig, SparkForwarder};
+use rail_spark::{SparkAccount, SparkChain, SparkConfig, SparkForwarder};
 use sessions_core::keystore::{child, KdfParams, Seed, Vault};
 use sessions_core::{AccountId, Custody, Error, Network, Result, Wallet};
 use tokio::sync::Mutex;
 
 use crate::backup::Backup;
 use crate::config::{check_name, write_atomic, AccountSpec, BackupFlags, Config};
-use crate::monitor::Monitor;
+use crate::monitor::{Activity, Monitor, Watcher};
 
 /// Called with an account's id when it reports a change (e.g. a payment
 /// arrived, history finished loading).
@@ -251,6 +251,11 @@ impl AppState {
             }
             (None, _) => None,
         };
+        if let Some(m) = &monitor {
+            for (id, a) in &spark {
+                watch_deposits(m.watcher(), id.clone(), a);
+            }
+        }
         let backup_config = config.clone();
         *self.inner.lock().await = Some(Unlocked {
             seed,
@@ -405,6 +410,7 @@ impl AppState {
                     network: cfg.network,
                     storage_dir: self.paths.spark(id),
                     api_key,
+                    chain: spark_chain(cfg),
                 })
                 .await?;
                 if let Some(notify) = self.notify.clone() {
@@ -448,6 +454,9 @@ impl AppState {
                 u.spark.insert(id.clone(), a.clone());
                 if u.forwarder.is_none() {
                     u.forwarder = self.add_forwarder(&u.wallet, &id, &a).await;
+                }
+                if let Some(m) = &u.monitor {
+                    watch_deposits(m.watcher(), id.clone(), &a);
                 }
                 u.wallet.add_account(a).await;
             }
@@ -527,6 +536,63 @@ impl AppState {
         // Dropping Unlocked drops the seed and all rails.
         *self.inner.lock().await = None;
     }
+}
+
+/// Where a Spending account's SDK reads the chain: the wallet's Electrum
+/// servers (the default on mainnet, and a server of your own), or your own
+/// Esplora. Otherwise (test networks) the SDK's built-in default.
+fn spark_chain(cfg: &Config) -> SparkChain {
+    match cfg.chain_server() {
+        Ok(rail_onchain::ChainServer::Electrum(servers)) => {
+            match rail_onchain::electrum_chain::ElectrumChain::for_servers(&servers, cfg.network) {
+                Ok(c) => SparkChain::Electrum(c),
+                Err(e) => {
+                    tracing::warn!("Spending: no Electrum chain backend ({e}); using Breez's");
+                    SparkChain::Default
+                }
+            }
+        }
+        Ok(rail_onchain::ChainServer::Esplora(url))
+            if !url.eq_ignore_ascii_case(rail_onchain::default_esplora(cfg.network)) =>
+        {
+            SparkChain::Esplora {
+                mempool: crate::monitor::ws_url(&url).is_some(),
+                url,
+            }
+        }
+        _ => SparkChain::Default,
+    }
+}
+
+/// Watch a Spending account's bitcoin deposit address on the chain server:
+/// a payment to it makes the SDK look for (and claim) the deposit at once,
+/// and new blocks while one waits for confirmations claim it as soon as it
+/// matures. The address may need the Spark operators, so it's found in the
+/// background.
+fn watch_deposits(watcher: Watcher, id: AccountId, account: &Arc<SparkAccount>) {
+    let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let weak = Arc::downgrade(account);
+    rt.spawn(async move {
+        let Some(account) = weak.upgrade() else {
+            return;
+        };
+        let address = match account.deposit_address().await {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::info!(account = %id, "not watching the deposit address: {e}");
+                return;
+            }
+        };
+        drop(account);
+        let hook = Arc::new(move |activity: Activity| {
+            if let Some(a) = weak.upgrade() {
+                tokio::spawn(async move { a.chain_activity(activity == Activity::Payment).await });
+            }
+        });
+        watcher.watch_external(id, address, hook);
+    });
 }
 
 enum Opened {

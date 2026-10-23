@@ -17,6 +17,8 @@ import type {
   FeePriority,
   Layout,
   LightningAddress,
+  Deposit,
+  ClaimResult,
   Method,
   NewAccount,
   Parsed,
@@ -166,6 +168,16 @@ export interface WalletApi {
   lightningAddress(account: string): Promise<LightningAddress | null>;
   lightningAddressAvailable(account: string, username: string): Promise<boolean>;
   registerLightningAddress(account: string, username: string): Promise<LightningAddress>;
+  /** On-chain deposits to a Spending account not yet in its balance (usually none). */
+  spendingDeposits(account: string): Promise<Deposit[]>;
+  /**
+   * Claim a deposit, paying up to `maxFeeSat` from it. `instant`: claim before
+   * it has its confirmations, for `instantFeeSat` (pass at least that); without
+   * it a deposit short of confirmations is refused with an error.
+   */
+  claimDeposit(account: string, txid: string, vout: number, maxFeeSat: number, instant?: boolean): Promise<ClaimResult>;
+  /** Send a deposit back to an on-chain address instead (needs its confirmations). Returns the refund txid. */
+  refundDeposit(account: string, txid: string, vout: number, address: string, feeRateSatVb: number): Promise<string>;
   /** Called when an account changes (payment in or out). Returns an unsubscribe. */
   onChange(cb: () => void): Promise<() => void>;
   /** Called with the account id when that account's balance or history changes (payment seen, confirmation, history finished loading). Returns an unsubscribe. */
