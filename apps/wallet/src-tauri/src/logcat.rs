@@ -26,6 +26,8 @@ pub fn init() {
         .with_default(LevelFilter::WARN)
         .with_target("sessions_wallet_lib", LevelFilter::DEBUG)
         .with_target("rail_onchain", LevelFilter::INFO)
+        .with_target("rail_spark", LevelFilter::INFO)
+        .with_target("breez_sdk_spark", LevelFilter::INFO)
         .with_target("sessions_core", LevelFilter::INFO)
         .with_target("tauri_plugin_bitbox", LevelFilter::DEBUG)
         .with_target("tauri_plugin_jade", LevelFilter::DEBUG);
