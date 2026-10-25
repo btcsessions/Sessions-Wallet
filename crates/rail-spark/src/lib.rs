@@ -9,6 +9,7 @@ pub mod chain;
 mod deposits;
 mod forward;
 mod map;
+pub mod nwc;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -59,7 +60,7 @@ use map::{QuoteHandle, RAIL};
 /// expire far sooner; this only bounds abandoned entries).
 const QUOTE_TTL: Duration = Duration::from_secs(60 * 60);
 /// How long a Lightning send waits for settlement before returning `Pending`.
-const LIGHTNING_COMPLETION_TIMEOUT_SECS: u32 = 20;
+pub(crate) const LIGHTNING_COMPLETION_TIMEOUT_SECS: u32 = 20;
 /// The static deposit address, remembered next to the SDK's database so the
 /// app can watch it without asking the Spark operators at every start.
 const DEPOSIT_ADDRESS_FILE: &str = "deposit-address.txt";

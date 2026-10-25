@@ -84,6 +84,7 @@ impl Settings {
     }
 }
 
+#[derive(Default)]
 struct Inner {
     settings: Settings,
     /// Unix seconds the wallet unlocked.
@@ -102,19 +103,6 @@ impl Default for Settings {
         Settings {
             notify: true,
             background: false,
-        }
-    }
-}
-
-impl Default for Inner {
-    fn default() -> Self {
-        Inner {
-            settings: Settings::default(),
-            since: 0,
-            seen: HashMap::new(),
-            deposits: HashMap::new(),
-            busy: HashSet::new(),
-            again: HashSet::new(),
         }
     }
 }
@@ -323,7 +311,7 @@ pub fn sats(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -386,9 +374,27 @@ mod tests {
     fn new_payments_only_after_unlock() {
         let mut seen = HashMap::new();
         let since = 1_000_000;
-        let old = pay("old", Direction::Incoming, PaymentStatus::Complete, Method::BitcoinAddress, 500);
-        let out = pay("out", Direction::Outgoing, PaymentStatus::Complete, Method::Bolt11, since + 5);
-        let ln = pay("ln", Direction::Incoming, PaymentStatus::Complete, Method::Bolt11, since + 5);
+        let old = pay(
+            "old",
+            Direction::Incoming,
+            PaymentStatus::Complete,
+            Method::BitcoinAddress,
+            500,
+        );
+        let out = pay(
+            "out",
+            Direction::Outgoing,
+            PaymentStatus::Complete,
+            Method::Bolt11,
+            since + 5,
+        );
+        let ln = pay(
+            "ln",
+            Direction::Incoming,
+            PaymentStatus::Complete,
+            Method::Bolt11,
+            since + 5,
+        );
         let found = diff(&mut seen, since, &[old.clone(), out, ln.clone()]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0.id, "ln");
@@ -401,16 +407,28 @@ mod tests {
     fn onchain_incoming_then_confirmed() {
         let mut seen = HashMap::new();
         let since = 1_000_000;
-        let p = pay("tx", Direction::Incoming, PaymentStatus::Pending, Method::BitcoinAddress, since + 1);
-        assert_eq!(diff(&mut seen, since, &[p.clone()])[0].1, Kind::Incoming);
-        assert!(diff(&mut seen, since, &[p.clone()]).is_empty());
+        let p = pay(
+            "tx",
+            Direction::Incoming,
+            PaymentStatus::Pending,
+            Method::BitcoinAddress,
+            since + 1,
+        );
+        assert_eq!(
+            diff(&mut seen, since, std::slice::from_ref(&p))[0].1,
+            Kind::Incoming
+        );
+        assert!(diff(&mut seen, since, std::slice::from_ref(&p)).is_empty());
         // Confirmed: its timestamp becomes the block time, maybe before `since`.
         let c = Payment {
             status: PaymentStatus::Complete,
             timestamp: since - 10_000,
             ..p
         };
-        assert_eq!(diff(&mut seen, since, &[c.clone()])[0].1, Kind::Confirmed);
+        assert_eq!(
+            diff(&mut seen, since, std::slice::from_ref(&c))[0].1,
+            Kind::Confirmed
+        );
         assert!(diff(&mut seen, since, &[c]).is_empty());
     }
 
@@ -418,8 +436,20 @@ mod tests {
     fn grace_and_failures() {
         let mut seen = HashMap::new();
         let since = 1_000_000;
-        let just_before = pay("a", Direction::Incoming, PaymentStatus::Complete, Method::Bolt11, since - 60);
-        let failed = pay("b", Direction::Incoming, PaymentStatus::Failed, Method::Bolt11, since + 1);
+        let just_before = pay(
+            "a",
+            Direction::Incoming,
+            PaymentStatus::Complete,
+            Method::Bolt11,
+            since - 60,
+        );
+        let failed = pay(
+            "b",
+            Direction::Incoming,
+            PaymentStatus::Failed,
+            Method::Bolt11,
+            since + 1,
+        );
         let found = diff(&mut seen, since, &[just_before, failed]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0.id, "a");
@@ -451,7 +481,9 @@ mod tests {
     fn settings_and_text() {
         let s = Settings::from_prefs(&serde_json::json!({}));
         assert!(s.notify && !s.background);
-        let s = Settings::from_prefs(&serde_json::json!({"alerts": {"notify": false, "background": true}}));
+        let s = Settings::from_prefs(
+            &serde_json::json!({"alerts": {"notify": false, "background": true}}),
+        );
         assert!(!s.notify && s.background);
         assert_eq!(sats(1_234_567), "1,234,567 sats");
         assert_eq!(sats(999), "999 sats");
@@ -463,6 +495,9 @@ mod tests {
             kind: Kind::Received,
             onchain: false,
         });
-        assert_eq!((t.as_str(), b.as_str(), p), ("Received 21,000 sats", "In Spending", "Payment received"));
+        assert_eq!(
+            (t.as_str(), b.as_str(), p),
+            ("Received 21,000 sats", "In Spending", "Payment received")
+        );
     }
 }

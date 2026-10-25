@@ -72,6 +72,8 @@ pub struct Unlocked {
     pub unavailable: Vec<(AccountId, String)>,
     /// Push updates for on-chain accounts (the running app only).
     pub monitor: Option<Monitor>,
+    /// Nostr Wallet Connect, while any app is connected.
+    pub nwc: Option<crate::nwc::Handle>,
 }
 
 impl Unlocked {
@@ -99,6 +101,8 @@ pub struct AppState {
     /// The app's screen is locked while the wallet keeps running (so it can
     /// keep watching for payments): unlocking only checks the passcode.
     pub screen_locked: std::sync::atomic::AtomicBool,
+    /// Saves a Nostr Wallet Connect connection's budget use (set by the app).
+    pub nwc_saver: std::sync::OnceLock<Arc<dyn sessions_nwc::ConnectionStore>>,
 }
 
 impl AppState {
@@ -117,7 +121,16 @@ impl AppState {
             failures: Mutex::new((0, None)),
             alerts: Arc::default(),
             screen_locked: std::sync::atomic::AtomicBool::new(false),
+            nwc_saver: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Where the NWC service reports budget use (a no-op in tests).
+    pub fn nwc_store(&self) -> Arc<dyn sessions_nwc::ConnectionStore> {
+        self.nwc_saver
+            .get()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(|_: &sessions_nwc::Connection| {}))
     }
 
     pub fn has_vault(&self) -> bool {
@@ -207,7 +220,8 @@ impl AppState {
     pub async fn unlock_with(&self, seed: Seed) -> Result<()> {
         let config = Config::load(&self.paths.config())?.unwrap_or_else(|| Config::new(NETWORK));
         self.alerts.reset();
-        self.alerts.apply(crate::alerts::Settings::from_prefs(&config.prefs), false);
+        self.alerts
+            .apply(crate::alerts::Settings::from_prefs(&config.prefs), false);
         let wallet = Arc::new(Wallet::new());
         let mut onchain = HashMap::new();
         let mut spark = HashMap::new();
@@ -281,12 +295,20 @@ impl AppState {
             forwarder,
             unavailable,
             monitor,
+            nwc: None,
         });
+        if self.notify.is_some() {
+            if let Some(u) = self.inner.lock().await.as_mut() {
+                crate::nwc::sync_service(u, self.nwc_store());
+            }
+        }
         self.backup.unlocked(backup_keys, &backup_config);
         self.screen_locked
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        self.alerts
-            .apply(crate::alerts::Settings::from_prefs(&backup_config.prefs), true);
+        self.alerts.apply(
+            crate::alerts::Settings::from_prefs(&backup_config.prefs),
+            true,
+        );
         Ok(())
     }
 

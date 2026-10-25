@@ -77,7 +77,9 @@ export function AlertsSetting() {
             <span className="grow" style={{ textAlign: "left" }}>
               Allow alerts with the screen off
             </span>
-            <span className="value" style={{ color: "var(--accent-ink)" }}>Allow</span>
+            <span className="value" style={{ color: "var(--accent-ink)" }}>
+              Allow
+            </span>
           </button>
         )}
       </div>

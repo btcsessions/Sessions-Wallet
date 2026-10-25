@@ -17,6 +17,7 @@ import { CoinsSheet } from "./sheets/CoinsSheet";
 import { DiscoverSheet } from "./sheets/DiscoverSheet";
 import { ContactsSheet } from "./sheets/ContactsSheet";
 import { CheckinSheet } from "./components/Checkins";
+import { NwcSheet } from "./sheets/NwcSheet";
 import { useWallet } from "./state/store";
 
 function ActiveSheet() {
@@ -44,6 +45,8 @@ function ActiveSheet() {
       return <AccountSheet key={sheet.id} id={sheet.id} />;
     case "settings":
       return <SettingsSheet />;
+    case "nwc":
+      return <NwcSheet />;
     case "checkin":
       return <CheckinSheet />;
     case "contacts":

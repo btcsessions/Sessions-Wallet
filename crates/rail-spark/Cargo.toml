@@ -21,6 +21,8 @@ bitcoin.workspace = true
 # storage under `storage_dir`.
 breez-sdk-spark = { git = "https://github.com/breez/spark-sdk", tag = "0.26.1", default-features = false, features = ["sqlite"] }
 uuid = { version = "1", features = ["v4"] }
+# The Spending account behind Nostr Wallet Connect.
+sessions-nwc.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

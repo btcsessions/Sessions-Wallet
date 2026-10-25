@@ -3,7 +3,7 @@
 
 import type { WalletApi } from "./index";
 import { BackupTestError, BiometricError } from "./types";
-import type { AlertsStatus, Arrival, BiometricStatus } from "./types";
+import type { AlertsStatus, Arrival, BiometricStatus, NwcConnection } from "./types";
 import type { AccountInfo, BackupStatus, BackupTest, BitboxEvent, ClaimResult, Deposit, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -41,6 +41,7 @@ function markUnlocked() {
 let mockBiometric = false;
 const alerts: AlertsStatus = { supported: true, notifications: "prompt", watching: false, unrestricted: false };
 const paymentListeners = new Set<(a: Arrival) => void>();
+let nwc: { c: NwcConnection; uri: string }[] = [];
 let lastReceive: { account: string; method: Method; amountSat: number | null } | null = null;
 
 /** Design preview / tests: pretend a payment to the last Receive request just arrived. */
@@ -868,6 +869,32 @@ export const mockApi: WalletApi = {
     d.claimFeeSat = null;
     d.error = null;
     return refundTxid;
+  },
+  async nwcList() {
+    return nwc.map((n) => ({ ...n.c }));
+  },
+  async nwcCreate(req) {
+    await sleep(300);
+    if (!req.name.trim()) throw "Name the app (up to 40 characters)";
+    const id = `n${Date.now().toString(36)}`;
+    const c: NwcConnection = { id, name: req.name.trim(), createdAt: now(), lastUsedAt: null, enabled: true, permissions: req.permissions, budgetSat: req.budgetSat, budgetPeriod: req.budgetPeriod, maxPerPaymentSat: req.maxPerPaymentSat, spentSat: 0, relay: "wss://relay.primal.net" };
+    const uri = `nostr+walletconnect://${"7e".repeat(32)}?relay=wss%3A%2F%2Frelay.primal.net&secret=${"5c".repeat(32)}`;
+    nwc.push({ c, uri });
+    return { connection: { ...c }, uri };
+  },
+  async nwcUpdate(id, patch) {
+    const n = nwc.find((x) => x.c.id === id);
+    if (!n) throw "That connection is gone";
+    Object.assign(n.c, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+    return { ...n.c };
+  },
+  async nwcDelete(id) {
+    nwc = nwc.filter((x) => x.c.id !== id);
+  },
+  async nwcUri(id) {
+    const n = nwc.find((x) => x.c.id === id);
+    if (!n) throw "That connection is gone";
+    return n.uri;
   },
   async alertsStatus() {
     return { ...alerts };

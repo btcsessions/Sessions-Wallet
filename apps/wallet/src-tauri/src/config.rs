@@ -157,6 +157,9 @@ pub struct Config {
     /// Kept in the config so they're in the backup.
     #[serde(default)]
     pub prefs: serde_json::Value,
+    /// Nostr Wallet Connect: apps allowed to use Spending (see `nwc`).
+    #[serde(default)]
+    pub nwc: Vec<crate::nwc::NwcEntry>,
 }
 
 /// Where the wallet's seed came from.
@@ -239,6 +242,7 @@ impl Config {
             backup: BackupFlags::new_phrase(),
             backup_relays: sessions_backup::default_relays(),
             prefs: serde_json::Value::Null,
+            nwc: Vec::new(),
         }
     }
 

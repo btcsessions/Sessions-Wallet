@@ -458,6 +458,34 @@ export interface AlertsStatus {
   unrestricted: boolean;
 }
 
+export type NwcPermission = "pay" | "receive" | "balance" | "history" | "notifications";
+export type NwcBudgetPeriod = "daily" | "weekly" | "monthly" | "yearly" | "total";
+
+/** A Nostr Wallet Connect connection (an app allowed to use Spending). */
+export interface NwcConnection {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  enabled: boolean;
+  permissions: NwcPermission[];
+  /** Spending limit per `budgetPeriod`; null = no limit. */
+  budgetSat: number | null;
+  budgetPeriod: NwcBudgetPeriod;
+  maxPerPaymentSat: number | null;
+  /** Spent this period, fees included. */
+  spentSat: number;
+  relay: string;
+}
+
+export interface NwcNew {
+  name: string;
+  budgetSat: number | null;
+  budgetPeriod: NwcBudgetPeriod;
+  maxPerPaymentSat: number | null;
+  permissions: NwcPermission[];
+}
+
 /** `wallet://payment`: a payment just arrived. */
 export interface Arrival {
   account: string;

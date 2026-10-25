@@ -17,6 +17,7 @@ tauri-build = { version = "2.6", features = [] }
 [dependencies]
 sessions-core.workspace = true
 sessions-backup.workspace = true
+sessions-nwc.workspace = true
 rail-onchain.workspace = true
 rail-spark.workspace = true
 rail-liquid.workspace = true

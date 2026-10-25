@@ -55,9 +55,7 @@ export function SweepSetting({ account }: { account: AccountInfo }) {
   const { accounts, layout, synced, setSynced } = useWallet();
   const targets = sweepTargets(activeAccounts(accounts, layout));
   const saved = synced.sweep.find((r) => r.from === account.id);
-  const [rule, setRule] = useState<SweepRule>(
-    saved ?? { enabled: false, from: account.id, to: targets[0]?.id ?? "", thresholdSat: 500_000, keepSat: 100_000 },
-  );
+  const [rule, setRule] = useState<SweepRule>(saved ?? { enabled: false, from: account.id, to: targets[0]?.id ?? "", thresholdSat: 500_000, keepSat: 100_000 });
   const [error, setError] = useState<string | null>(null);
 
   const save = (next: SweepRule) => {
@@ -139,7 +137,12 @@ export function SweepOffers() {
           <div className="sweep-offer-actions">
             <button
               className="text-button"
-              onClick={() => setSynced("sweep", synced.sweep.map((r) => (r.from === rule.from ? { ...r, snoozedAtSat: held(from) } : r)))}
+              onClick={() =>
+                setSynced(
+                  "sweep",
+                  synced.sweep.map((r) => (r.from === rule.from ? { ...r, snoozedAtSat: held(from) } : r)),
+                )
+              }
             >
               Not now
             </button>

@@ -19,6 +19,9 @@
         },
         {
           "url": "https://mempool.space/*"
+        },
+        {
+          "url": "nostr+walletconnect://*"
         }
       ]
     }

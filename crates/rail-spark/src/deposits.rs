@@ -290,7 +290,13 @@ impl SparkAccount {
             .map_err(|e| Error::rail("spark", e))?;
         Ok(utxos
             .into_iter()
-            .map(|u| (format!("{}:{}", u.txid, u.vout), u.value, u.status.confirmed))
+            .map(|u| {
+                (
+                    format!("{}:{}", u.txid, u.vout),
+                    u.value,
+                    u.status.confirmed,
+                )
+            })
             .collect())
     }
 

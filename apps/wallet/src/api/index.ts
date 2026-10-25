@@ -37,6 +37,8 @@ import type {
   BiometricStatus,
   AlertsStatus,
   Arrival,
+  NwcConnection,
+  NwcNew,
 } from "./types";
 
 /**
@@ -209,6 +211,14 @@ export interface WalletApi {
   refundDeposit(account: string, txid: string, vout: number, address: string, feeRateSatVb: number): Promise<string>;
   /** Called when an account changes (payment in or out). Returns an unsubscribe. */
   onChange(cb: () => void): Promise<() => void>;
+  /** Nostr Wallet Connect: apps allowed to use Spending within a budget. */
+  nwcList(): Promise<NwcConnection[]>;
+  /** Returns the connection link (nostr+walletconnect://…) to give the app. */
+  nwcCreate(req: NwcNew): Promise<{ connection: NwcConnection; uri: string }>;
+  /** `budgetSat: null` removes the limit. */
+  nwcUpdate(id: string, patch: { name?: string; enabled?: boolean; budgetSat?: number | null; budgetPeriod?: NwcConnection["budgetPeriod"] }): Promise<NwcConnection>;
+  nwcDelete(id: string): Promise<void>;
+  nwcUri(id: string): Promise<string>;
   /** Payment alerts: what the phone allows, whether the watch service runs. Never rejects. */
   alertsStatus(): Promise<AlertsStatus>;
   /** The notification permission prompt (or its system settings page when refused before). */

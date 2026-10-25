@@ -143,6 +143,11 @@ export const tauriApi: WalletApi = {
     ]);
     return () => offs.forEach((off) => off());
   },
+  nwcList: () => invoke("nwc_list"),
+  nwcCreate: (req) => invoke("nwc_create", { req }),
+  nwcUpdate: (id, patch) => invoke("nwc_update", { id, patch }),
+  nwcDelete: (id) => invoke("nwc_delete", { id }),
+  nwcUri: (id) => invoke("nwc_uri", { id }),
   alertsStatus: () => invoke("alerts_status"),
   alertsRequestNotifications: () => invoke("alerts_request_notifications"),
   alertsRequestUnrestricted: () => invoke("alerts_request_unrestricted"),

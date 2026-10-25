@@ -9,6 +9,7 @@ mod jade;
 #[cfg(target_os = "android")]
 mod logcat;
 mod monitor;
+mod nwc;
 mod passkey;
 mod state;
 
@@ -79,9 +80,22 @@ pub fn run() {
                     let _ = emitter.emit(event, payload);
                 }));
             let emitter = app.handle().clone();
-            state.alerts.set_emitter(Arc::new(move |event: &str, payload| {
-                let _ = emitter.emit(event, payload);
-            }));
+            state
+                .alerts
+                .set_emitter(Arc::new(move |event: &str, payload| {
+                    let _ = emitter.emit(event, payload);
+                }));
+            // Nostr Wallet Connect budget use goes back into the config.
+            let handle = app.handle().clone();
+            let _ = state
+                .nwc_saver
+                .set(Arc::new(move |c: &sessions_nwc::Connection| {
+                    let (handle, c) = (handle.clone(), c.clone());
+                    tauri::async_runtime::spawn(async move {
+                        let state = handle.state::<state::AppState>();
+                        nwc::save_usage(&state, &c).await;
+                    });
+                }));
             app.manage(state);
 
             // Keep the encrypted state backup up to date.
@@ -193,6 +207,11 @@ pub fn run() {
             biometric::enable_biometric,
             biometric::disable_biometric,
             biometric::unlock_biometric,
+            nwc::nwc_list,
+            nwc::nwc_create,
+            nwc::nwc_update,
+            nwc::nwc_delete,
+            nwc::nwc_uri,
             commands::alerts_status,
             commands::alerts_request_notifications,
             commands::alerts_request_unrestricted,

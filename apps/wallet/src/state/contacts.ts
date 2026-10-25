@@ -2,7 +2,11 @@ import type { Contact } from "./synced";
 
 /** name@domain (a ₿ prefix, as in BIP 353 names, is allowed and dropped). */
 export function normalizeAddress(input: string): string {
-  return input.trim().replace(/^₿/, "").replace(/^lightning:/i, "").toLowerCase();
+  return input
+    .trim()
+    .replace(/^₿/, "")
+    .replace(/^lightning:/i, "")
+    .toLowerCase();
 }
 
 export function isLightningAddress(input: string): boolean {

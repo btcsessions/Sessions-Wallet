@@ -19,7 +19,8 @@ export type SheetName =
   | { name: "coins"; account: string }
   | { name: "discover"; found: import("../api/types").FoundAccount[] }
   | { name: "contacts"; add?: string }
-  | { name: "checkin" };
+  | { name: "checkin" }
+  | { name: "nwc" };
 
 interface Toast {
   kind: "ok" | "error";

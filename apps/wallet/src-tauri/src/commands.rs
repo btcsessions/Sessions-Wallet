@@ -39,9 +39,7 @@ pub async fn status(state: State<'_, AppState>) -> Result<&'static str> {
         .load(std::sync::atomic::Ordering::SeqCst);
     Ok(if unlocked && !screen {
         "unlocked"
-    } else if unlocked {
-        "locked"
-    } else if state.has_vault() {
+    } else if unlocked || state.has_vault() {
         "locked"
     } else {
         "empty"
@@ -1339,9 +1337,7 @@ pub async fn alerts_status(app: AppHandle) -> Result<tauri_plugin_alerts::Status
 
 /// Ask for the notification permission (or open its settings).
 #[tauri::command]
-pub async fn alerts_request_notifications(
-    app: AppHandle,
-) -> Result<tauri_plugin_alerts::Status> {
+pub async fn alerts_request_notifications(app: AppHandle) -> Result<tauri_plugin_alerts::Status> {
     Ok(app
         .state::<tauri_plugin_alerts::Alerts<tauri::Wry>>()
         .request_notifications()
@@ -1350,9 +1346,7 @@ pub async fn alerts_request_notifications(
 
 /// Ask to keep the network while the phone dozes.
 #[tauri::command]
-pub async fn alerts_request_unrestricted(
-    app: AppHandle,
-) -> Result<tauri_plugin_alerts::Status> {
+pub async fn alerts_request_unrestricted(app: AppHandle) -> Result<tauri_plugin_alerts::Status> {
     Ok(app
         .state::<tauri_plugin_alerts::Alerts<tauri::Wry>>()
         .request_unrestricted()
