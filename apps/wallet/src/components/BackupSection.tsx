@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { BackupStatus } from "../api/types";
+import { isBackupTestError, type BackupStatus, type BackupTest, type BackupTestMethod } from "../api/types";
 import { errorText } from "../format";
 import { useWallet } from "../state/store";
 import { Icon } from "./Icon";
@@ -19,7 +19,10 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
   const notify = useWallet((s) => s.notify);
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [passkeys, setPasskeys] = useState(false);
-  const [busy, setBusy] = useState<"now" | "passkey" | null>(null);
+  const [busy, setBusy] = useState<"now" | "passkey" | BackupTestMethod | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [words, setWords] = useState("");
+  const [result, setResult] = useState<BackupTest | null>(null);
 
   const update = useCallback(
     (s: BackupStatus) => {
@@ -58,6 +61,21 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
     }
   };
 
+  const test = async (method: BackupTestMethod) => {
+    setBusy(method);
+    setResult(null);
+    try {
+      const r = await (await api()).testBackup(method, method === "phrase" ? words : undefined);
+      setResult(r);
+      if (method === "phrase") setWords("");
+      update(await (await api()).backupStatus());
+    } catch (e) {
+      if (!isBackupTestError(e, "cancelled")) notify("error", errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (!status) return null;
   const methods = [status.passkey && "passkey", status.phrase && "recovery phrase"].filter(Boolean).join(" and ");
   return (
@@ -90,6 +108,51 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
         <button className="btn block" disabled={!!busy} onClick={() => void act("now")}>
           {busy === "now" ? "Backing up…" : "Back up now"}
         </button>
+        {!testing ? (
+          <button className="btn block" disabled={!!busy} onClick={() => (setTesting(true), setResult(null))}>
+            Test my backup{status.lastTestedAt ? ` · last passed ${ago(status.lastTestedAt)}` : ""}
+          </button>
+        ) : (
+          <div className="group" style={{ padding: 14, margin: 0 }}>
+            <p style={{ margin: "0 0 10px", color: "var(--label-2)", fontSize: 15 }}>
+              Checks that your backup would restore this wallet. Nothing is changed.
+            </p>
+            <div style={{ display: "grid", gap: 8 }}>
+              {status.passkey && (
+                <button className="btn primary block" disabled={!!busy} onClick={() => void test("passkey")}>
+                  {busy === "passkey" ? "Choose your passkey…" : "Test with my passkey"}
+                </button>
+              )}
+              {(advanced || status.seedOrigin === "phrase") && (
+                <>
+                  <textarea
+                    value={words}
+                    onChange={(e) => setWords(e.target.value)}
+                    placeholder="Type your recovery phrase to check it"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    style={{ minHeight: 80, borderRadius: 12, padding: 10, background: "var(--fill)", color: "var(--label)", border: 0, font: "inherit" }}
+                  />
+                  <button className="btn block" disabled={!!busy || words.trim().split(/\s+/).length < 12} onClick={() => void test("phrase")}>
+                    {busy === "phrase" ? "Checking…" : "Test my recovery phrase"}
+                  </button>
+                </>
+              )}
+              <button className="btn block" disabled={!!busy} onClick={() => void test("state")}>
+                {busy === "state" ? "Checking…" : "Check the backup servers"}
+              </button>
+              <button className="text-button" onClick={() => (setTesting(false), setResult(null), setWords(""))}>
+                Done
+              </button>
+            </div>
+            {result && (
+              <p className={result.ok ? "notice ok" : "notice"} role="status" style={{ marginTop: 12, marginBottom: 0 }}>
+                <Icon name={result.ok ? "check" : "warn"} size={16} /> {result.message}
+              </p>
+            )}
+          </div>
+        )}
         {advanced && passkeys && !status.passkey && (
           <button className="btn block" disabled={!!busy} onClick={() => void act("passkey")}>
             {busy === "passkey" ? "Create your passkey when asked…" : "Add a passkey backup"}

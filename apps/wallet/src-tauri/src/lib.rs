@@ -1,4 +1,5 @@
 mod backup;
+mod backup_check;
 mod biometric;
 mod bitbox;
 mod commands;
@@ -170,6 +171,7 @@ pub fn run() {
             commands::backup_now,
             commands::set_phrase_backed_up,
             commands::restore_state,
+            backup_check::test_backup,
             commands::prefs,
             commands::save_prefs,
             passkey::passkey_supported,

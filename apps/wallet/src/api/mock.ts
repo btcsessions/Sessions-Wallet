@@ -2,9 +2,9 @@
 // reviewed without a native build. Never ships in the Tauri app.
 
 import type { WalletApi } from "./index";
-import { BiometricError } from "./types";
+import { BackupTestError, BiometricError } from "./types";
 import type { BiometricStatus } from "./types";
-import type { AccountInfo, BackupStatus, BitboxEvent, ClaimResult, Deposit, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
+import type { AccountInfo, BackupStatus, BackupTest, BitboxEvent, ClaimResult, Deposit, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bitboxListeners = new Set<(e: BitboxEvent) => void>();
@@ -45,7 +45,7 @@ function biometricStatus(): BiometricStatus {
 
 // Backup: succeeds after a short delay, like a good connection to the relays.
 const MOCK_RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net", "wss://nostr.mom", "wss://relay.snort.social", "wss://nostr-pub.wellorder.net"];
-let backup: BackupStatus = { passkey: false, phrase: false, seedOrigin: "phrase", lastBackupAt: null, lastError: null, pending: false, relays: [] };
+let backup: BackupStatus = { passkey: false, phrase: false, seedOrigin: "phrase", lastBackupAt: null, lastError: null, pending: false, relays: [], lastTestedAt: null };
 const backupListeners = new Set<(s: BackupStatus) => void>();
 let mockPrefs: Prefs = {};
 function setBackup(patch: Partial<BackupStatus>) {
@@ -273,7 +273,7 @@ export const mockApi: WalletApi = {
     accounts.forEach((a) => (a.balance = { confirmed: 0, pendingIn: 0, pendingOut: 0 }));
     activity = [];
     status = "unlocked";
-    setBackup({ passkey: false, phrase: false, seedOrigin: "phrase", lastBackupAt: null, lastError: null, relays: [] });
+    setBackup({ passkey: false, phrase: false, seedOrigin: "phrase", lastBackupAt: null, lastError: null, relays: [], lastTestedAt: null });
     mockBackupSoon();
     return DEMO_PHRASE;
   },
@@ -282,7 +282,7 @@ export const mockApi: WalletApi = {
     if (phrase.trim().split(/\s+/).length < 12) throw "That recovery phrase is too short. It should be 12 or 24 words.";
     seedDemo();
     status = "unlocked";
-    setBackup({ passkey: false, phrase: true, seedOrigin: "phrase", lastBackupAt: null, lastError: null, pending: true, relays: [] });
+    setBackup({ passkey: false, phrase: true, seedOrigin: "phrase", lastBackupAt: null, lastError: null, pending: true, relays: [], lastTestedAt: null });
   },
   async passkeySupported() {
     return true;
@@ -295,7 +295,7 @@ export const mockApi: WalletApi = {
     accounts.forEach((a) => (a.balance = { confirmed: 0, pendingIn: 0, pendingOut: 0 }));
     activity = [];
     status = "unlocked";
-    setBackup({ passkey: true, phrase: false, seedOrigin: "passkey", lastBackupAt: null, lastError: null, relays: [] });
+    setBackup({ passkey: true, phrase: false, seedOrigin: "passkey", lastBackupAt: null, lastError: null, relays: [], lastTestedAt: null });
     mockBackupSoon();
   },
   async restoreWithPasskey(passcode) {
@@ -303,7 +303,7 @@ export const mockApi: WalletApi = {
     await sleep(1200);
     seedDemo();
     status = "unlocked";
-    setBackup({ passkey: true, phrase: false, seedOrigin: "passkey", lastBackupAt: MOCK_RESTORED.backedUpAt, lastError: null, pending: false, relays: MOCK_RELAYS });
+    setBackup({ passkey: true, phrase: false, seedOrigin: "passkey", lastBackupAt: MOCK_RESTORED.backedUpAt, lastError: null, pending: false, relays: MOCK_RELAYS, lastTestedAt: null });
     return { ...MOCK_RESTORED };
   },
   async restoreState() {
@@ -324,6 +324,41 @@ export const mockApi: WalletApi = {
     await sleep(800);
     setBackup({ pending: false, lastBackupAt: now(), lastError: null, relays: MOCK_RELAYS });
     return { ...backup };
+  },
+  async testBackup(method, phrase) {
+    if (status !== "unlocked") throw new BackupTestError("locked", "the wallet is locked");
+    let seedMatches: boolean | null = null;
+    if (method === "phrase") {
+      const words = (phrase ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+      if (words.length !== 12 && words.length !== 24) {
+        throw new BackupTestError("invalid_phrase", "That isn't a valid recovery phrase. Check each word and try again");
+      }
+      await sleep(400);
+      seedMatches = words.join(" ") === DEMO_PHRASE;
+    } else if (method === "passkey") {
+      await sleep(900);
+      seedMatches = true;
+    } else {
+      await sleep(600);
+    }
+    const hardwareWallets = accounts.filter((a) => a.custody.type === "hardware").length;
+    const base: BackupTest = {
+      ok: false, seedMatches, stateFound: false, stateVersion: null, localVersion: MOCK_RESTORED.version, upToDate: false,
+      backedUpAt: null, relaysWithLatest: 0, relaysAnswered: 0, relaysTotal: MOCK_RELAYS.length,
+      accounts: 0, hardwareWallets: 0, labels: 0, message: "",
+    };
+    if (seedMatches === false) {
+      return { ...base, message: "That recovery phrase is for a different wallet. Check each word against what you wrote down." };
+    }
+    const lead = method === "passkey" ? "Your passkey restores this wallet" : method === "phrase" ? "Your recovery phrase restores this wallet" : "Your online backup is up to date";
+    const result: BackupTest = {
+      ...base, ok: true, stateFound: true, stateVersion: MOCK_RESTORED.version, upToDate: true,
+      backedUpAt: backup.lastBackupAt ?? MOCK_RESTORED.backedUpAt, relaysWithLatest: 5, relaysAnswered: 6,
+      accounts: accounts.length, hardwareWallets, labels: 143,
+      message: `${lead}, with ${accounts.length} accounts, ${hardwareWallets} hardware wallets and 143 labels. 5 of 6 backup servers have the latest copy.`,
+    };
+    setBackup({ lastTestedAt: now() });
+    return result;
   },
   async setPhraseBackedUp(done) {
     setBackup({ phrase: done });

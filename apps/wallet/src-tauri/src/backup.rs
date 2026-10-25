@@ -66,6 +66,8 @@ pub struct BackupStatus {
     pub pending: bool,
     /// Relays that took the last backup.
     pub relays: Vec<String>,
+    /// Unix seconds of the last "Test my backup" that passed on this device.
+    pub last_tested_at: Option<u64>,
 }
 
 /// `restore_state`, `restore_with_passkey` and the `backup://restored` event.
@@ -190,6 +192,7 @@ impl Backup {
             last_error: i.saved.last_error.clone(),
             pending: i.sched.pending() || i.saved.restore_pending,
             relays: i.saved.relays.clone(),
+            last_tested_at: i.flags.last_tested_at,
         }
     }
 
@@ -268,6 +271,22 @@ impl Backup {
         i.force_upload = false;
     }
 
+    /// The backup flags changed in a way that isn't backed up (the last
+    /// backup test): update the status without scheduling an upload.
+    pub fn flags_changed(&self, config: &Config) {
+        self.lock().flags = config.backup.clone();
+        self.changed();
+    }
+
+    /// Version of the snapshot last uploaded (or restored) here.
+    pub fn last_version(&self) -> Option<u64> {
+        Some(self.lock().saved.version).filter(|v| *v > 0)
+    }
+
+    pub fn is_online(&self) -> bool {
+        self.online
+    }
+
     pub fn set_envelope(&self, envelope: Event) {
         self.update_saved(|s| s.envelope = Some(envelope));
     }
@@ -306,7 +325,7 @@ impl Backup {
     }
 
     /// Relays to write to, and to read from (the user's plus the defaults).
-    fn urls(&self) -> (Vec<String>, Vec<String>) {
+    pub fn urls(&self) -> (Vec<String>, Vec<String>) {
         let write = self.lock().relay_urls.clone();
         let mut read: Vec<String> = write.clone();
         for r in sessions_backup::default_relays() {
@@ -430,6 +449,11 @@ pub async fn gather(state: &AppState) -> Result<Value> {
     if let Some(o) = cfg.as_object_mut() {
         // Personal API key: not part of the backup.
         o.remove("breezApiKey");
+        // When this device last tested the backup: local, and testing must
+        // not count as a change to back up.
+        if let Some(b) = o.get_mut("backup").and_then(Value::as_object_mut) {
+            b.remove("lastTestedAt");
+        }
     }
     let mut labels = serde_json::Map::new();
     for a in &config.accounts {
@@ -596,7 +620,7 @@ pub async fn restore_state(state: &AppState) -> RestoreResult {
 }
 
 /// Accounts and labels in a snapshot.
-fn counts(snap: &Snapshot) -> (u32, u32) {
+pub(crate) fn counts(snap: &Snapshot) -> (u32, u32) {
     let accounts = snap.data["config"]["accounts"]
         .as_array()
         .map_or(0, |a| a.len() as u32);
@@ -748,6 +772,7 @@ pub(crate) async fn apply(state: &AppState, snap: &Snapshot) -> Result<(u32, u32
         phrase: local.phrase || saved.phrase,
         seed_origin: saved.seed_origin,
         credential_id: local.credential_id.clone().or(saved.credential_id.clone()),
+        last_tested_at: local.last_tested_at,
     };
     if restored.backup_relays.is_empty() {
         restored.backup_relays = sessions_backup::default_relays();
@@ -854,6 +879,7 @@ mod tests {
                 serde_json::json!({ "theme": "sessions", "currencies": ["CAD", "EUR"] });
             u.config.electrum_url = Some("ssl://electrum.example:50002".into());
             u.config.breez_api_key = Some("my-secret-breez-key".into());
+            u.config.backup.last_tested_at = Some(1_700_000_123);
             a.save_config(&u.config).unwrap();
         }
         assert!(a.backup.status().pending);
@@ -861,6 +887,8 @@ mod tests {
         let data = gather(&a).await.unwrap();
         let text = data.to_string();
         assert!(!text.contains("my-secret-breez-key"));
+        // Local bookkeeping, and testing isn't a change to back up.
+        assert!(!text.contains("lastTestedAt"));
         assert!(!text.contains("abandon") && !text.contains("xprv"));
         assert!(text.contains("rent") && text.contains("Rainy day"));
 
@@ -887,6 +915,7 @@ mod tests {
                 phrase: true,
                 seed_origin: SeedOrigin::Phrase,
                 credential_id: None,
+                last_tested_at: None,
             },
             true,
         )

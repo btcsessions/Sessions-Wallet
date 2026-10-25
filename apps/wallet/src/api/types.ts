@@ -359,6 +359,74 @@ export interface BackupStatus {
   pending: boolean;
   /** Relays that took the last backup. */
   relays: string[];
+  /** Unix seconds of the last `testBackup` that passed on this device; null = never. Nudge a re-test now and then. */
+  lastTestedAt: number | null;
+}
+
+/**
+ * What to test (`testBackup`):
+ * - `passkey`: the passkey sign-in prompt (the user picks a passkey); checks it restores this wallet.
+ * - `phrase`: checks a recovery phrase the user typed (any spacing/case, 12 or 24 words) is this wallet's.
+ * - `state`: no prompt; checks the online backup of accounts, labels and settings is readable and current.
+ */
+export type BackupTestMethod = "passkey" | "phrase" | "state";
+
+/**
+ * `testBackup`'s answer. Nothing is changed by a test (no wallet made, nothing restored or uploaded); a pass
+ * only updates `BackupStatus.lastTestedAt`. Show `message`; the rest is for detail rows.
+ */
+export interface BackupTest {
+  /** The backup would restore this wallet with its latest accounts, labels and settings. */
+  ok: boolean;
+  /** The passkey/phrase restores this wallet's keys. null for `state` (or when the servers couldn't be reached). */
+  seedMatches: boolean | null;
+  /** The online backup of accounts, labels and settings was found and decrypted. */
+  stateFound: boolean;
+  stateVersion: number | null;
+  /** Version this device last backed up (or restored); null = never. */
+  localVersion: number | null;
+  /** The servers have this device's latest backup (or a newer one from another device). */
+  upToDate: boolean;
+  /** Unix seconds when the backup found was made. */
+  backedUpAt: number | null;
+  /** Backup servers that each hold a full copy of the newest backup, of `relaysTotal`. */
+  relaysWithLatest: number;
+  relaysAnswered: number;
+  relaysTotal: number;
+  /** In the backup found (accounts include hardware wallets and Spending). */
+  accounts: number;
+  hardwareWallets: number;
+  labels: number;
+  /**
+   * One plain-English summary, e.g. "Your passkey restores this wallet, with 5 accounts, 2 hardware wallets and
+   * 143 labels. 5 of 6 backup servers have the latest copy." / "That passkey belongs to a different wallet." /
+   * "Couldn't reach the backup servers. Check your connection and try again."
+   */
+  message: string;
+}
+
+/**
+ * Why `testBackup` couldn't run (a result with `ok: false` is a test that ran and failed). `message` is user-facing.
+ * - `cancelled`: the user backed out of the passkey prompt. Say nothing.
+ * - `no_passkey`: no Sessions Wallet passkey on the phone or in the account.
+ * - `unsupported`: no passkeys on this device, the passkey manager lacks PRF, or the domain isn't set up for the app.
+ * - `invalid_phrase`: `phrase` missing or not a valid recovery phrase (a typo in a word, wrong length).
+ * - `locked`: unlock first. `failed`: anything else.
+ */
+export type BackupTestErrorCode = "cancelled" | "no_passkey" | "unsupported" | "invalid_phrase" | "locked" | "failed";
+
+/** What `testBackup` rejects with. */
+export class BackupTestError extends Error {
+  readonly code: BackupTestErrorCode;
+  constructor(code: BackupTestErrorCode, message: string) {
+    super(message);
+    this.name = "BackupTestError";
+    this.code = code;
+  }
+}
+
+export function isBackupTestError(e: unknown, code?: BackupTestErrorCode): e is BackupTestError {
+  return e instanceof BackupTestError && (code === undefined || e.code === code);
 }
 
 /** What restoring the wallet's state found (`restore_state`, `restore_with_passkey`, event `backup://restored`). */

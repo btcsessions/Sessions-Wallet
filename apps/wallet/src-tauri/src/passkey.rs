@@ -11,6 +11,7 @@
 //! backup and restore. See `sessions_backup::keys` for the derivations.
 
 use sessions_backup::keys::{prf_salt, PasskeyKeys};
+use sessions_backup::nostr::Event;
 use sessions_backup::{envelope, KIND_APP_DATA};
 use sessions_core::keystore::Seed;
 use sessions_core::{Error, Result};
@@ -103,6 +104,7 @@ pub async fn create_passkey_wallet(
                 phrase: false,
                 seed_origin: SeedOrigin::Passkey,
                 credential_id: Some(made.credential_id),
+                last_tested_at: None,
             },
             false,
         )
@@ -111,6 +113,75 @@ pub async fn create_passkey_wallet(
     // Unlocking a wallet that was never backed up schedules its first backup
     // at once, in the background; `backup://status` reports how it went.
     Ok(())
+}
+
+/// The passkey sign-in (the user picks one of this app's passkeys), with
+/// the PRF evaluated on the wallet's salt.
+pub(crate) async fn sign_in(app: &AppHandle) -> std::result::Result<PrfResult, PasskeyError> {
+    app.try_state::<Passkeys<tauri::Wry>>()
+        .ok_or(PasskeyError::NotSupported)?
+        .get(GetRequest {
+            rp_id: PASSKEY_RP_ID.into(),
+            prf_salt: prf_salt().to_vec(),
+            allow_credentials: vec![],
+        })
+        .await
+}
+
+/// The seed a passkey brings back.
+pub(crate) enum PasskeySeed {
+    /// A phrase backed up with the passkey (and the envelope it came in).
+    Envelope { seed: Seed, event: Option<Event> },
+    /// No envelope: the passkey wallet's own seed.
+    Derived(Seed),
+    /// No envelope found, and too few relays answered to rule one out.
+    Unreachable,
+}
+
+pub(crate) struct PasskeyLookup {
+    pub found: PasskeySeed,
+    /// Relays that answered, of those asked.
+    pub answered: u32,
+    pub total: u32,
+}
+
+/// Is this passkey backing up a phrase (an envelope), or is it the seed?
+/// Looked up on the default relays: all a new phone knows about.
+pub(crate) async fn passkey_seed(state: &AppState, keys: &PasskeyKeys) -> Result<PasskeyLookup> {
+    let urls = sessions_backup::default_relays();
+    let answers = state
+        .backup
+        .relays()
+        .fetch(&urls, &keys.nostr.public_hex(), KIND_APP_DATA)
+        .await;
+    let reached = answers.iter().filter(|(_, r)| r.is_ok()).count();
+    let events: Vec<_> = answers
+        .into_iter()
+        .filter_map(|(_, r)| r.ok())
+        .flatten()
+        .collect();
+    let found = match envelope::open(keys, &events) {
+        Some(phrase) => {
+            let event = events
+                .iter()
+                .filter(|e| e.d() == Some(sessions_backup::ENVELOPE_D))
+                .max_by_key(|e| e.created_at)
+                .cloned();
+            PasskeySeed::Envelope {
+                seed: Seed::from_phrase(&phrase)?,
+                event,
+            }
+        }
+        None if reached >= MIN_ANSWERS => {
+            PasskeySeed::Derived(Seed::from_entropy(&keys.seed_entropy[..])?)
+        }
+        None => PasskeySeed::Unreachable,
+    };
+    Ok(PasskeyLookup {
+        found,
+        answered: reached as u32,
+        total: urls.len() as u32,
+    })
 }
 
 /// Sign in with a passkey and bring its wallet back, with its state.
@@ -126,44 +197,12 @@ pub async fn restore_with_passkey(
             "A wallet already exists on this device".into(),
         ));
     }
-    let got = passkeys(&app)?
-        .get(GetRequest {
-            rp_id: PASSKEY_RP_ID.into(),
-            prf_salt: prf_salt().to_vec(),
-            allow_credentials: vec![],
-        })
-        .await
-        .map_err(err)?;
+    let got = sign_in(&app).await.map_err(err)?;
     let keys = PasskeyKeys::from_prf(&got.prf)?;
-
-    // Is this passkey backing up a phrase (an envelope), or is it the seed?
-    let urls = sessions_backup::default_relays();
-    let answers = state
-        .backup
-        .relays()
-        .fetch(&urls, &keys.nostr.public_hex(), KIND_APP_DATA)
-        .await;
-    let reached = answers.iter().filter(|(_, r)| r.is_ok()).count();
-    let events: Vec<_> = answers
-        .into_iter()
-        .filter_map(|(_, r)| r.ok())
-        .flatten()
-        .collect();
-    let (seed, origin, envelope_event) = match envelope::open(&keys, &events) {
-        Some(phrase) => {
-            let event = events
-                .iter()
-                .filter(|e| e.d() == Some(sessions_backup::ENVELOPE_D))
-                .max_by_key(|e| e.created_at)
-                .cloned();
-            (Seed::from_phrase(&phrase)?, SeedOrigin::Phrase, event)
-        }
-        None if reached >= MIN_ANSWERS => (
-            Seed::from_entropy(&keys.seed_entropy[..])?,
-            SeedOrigin::Passkey,
-            None,
-        ),
-        None => {
+    let (seed, origin, envelope_event) = match passkey_seed(&state, &keys).await?.found {
+        PasskeySeed::Envelope { seed, event } => (seed, SeedOrigin::Phrase, event),
+        PasskeySeed::Derived(seed) => (seed, SeedOrigin::Passkey, None),
+        PasskeySeed::Unreachable => {
             return Err(Error::Invalid(
                 "Couldn't reach the backup servers to look up your wallet. Check your connection and try again"
                     .into(),
@@ -179,6 +218,7 @@ pub async fn restore_with_passkey(
                 phrase: false,
                 seed_origin: origin,
                 credential_id: Some(got.credential_id),
+                last_tested_at: None,
             },
             true,
         )

@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WalletApi } from "./index";
-import type { BackupStatus, BiometricErrorCode, JadeState, RestoreResult } from "./types";
-import { BiometricError } from "./types";
+import type { BackupStatus, BackupTest, BackupTestErrorCode, BackupTestMethod, BiometricErrorCode, JadeState, RestoreResult } from "./types";
+import { BackupTestError, BiometricError } from "./types";
 
 const BIOMETRIC_CODES: readonly string[] = [
   "unavailable", "not_enabled", "cancelled", "lockout", "invalidated", "stale",
@@ -20,6 +20,22 @@ async function biometric<T>(cmd: string, args?: Record<string, unknown>): Promis
       throw new BiometricError(known ? (code as BiometricErrorCode) : "failed", String(message));
     }
     throw new BiometricError("failed", typeof e === "string" ? e : "Something went wrong");
+  }
+}
+
+const BACKUP_TEST_CODES: readonly string[] = ["cancelled", "no_passkey", "unsupported", "invalid_phrase", "locked", "failed"];
+
+/** `test_backup` rejects with `{ code, message }`; turn that into a `BackupTestError`. */
+async function testBackup(method: BackupTestMethod, phrase?: string): Promise<BackupTest> {
+  try {
+    return await invoke<BackupTest>("test_backup", { method, phrase: phrase ?? null });
+  } catch (e) {
+    if (e && typeof e === "object" && "code" in e && "message" in e) {
+      const { code, message } = e as { code: unknown; message: unknown };
+      const known = typeof code === "string" && BACKUP_TEST_CODES.includes(code);
+      throw new BackupTestError(known ? (code as BackupTestErrorCode) : "failed", String(message));
+    }
+    throw new BackupTestError("failed", typeof e === "string" ? e : "Something went wrong");
   }
 }
 
@@ -46,6 +62,7 @@ export const tauriApi: WalletApi = {
   backupStatus: () => invoke("backup_status"),
   backupNow: () => invoke("backup_now"),
   setPhraseBackedUp: (done) => invoke("set_phrase_backed_up", { done }),
+  testBackup,
   onBackupStatus: (cb) => listen<BackupStatus>("backup://status", (e) => cb(e.payload)),
   onStateRestored: (cb) => listen<RestoreResult>("backup://restored", (e) => cb(e.payload)),
   prefs: () => invoke("prefs"),

@@ -79,6 +79,7 @@ pub async fn restore_wallet(
                 phrase: true,
                 seed_origin: SeedOrigin::Phrase,
                 credential_id: None,
+                last_tested_at: None,
             },
             true,
         )

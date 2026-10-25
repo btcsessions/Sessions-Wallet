@@ -172,6 +172,10 @@ pub struct BackupFlags {
     /// The passkey's credential id (base64url), when one was made here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
+    /// Unix seconds of the last "Test my backup" that passed on this device.
+    /// Local: left out of the online backup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tested_at: Option<u64>,
 }
 
 impl BackupFlags {
@@ -182,6 +186,7 @@ impl BackupFlags {
             phrase: true,
             seed_origin: SeedOrigin::Phrase,
             credential_id: None,
+            last_tested_at: None,
         }
     }
 

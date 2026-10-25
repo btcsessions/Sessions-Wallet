@@ -30,6 +30,8 @@ import type {
   SpendStyle,
   WalletStatus,
   BackupStatus,
+  BackupTest,
+  BackupTestMethod,
   RestoreResult,
   Prefs,
   BiometricStatus,
@@ -87,6 +89,13 @@ export interface WalletApi {
   backupNow(): Promise<BackupStatus>;
   /** The user confirmed they wrote the recovery phrase down. */
   setPhraseBackedUp(done: boolean): Promise<BackupStatus>;
+  /**
+   * "Test my backup": checks, changing nothing, that the passkey / typed phrase / online backup would restore this
+   * wallet (see `BackupTestMethod`). Unlocked only. Resolves even when the test fails (`ok: false`, `message` says
+   * why); rejects with a `BackupTestError` when it couldn't run (`cancelled` passkey prompt: say nothing).
+   * A pass updates `BackupStatus.lastTestedAt` (and emits `backup://status`).
+   */
+  testBackup(method: BackupTestMethod, phrase?: string): Promise<BackupTest>;
   /** `backup://status` events. Returns an unsubscribe. */
   onBackupStatus(cb: (s: BackupStatus) => void): Promise<() => void>;
   /** `backup://restored`: the app restored the wallet's state on its own (a retry after being offline). Reload everything. */
