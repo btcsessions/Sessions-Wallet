@@ -59,6 +59,7 @@ export const tauriApi: WalletApi = {
   restoreWithPasskey: (passcode) => invoke("restore_with_passkey", { passcode }),
   restoreState: () => invoke("restore_state"),
   enablePasskeyBackup: () => invoke("enable_passkey_backup"),
+  disablePasskeyBackup: () => invoke("disable_passkey_backup"),
   backupStatus: () => invoke("backup_status"),
   backupNow: () => invoke("backup_now"),
   setPhraseBackedUp: (done) => invoke("set_phrase_backed_up", { done }),

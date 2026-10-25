@@ -236,6 +236,29 @@ pub async fn restore_with_passkey(
     Ok(backup::restore_state(&state).await)
 }
 
+/// Stop backing up the recovery phrase with a passkey (e.g. to replace a
+/// passkey whose manager can't sign back in). The wallet and its phrase are
+/// untouched; the old encrypted copy is no longer re-published. Not for
+/// passkey wallets, whose seed comes from the passkey itself.
+#[tauri::command]
+pub async fn disable_passkey_backup(state: State<'_, AppState>) -> Result<BackupStatus> {
+    {
+        let mut guard = state.inner.lock().await;
+        let u = guard.as_mut().ok_or(Error::Locked)?;
+        if u.config.backup.seed_origin == SeedOrigin::Passkey {
+            return Err(Error::Invalid(
+                "This wallet was made with its passkey, so the passkey can't be removed. Show your recovery phrase and write it down if you want a second backup"
+                    .into(),
+            ));
+        }
+        u.config.backup.passkey = false;
+        u.config.backup.credential_id = None;
+        state.save_config(&u.config)?;
+    }
+    state.backup.clear_envelope();
+    Ok(state.backup.status())
+}
+
 /// Back up this wallet's recovery phrase with a new passkey (a phrase
 /// wallet, Advanced "both", or turned on later in Settings).
 #[tauri::command]

@@ -316,6 +316,11 @@ export const mockApi: WalletApi = {
     setBackup({ passkey: true });
     return { ...backup };
   },
+  async disablePasskeyBackup() {
+    await sleep(300);
+    setBackup({ passkey: false });
+    return { ...backup };
+  },
   async backupStatus() {
     return { ...backup };
   },

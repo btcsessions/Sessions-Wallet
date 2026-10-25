@@ -151,6 +151,7 @@ class PasskeyPlugin(private val activity: Activity) : Plugin(activity) {
                             val (id, prf) = prfOf(response.registrationResponseJson)
                             if (id.isEmpty()) throw Failure("OTHER", "no credential id")
                             val first = firstResult(prf)
+                            Log.i(TAG, "create: ok, PRF ${if (first != null) "returned at creation" else "not returned; signing in"}, prf=${prf?.keys()?.asSequence()?.toList()}")
                             when {
                                 first != null -> resolve(invoke, id, first)
                                 // The provider says outright it has no PRF.
@@ -220,6 +221,7 @@ class PasskeyPlugin(private val activity: Activity) : Plugin(activity) {
                         val credential = result.credential as? PublicKeyCredential
                             ?: throw Failure("OTHER", "unexpected credential type")
                         val (id, prf) = prfOf(credential.authenticationResponseJson)
+                        Log.i(TAG, "get: ok, PRF ${if (prf != null) "present" else "missing"}")
                         val first = firstResult(prf)
                             ?: throw Failure("PRF_UNSUPPORTED", "no PRF result")
                         resolve(invoke, id, first)

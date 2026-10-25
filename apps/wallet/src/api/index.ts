@@ -84,6 +84,8 @@ export interface WalletApi {
   restoreState(): Promise<RestoreResult>;
   /** Back up this phrase wallet's recovery phrase with a new passkey too (Advanced "both", or later in Settings). */
   enablePasskeyBackup(): Promise<BackupStatus>;
+  /** Stop backing up the phrase with a passkey (phrase wallets only). Replace = this, then enablePasskeyBackup. */
+  disablePasskeyBackup(): Promise<BackupStatus>;
   backupStatus(): Promise<BackupStatus>;
   /** Back up the state now and wait for the result. */
   backupNow(): Promise<BackupStatus>;

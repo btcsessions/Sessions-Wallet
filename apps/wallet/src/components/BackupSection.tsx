@@ -19,7 +19,7 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
   const notify = useWallet((s) => s.notify);
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [passkeys, setPasskeys] = useState(false);
-  const [busy, setBusy] = useState<"now" | "passkey" | BackupTestMethod | null>(null);
+  const [busy, setBusy] = useState<"now" | "passkey" | "replace" | "remove" | BackupTestMethod | null>(null);
   const [testing, setTesting] = useState(false);
   const [words, setWords] = useState("");
   const [result, setResult] = useState<BackupTest | null>(null);
@@ -56,6 +56,25 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
       notify("ok", kind === "now" ? "Backed up" : "Passkey backup added");
     } catch (e) {
       notify("error", errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** New passkey for a phrase wallet (e.g. moving from a manager that can't sign back in). */
+  const swap = async (kind: "replace" | "remove") => {
+    setBusy(kind);
+    try {
+      const a = await api();
+      if (kind === "replace") {
+        update(await a.enablePasskeyBackup());
+        notify("ok", "New passkey saved. Test it to make sure it works.");
+      } else {
+        update(await a.disablePasskeyBackup());
+        notify("ok", "Passkey backup removed. Your recovery phrase still backs up this wallet.");
+      }
+    } catch (e) {
+      if (!isBackupTestError(e, "cancelled") && !/cancel/i.test(errorText(e))) notify("error", errorText(e));
     } finally {
       setBusy(null);
     }
@@ -151,6 +170,16 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
                 <Icon name={result.ok ? "check" : "warn"} size={16} /> {result.message}
               </p>
             )}
+          </div>
+        )}
+        {advanced && passkeys && status.passkey && status.seedOrigin === "phrase" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <button className="btn" disabled={!!busy} onClick={() => void swap("replace")}>
+              {busy === "replace" ? "Create it when asked…" : "Replace passkey"}
+            </button>
+            <button className="btn" disabled={!!busy} onClick={() => void swap("remove")}>
+              {busy === "remove" ? "Removing…" : "Remove passkey"}
+            </button>
           </div>
         )}
         {advanced && passkeys && !status.passkey && (

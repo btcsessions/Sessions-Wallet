@@ -178,6 +178,7 @@ pub fn run() {
             passkey::create_passkey_wallet,
             passkey::restore_with_passkey,
             passkey::enable_passkey_backup,
+            passkey::disable_passkey_backup,
             biometric::biometric_status,
             biometric::enable_biometric,
             biometric::disable_biometric,

@@ -291,6 +291,11 @@ impl Backup {
         self.update_saved(|s| s.envelope = Some(envelope));
     }
 
+    /// Stop re-publishing the passkey envelope (passkey backup removed).
+    pub fn clear_envelope(&self) {
+        self.update_saved(|s| s.envelope = None);
+    }
+
     /// Unlocked: keep the state keys, and check the backup soon.
     pub fn unlocked(&self, keys: StateKeys, config: &Config) {
         let now = self.now_ms();
