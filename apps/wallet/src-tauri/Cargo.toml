@@ -35,6 +35,9 @@ tauri-plugin-bitbox = { path = "plugins/tauri-plugin-bitbox" }
 tauri-plugin-jade = { path = "plugins/tauri-plugin-jade" }
 # Passkeys (WebAuthn PRF) via Android Credential Manager, for passkey wallets.
 tauri-plugin-passkey = { path = "plugins/tauri-plugin-passkey" }
+# Fingerprint / face unlock: the passcode sealed under a biometric-bound
+# Android Keystore key.
+tauri-plugin-biometric-vault = { path = "plugins/tauri-plugin-biometric-vault" }
 rand = "0.8"
 async-trait.workspace = true
 bitcoin.workspace = true

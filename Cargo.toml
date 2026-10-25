@@ -11,6 +11,7 @@ members = [
     "apps/wallet/src-tauri/plugins/tauri-plugin-bitbox",
     "apps/wallet/src-tauri/plugins/tauri-plugin-jade",
     "apps/wallet/src-tauri/plugins/tauri-plugin-passkey",
+    "apps/wallet/src-tauri/plugins/tauri-plugin-biometric-vault",
 ]
 default-members = [
     "crates/sessions-core",

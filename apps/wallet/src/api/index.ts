@@ -32,6 +32,7 @@ import type {
   BackupStatus,
   RestoreResult,
   Prefs,
+  BiometricStatus,
 } from "./types";
 
 /**
@@ -48,6 +49,21 @@ export interface WalletApi {
   lock(): Promise<void>;
   /** Also works for passkey wallets (their phrase is derived from the passkey). */
   revealPhrase(passcode: string): Promise<string>;
+
+  /** Fingerprint / face unlock: sensor, enrolment and whether it's on. Never prompts, never rejects. */
+  biometricStatus(): Promise<BiometricStatus>;
+  /**
+   * Turn on fingerprint / face unlock: checks the passcode (wallet stays as it is), then shows the
+   * "Turn on … unlock" prompt and saves the passcode behind it. Rejects with a `BiometricError`.
+   */
+  enableBiometric(passcode: string): Promise<BiometricStatus>;
+  /** Turn it off: deletes the saved passcode and its key (also clears `invalidated`). */
+  disableBiometric(): Promise<BiometricStatus>;
+  /**
+   * Lock screen: shows the "Unlock Sessions Wallet" prompt ("Use passcode" to back out) and unlocks like
+   * `unlock(passcode)`. Rejects with a `BiometricError`; see `BiometricErrorCode` for what to do with each.
+   */
+  unlockBiometric(): Promise<void>;
 
   /** Whether this device can make passkeys (Android 9+). Desktop and iOS: false for now. */
   passkeySupported(): Promise<boolean>;

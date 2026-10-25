@@ -14,7 +14,7 @@ use sessions_core::{
     parse, AccountId, AccountInfo, Error, FeePriority, Method, Payment, PaymentRequest,
     ReceiveTarget, Result, Sats, Wallet,
 };
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::backup::{self, BackupStatus, RestoreResult, MAX_PREFS_BYTES};
 use crate::config::{check_name, AccountSpec, BackupFlags, SeedOrigin};
@@ -44,6 +44,7 @@ pub async fn status(state: State<'_, AppState>) -> Result<&'static str> {
 
 #[tauri::command]
 pub async fn create_wallet(
+    app: AppHandle,
     state: State<'_, AppState>,
     passcode: String,
     words: usize,
@@ -52,12 +53,15 @@ pub async fn create_wallet(
     let seed = Seed::generate(if words == 24 { 24 } else { 12 })?;
     let phrase = seed.phrase().to_string();
     state.create(seed, &passcode).await?;
+    // A new wallet never inherits an old one's biometric unlock.
+    crate::biometric::forget(&app).await;
     // Shown once, during onboarding, so the user can write it down.
     Ok(phrase)
 }
 
 #[tauri::command]
 pub async fn restore_wallet(
+    app: AppHandle,
     state: State<'_, AppState>,
     phrase: String,
     passcode: String,
@@ -78,12 +82,20 @@ pub async fn restore_wallet(
             },
             true,
         )
-        .await
+        .await?;
+    crate::biometric::forget(&app).await;
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn unlock(state: State<'_, AppState>, passcode: String) -> Result<()> {
-    let seed = state.open_vault(&passcode).await?;
+    let passcode = zeroize::Zeroizing::new(passcode);
+    unlock_passcode(&state, &passcode).await
+}
+
+/// `unlock`, shared with biometric unlock (`biometric::unlock_biometric`).
+pub(crate) async fn unlock_passcode(state: &AppState, passcode: &str) -> Result<()> {
+    let seed = state.open_vault(passcode).await?;
     state.unlock_with(seed).await
 }
 

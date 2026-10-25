@@ -6,6 +6,7 @@ import { useWallet } from "../state/store";
 import { THEMES, type Appearance } from "../theme";
 import { ModeSwitch } from "../components/ModeSwitch";
 import { BackupSection } from "../components/BackupSection";
+import { BiometricSetting } from "../components/BiometricSetting";
 import type { BackupStatus } from "../api/types";
 
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
@@ -141,6 +142,8 @@ export function SettingsSheet() {
       </button>
       </>
       )}
+
+      <BiometricSetting />
 
       <BackupSection onStatus={setBackup} />
 

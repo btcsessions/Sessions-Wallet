@@ -2,6 +2,8 @@
 // reviewed without a native build. Never ships in the Tauri app.
 
 import type { WalletApi } from "./index";
+import { BiometricError } from "./types";
+import type { BiometricStatus } from "./types";
 import type { AccountInfo, BackupStatus, BitboxEvent, ClaimResult, Deposit, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -31,6 +33,15 @@ const DEMO_PHRASE =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 let status: "empty" | "locked" | "unlocked" = "empty";
+/** Like the real thing: what `unlock` does once the passcode is right. */
+function markUnlocked() {
+  status = "unlocked";
+}
+
+let mockBiometric = false;
+function biometricStatus(): BiometricStatus {
+  return { available: true, enabled: mockBiometric && status !== "empty", invalidated: false, kind: "biometric", reason: null };
+}
 
 // Backup: succeeds after a short delay, like a good connection to the relays.
 const MOCK_RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net", "wss://nostr.mom", "wss://relay.snort.social", "wss://nostr-pub.wellorder.net"];
@@ -336,7 +347,27 @@ export const mockApi: WalletApi = {
   async unlock(passcode) {
     await sleep(300);
     if (passcode.length < 6) throw "Wrong passcode";
-    status = "unlocked";
+    markUnlocked();
+  },
+  async biometricStatus() {
+    return biometricStatus();
+  },
+  async enableBiometric(passcode) {
+    await sleep(300);
+    if (status === "empty") throw new BiometricError("failed", "There's no wallet on this device yet");
+    if (passcode.length < 6) throw new BiometricError("wrong_passcode", "wrong passcode");
+    await sleep(600);
+    mockBiometric = true;
+    return biometricStatus();
+  },
+  async disableBiometric() {
+    mockBiometric = false;
+    return biometricStatus();
+  },
+  async unlockBiometric() {
+    if (!biometricStatus().enabled) throw new BiometricError("not_enabled", "Biometric unlock isn't turned on. Enter your passcode");
+    await sleep(600);
+    markUnlocked();
   },
   async lock() {
     status = "locked";

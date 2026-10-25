@@ -7887,6 +7887,7 @@ dependencies = [
  "sessions-core",
  "tauri",
  "tauri-build",
+ "tauri-plugin-biometric-vault",
  "tauri-plugin-bitbox",
  "tauri-plugin-deep-link",
  "tauri-plugin-jade",
@@ -8601,6 +8602,17 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-biometric-vault"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "zeroize",
 ]
 
 [[package]]

@@ -1,4 +1,5 @@
 mod backup;
+mod biometric;
 mod bitbox;
 mod commands;
 mod config;
@@ -27,6 +28,8 @@ pub fn run() {
         .plugin(tauri_plugin_jade::init())
         // Passkeys with PRF (Android Credential Manager), for passkey wallets.
         .plugin(tauri_plugin_passkey::init())
+        // Fingerprint / face unlock (Android Keystore + BiometricPrompt).
+        .plugin(tauri_plugin_biometric_vault::init())
         // The QR scanner uses the camera from inside the webview.
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
@@ -173,6 +176,10 @@ pub fn run() {
             passkey::create_passkey_wallet,
             passkey::restore_with_passkey,
             passkey::enable_passkey_backup,
+            biometric::biometric_status,
+            biometric::enable_biometric,
+            biometric::disable_biometric,
+            biometric::unlock_biometric,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

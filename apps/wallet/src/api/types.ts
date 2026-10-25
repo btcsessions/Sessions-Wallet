@@ -378,3 +378,59 @@ export interface RestoreResult {
 
 /** The UI's own preferences (theme, currencies, unit…). Stored with the wallet so they're backed up. */
 export type Prefs = Record<string, unknown>;
+
+/** Which biometric the phone most likely uses (a guess from its sensors): word the UI ("Unlock with fingerprint"). */
+export type BiometricKind = "fingerprint" | "face" | "biometric";
+
+/** Fingerprint / face unlock (`biometric_status`). Android only for now; desktop/iOS: `available: false`. */
+export interface BiometricStatus {
+  /** A strong (Class 3) fingerprint or face is set up on the phone. Weak (camera-only) face unlock doesn't count. */
+  available: boolean;
+  /** Biometric unlock is on: show the button on the lock screen when `available && enabled`. */
+  enabled: boolean;
+  /**
+   * It was switched off because the phone's fingerprints or face changed. Show the `invalidated` message once,
+   * then call `disableBiometric()` to clear it (turning it on again clears it too).
+   */
+  invalidated: boolean;
+  kind: BiometricKind;
+  /** Why it's unavailable, in plain English ("Add a fingerprint in your phone's Settings first."); null when available. */
+  reason: string | null;
+}
+
+/**
+ * Why a biometric call failed. `message` is always user-facing.
+ * - `cancelled`: "Use passcode" / "Cancel" / back / timed out / app backgrounded. Show the passcode field quietly.
+ * - `lockout`: too many failed fingerprint/face tries (message says for how long). Use the passcode.
+ * - `invalidated`: fingerprints or face changed; it's been turned off. Show the message, ask for the passcode.
+ * - `stale`: the saved passcode no longer opens the wallet; it's been turned off. Show the message.
+ * - `not_enabled`: nothing saved. `unavailable`: no strong biometric here (message says why).
+ * - `wrong_passcode` / `too_many_attempts`: from `enableBiometric`'s passcode check (`too_many_attempts` also from
+ *   `unlockBiometric` when the passcode rate limit is active).
+ * - `busy`: a prompt is already up. `failed`: anything else.
+ */
+export type BiometricErrorCode =
+  | "unavailable"
+  | "not_enabled"
+  | "cancelled"
+  | "lockout"
+  | "invalidated"
+  | "stale"
+  | "wrong_passcode"
+  | "too_many_attempts"
+  | "busy"
+  | "failed";
+
+/** What `enableBiometric`, `disableBiometric` and `unlockBiometric` reject with. */
+export class BiometricError extends Error {
+  readonly code: BiometricErrorCode;
+  constructor(code: BiometricErrorCode, message: string) {
+    super(message);
+    this.name = "BiometricError";
+    this.code = code;
+  }
+}
+
+export function isBiometricError(e: unknown, code?: BiometricErrorCode): e is BiometricError {
+  return e instanceof BiometricError && (code === undefined || e.code === code);
+}

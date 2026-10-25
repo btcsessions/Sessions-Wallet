@@ -107,6 +107,7 @@ pub async fn create_passkey_wallet(
             false,
         )
         .await?;
+    crate::biometric::forget(&app).await;
     // Unlocking a wallet that was never backed up schedules its first backup
     // at once, in the background; `backup://status` reports how it went.
     Ok(())
@@ -182,6 +183,7 @@ pub async fn restore_with_passkey(
             true,
         )
         .await?;
+    crate::biometric::forget(&app).await;
     if let Some(e) = envelope_event {
         state.backup.set_envelope(e);
     }

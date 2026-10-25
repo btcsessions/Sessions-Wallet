@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Icon } from "./components/Icon";
 import { useBusy } from "./components/ui";
 import { errorText } from "./format";
 import { useWallet } from "./state/store";
+import { isBiometricError, type BiometricStatus } from "./api/types";
 
 const PASSCODE_LENGTH = 6;
 
@@ -51,11 +52,48 @@ function Mark() {
   return <img className="welcome-mark" src="/icon.svg" alt="" />;
 }
 
+const BIO_LABEL: Record<BiometricStatus["kind"], string> = { fingerprint: "fingerprint", face: "face", biometric: "fingerprint or face" };
+
 export function Lock() {
   const setStatus = useWallet((s) => s.setStatus);
   const [code, setCode] = useState("");
   const [shake, setShake] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [bio, setBio] = useState<BiometricStatus | null>(null);
+  const [bioBusy, setBioBusy] = useState(false);
+
+  const tryBiometric = async () => {
+    setBioBusy(true);
+    setError(null);
+    try {
+      await (await api()).unlockBiometric();
+      setStatus("unlocked");
+    } catch (e) {
+      if (!isBiometricError(e, "cancelled")) setError(errorText(e));
+      if (isBiometricError(e, "invalidated") || isBiometricError(e, "stale")) setBio((b) => (b ? { ...b, enabled: false } : b));
+    } finally {
+      setBioBusy(false);
+    }
+  };
+
+  // Offer the fingerprint / face prompt straight away when it's set up.
+  useEffect(() => {
+    let alive = true;
+    api()
+      .then((a) => a.biometricStatus())
+      .then((s) => {
+        if (!alive) return;
+        setBio(s);
+        if (s.invalidated) {
+          setError("Your fingerprints or face changed, so biometric unlock was turned off. Enter your passcode, then turn it on again in Settings.");
+          void api().then((a) => a.disableBiometric().catch(() => {}));
+        } else if (s.available && s.enabled) void tryBiometric();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tryUnlock = async (c: string) => {
     try {
@@ -80,11 +118,16 @@ export function Lock() {
         {error}
       </p>
       <Keypad value={code} onChange={setCode} onComplete={tryUnlock} shake={shake} />
+      {bio?.available && bio.enabled && (
+        <button className="text-button" style={{ marginTop: 18 }} disabled={bioBusy} onClick={() => void tryBiometric()}>
+          Use {BIO_LABEL[bio.kind]}
+        </button>
+      )}
     </main>
   );
 }
 
-type Step = "welcome" | "setup" | "backup" | "restore-choice" | "restore" | "passcode" | "confirm" | "phrase";
+type Step = "welcome" | "setup" | "backup" | "restore-choice" | "restore" | "passcode" | "confirm" | "phrase" | "biometric";
 type Backup = "passkey" | "phrase" | "both";
 
 /** A big tappable choice card. */
@@ -116,6 +159,21 @@ export function Onboarding() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
+  const [bio, setBio] = useState<BiometricStatus | null>(null);
+  // A ref, not state: it's read in the same async call that sets it.
+  const passcodeRef = useRef("");
+  const setPasscode = (v: string) => {
+    passcodeRef.current = v;
+  };
+  /** Where to go once the biometric question is answered. */
+  const [after, setAfter] = useState<{ note?: string } | null>(null);
+
+  useEffect(() => {
+    api()
+      .then((a) => a.biometricStatus())
+      .then(setBio)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     api()
@@ -128,8 +186,18 @@ export function Onboarding() {
   // Basic mode backs up with a passkey; without passkey support it falls back to words.
   const plan: Backup = advanced ? backup : passkeys ? "passkey" : "phrase";
 
-  /** Into the wallet, in the mode chosen during setup. */
+  /** Offer fingerprint / face unlock first (when the phone has it), then into the wallet. */
   const open = async (note?: string) => {
+    if (bio?.available && !bio.enabled && passcodeRef.current) {
+      setAfter({ note });
+      setStep("biometric");
+      return;
+    }
+    await enter(note);
+  };
+
+  /** Into the wallet, in the mode chosen during setup. */
+  const enter = async (note?: string) => {
     setStatus("unlocked");
     const st = useWallet.getState();
     if (advanced) {
@@ -145,6 +213,7 @@ export function Onboarding() {
   const finish = (passcode: string) =>
     run(async () => {
       setError(null);
+      setPasscode(passcode);
       const a = await api();
       try {
         if (mode === "restore") {
@@ -191,6 +260,42 @@ export function Onboarding() {
       }
       await open();
     });
+
+  if (step === "biometric" && bio) {
+    const what = BIO_LABEL[bio.kind];
+    const turnOn = () =>
+      run(async () => {
+        try {
+          await (await api()).enableBiometric(passcodeRef.current);
+          setPasscode("");
+          await enter(after?.note);
+        } catch (e) {
+          if (!isBiometricError(e, "cancelled")) setError(errorText(e));
+        }
+      });
+    return (
+      <main className="center-screen" style={{ textAlign: "center" }}>
+        <Mark />
+        <h1 className="welcome-title" style={{ fontSize: 28 }}>
+          Unlock with your {what}?
+        </h1>
+        <p className="welcome-copy">Skip the passcode most of the time. Your passcode still works, and it's needed if your {what} changes.</p>
+        {error && (
+          <p className="field-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="stack">
+          <button className="btn primary block" disabled={busy} onClick={turnOn}>
+            {busy ? `Confirm with your ${what}…` : `Use ${what}`}
+          </button>
+          <button className="btn block" disabled={busy} onClick={() => (setPasscode(""), void enter(after?.note))}>
+            Not now
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   if (step === "welcome") {
     return (

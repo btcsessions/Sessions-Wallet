@@ -1,7 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WalletApi } from "./index";
-import type { BackupStatus, JadeState, RestoreResult } from "./types";
+import type { BackupStatus, BiometricErrorCode, JadeState, RestoreResult } from "./types";
+import { BiometricError } from "./types";
+
+const BIOMETRIC_CODES: readonly string[] = [
+  "unavailable", "not_enabled", "cancelled", "lockout", "invalidated", "stale",
+  "wrong_passcode", "too_many_attempts", "busy", "failed",
+];
+
+/** Biometric commands reject with `{ code, message }`; turn that into a `BiometricError`. */
+async function biometric<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    if (e && typeof e === "object" && "code" in e && "message" in e) {
+      const { code, message } = e as { code: unknown; message: unknown };
+      const known = typeof code === "string" && BIOMETRIC_CODES.includes(code);
+      throw new BiometricError(known ? (code as BiometricErrorCode) : "failed", String(message));
+    }
+    throw new BiometricError("failed", typeof e === "string" ? e : "Something went wrong");
+  }
+}
 
 // Command names match apps/wallet/src-tauri/src/commands.rs.
 export const tauriApi: WalletApi = {
@@ -12,6 +32,11 @@ export const tauriApi: WalletApi = {
   unlock: (passcode) => invoke("unlock", { passcode }),
   lock: () => invoke("lock"),
   revealPhrase: (passcode) => invoke("reveal_phrase", { passcode }),
+
+  biometricStatus: () => invoke("biometric_status"),
+  enableBiometric: (passcode) => biometric("enable_biometric", { passcode }),
+  disableBiometric: () => biometric("disable_biometric"),
+  unlockBiometric: () => biometric("unlock_biometric"),
 
   passkeySupported: () => invoke("passkey_supported"),
   createPasskeyWallet: (passcode) => invoke("create_passkey_wallet", { passcode }),
