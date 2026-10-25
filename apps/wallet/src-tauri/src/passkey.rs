@@ -27,7 +27,7 @@ use crate::state::AppState;
 /// `/.well-known/assetlinks.json` (see `passkey/assetlinks.json`) naming the
 /// app and its signing key, or Android refuses. Changing it orphans every
 /// passkey made before: never change it after release.
-pub const PASSKEY_RP_ID: &str = "wallet.btcsessions.com";
+pub const PASSKEY_RP_ID: &str = "btcsessions.github.io";
 const PASSKEY_RP_NAME: &str = "Sessions Wallet";
 
 fn err(e: PasskeyError) -> Error {
