@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { AccountInfo, LightningAddress, Method, ReceiveQuote, ReceiveTarget } from "../api/types";
+import type { AccountInfo, Arrival, LightningAddress, Method, ReceiveQuote, ReceiveTarget } from "../api/types";
 import { AccountPicker } from "../components/Dropdown";
-import { Icon } from "../components/Icon";
+import { SuccessCheck } from "../components/SuccessCheck";
 import { AmountInput, CopyButton, QR, Sheet } from "../components/ui";
 import { ScanButton, scanText } from "../components/Scanner";
 import { METHOD_LABEL, errorText, formatSats } from "../format";
@@ -129,6 +129,30 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       (p.account === accountId || (swap && ready && p.account === spendingId && (!amount || p.amountSat === amount))),
   );
 
+  // The moment the wallet sees it (pushed from the Rust side: Lightning
+  // events, the chain server's address subscriptions), without waiting for a
+  // refresh of the activity list.
+  const [arrival, setArrival] = useState<Arrival | null>(null);
+  useEffect(() => {
+    if (!target || !account) return;
+    let off: (() => void) | undefined;
+    let alive = true;
+    void api()
+      .then((a) =>
+        a.onPayment((e) => {
+          const ours = e.account === account.id || (swap && ready && e.account === spendingId && (!amount || e.amountSat === amount));
+          if (!ours) return;
+          setArrival((prev) => (prev && prev.id !== e.id && prev.kind !== "incoming" && prev.kind !== "deposit" ? prev : e));
+          void useWallet.getState().refresh();
+        }),
+      )
+      .then((f) => (alive ? (off = f) : f()));
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, [target, account?.id, swap, spendingId, ready, amount]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Ask the live connection to watch this address the moment it's on screen.
   useEffect(() => {
     if (!target || !account || account.rail !== "onchain" || target.method !== "bitcoinAddress" || !target.watchId) return;
@@ -142,7 +166,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
   // moment it reaches the mempool. Everything else (Lightning, swaps) syncs
   // every 4 seconds; Lightning also pushes an event the moment it lands.
   useEffect(() => {
-    if (!target || !account || received) return;
+    if (!target || !account || received || arrival) return;
     let alive = true;
     let busy = false;
     let tick = 0;
@@ -174,7 +198,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       alive = false;
       clearInterval(t);
     };
-  }, [target, account?.id, swap, spendingId, received]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [target, account?.id, swap, spendingId, received, arrival]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setError(null);
@@ -198,19 +222,30 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     // Keyed on the account id, not the object: refreshes must not replace an invoice on screen.
   }, [account?.id, method, ready, lnAddress]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (received) {
+  if (arrival || received) {
+    const amountSat = arrival?.amountSat ?? received!.amountSat;
+    const landedIn = arrival?.account ?? received!.account;
+    const kind = arrival?.kind ?? (received!.status === "pending" ? "incoming" : "received");
+    const pending = kind === "incoming" || kind === "deposit";
+    const where = accounts.find((a) => a.id === landedIn)?.name ?? account?.name;
+    const note =
+      landedIn !== account?.id
+        ? `Sending on-chain to ${account?.name} now.`
+        : kind === "deposit"
+          ? `Seen on the network. It's added to ${where} after it confirms (about 30 minutes).`
+          : kind === "incoming"
+            ? `Seen on the network. Waiting for confirmation, usually 10 to 60 minutes.`
+            : `in ${where}`;
     return (
-      <Sheet title="Received">
-        <div style={{ textAlign: "center", padding: "32px 0 24px" }}>
-          <div style={{ color: "var(--green)", marginBottom: 12, display: "inline-block" }}>
-            <Icon name="check" size={56} stroke={2.5} />
+      <Sheet title={pending ? "Payment seen" : "Received"}>
+        <div style={{ textAlign: "center", padding: "28px 0 24px" }}>
+          <div style={{ marginBottom: 16 }}>
+            <SuccessCheck pending={pending} />
           </div>
-          <div className="big-stat num" style={{ fontSize: 44 }}>
-            +{formatSats(received.amountSat)} <span className="balance-unit">sats</span>
+          <div className="big-stat num received-amount" style={{ fontSize: 44 }}>
+            +{formatSats(amountSat)} <span className="balance-unit">sats</span>
           </div>
-          <p className="balance-sub">
-            {received.account === account?.id ? `in ${account?.name}` : `Sending on-chain to ${account?.name} now.`}
-          </p>
+          <p className="balance-sub received-amount">{note}</p>
         </div>
         <button className="btn primary block" onClick={() => useWallet.getState().close()}>
           Done

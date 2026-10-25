@@ -62,6 +62,17 @@ impl AccountSpec {
         }
     }
 
+    pub fn name(&self) -> &str {
+        match self {
+            AccountSpec::Savings { name, .. }
+            | AccountSpec::Spending { name, .. }
+            | AccountSpec::Multisig { name, .. }
+            | AccountSpec::Hardware { name, .. }
+            | AccountSpec::WatchOnly { name, .. }
+            | AccountSpec::Ecash { name, .. } => name,
+        }
+    }
+
     pub fn name_mut(&mut self) -> &mut String {
         match self {
             AccountSpec::Savings { name, .. }

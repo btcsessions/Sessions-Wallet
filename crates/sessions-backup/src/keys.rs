@@ -59,6 +59,32 @@ impl NostrKey {
         })
     }
 
+    /// A key from its 32 secret bytes (fails for 0 or ≥ the curve order).
+    pub fn from_secret_bytes(bytes: &[u8; 32]) -> Result<Self> {
+        Self::from_bytes(bytes)
+    }
+
+    /// A fresh random key (OS randomness).
+    pub fn generate() -> Self {
+        loop {
+            let mut bytes = Zeroizing::new([0u8; 32]);
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut bytes[..]);
+            if let Ok(k) = Self::from_bytes(&bytes) {
+                return k;
+            }
+        }
+    }
+
+    /// The 32 secret bytes. Never log them.
+    pub fn secret_bytes(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.keypair.secret_bytes())
+    }
+
+    /// The secret as lowercase hex (64 chars). Never log it.
+    pub fn secret_hex(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.keypair.secret_bytes().to_lower_hex_string())
+    }
+
     /// Hex x-only public key: the Nostr `pubkey`.
     pub fn public_hex(&self) -> String {
         self.keypair
@@ -187,6 +213,23 @@ mod tests {
         assert_ne!(*s.state_key, *k.envelope_key);
         assert_ne!(*s.state_key, s.nostr.keypair().secret_bytes());
         assert_ne!(s.nostr.public_hex(), k.nostr.public_hex());
+    }
+
+    #[test]
+    fn secret_round_trip() {
+        let k = NostrKey::generate();
+        let again = NostrKey::from_secret_bytes(&k.secret_bytes()).unwrap();
+        assert_eq!(k.public_hex(), again.public_hex());
+        assert_eq!(k.secret_hex().len(), 64);
+        assert_ne!(k.public_hex(), NostrKey::generate().public_hex());
+        assert!(NostrKey::from_secret_bytes(&[0u8; 32]).is_err());
+        // Secret 1 → the generator's x coordinate.
+        let mut one = [0u8; 32];
+        one[31] = 1;
+        assert_eq!(
+            NostrKey::from_secret_bytes(&one).unwrap().public_hex(),
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        );
     }
 
     #[test]

@@ -1,0 +1,24 @@
+[package]
+name = "tauri-plugin-alerts"
+description = "Payment alerts for Sessions Wallet: Android notifications and a foreground service that keeps the wallet watching while the app is closed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+# Lets tauri-build find the Android library under android/.
+links = "tauri-plugin-alerts"
+
+[dependencies]
+tauri = { version = "2.12", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Posting notifications and starting the watch service straight through JNI
+# with the application context: works with no activity (app swiped away).
+jni = "0.21"
+ndk-context = "0.1"
+
+[build-dependencies]
+tauri-plugin = { version = "2.7", features = ["build"] }

@@ -35,6 +35,8 @@ import type {
   RestoreResult,
   Prefs,
   BiometricStatus,
+  AlertsStatus,
+  Arrival,
 } from "./types";
 
 /**
@@ -207,6 +209,14 @@ export interface WalletApi {
   refundDeposit(account: string, txid: string, vout: number, address: string, feeRateSatVb: number): Promise<string>;
   /** Called when an account changes (payment in or out). Returns an unsubscribe. */
   onChange(cb: () => void): Promise<() => void>;
+  /** Payment alerts: what the phone allows, whether the watch service runs. Never rejects. */
+  alertsStatus(): Promise<AlertsStatus>;
+  /** The notification permission prompt (or its system settings page when refused before). */
+  alertsRequestNotifications(): Promise<AlertsStatus>;
+  /** Ask to use the network while the phone dozes (a system dialog). */
+  alertsRequestUnrestricted(): Promise<AlertsStatus>;
+  /** `wallet://payment`: a payment just arrived (the Receive screen's tick, toasts). Returns an unsubscribe. */
+  onPayment(cb: (a: Arrival) => void): Promise<() => void>;
   /** Called with the account id when that account's balance or history changes (payment seen, confirmation, history finished loading). Returns an unsubscribe. */
   onWalletChanged(cb: (account: string) => void): Promise<() => void>;
 }

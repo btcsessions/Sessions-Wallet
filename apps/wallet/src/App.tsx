@@ -15,6 +15,8 @@ import { SettingsSheet } from "./sheets/SettingsSheet";
 import { TxSheet } from "./sheets/TxSheet";
 import { CoinsSheet } from "./sheets/CoinsSheet";
 import { DiscoverSheet } from "./sheets/DiscoverSheet";
+import { ContactsSheet } from "./sheets/ContactsSheet";
+import { CheckinSheet } from "./components/Checkins";
 import { useWallet } from "./state/store";
 
 function ActiveSheet() {
@@ -27,7 +29,7 @@ function ActiveSheet() {
     case "receive":
       return <ReceiveSheet key={`r-${sheet.account}`} account={sheet.account} />;
     case "move":
-      return <MoveSheet key={`m-${sheet.from}-${sheet.to}`} from={sheet.from} to={sheet.to} />;
+      return <MoveSheet key={`m-${sheet.from}-${sheet.to}-${sheet.amount}`} from={sheet.from} to={sheet.to} amount={sheet.amount} />;
     case "gallery":
       return <GallerySheet />;
     case "add-account":
@@ -42,6 +44,10 @@ function ActiveSheet() {
       return <AccountSheet key={sheet.id} id={sheet.id} />;
     case "settings":
       return <SettingsSheet />;
+    case "checkin":
+      return <CheckinSheet />;
+    case "contacts":
+      return <ContactsSheet add={sheet.add} />;
     case "ecash-token":
       return <EcashTokenSheet account={sheet.account} />;
   }

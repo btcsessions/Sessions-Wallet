@@ -12,6 +12,7 @@ import { DeviceIcon, HardwareBadge } from "../hw/devices";
 import { accountColor, accountKind, amountParts, errorText, formatFiat, held } from "../format";
 import { PendingClock } from "../components/PendingClock";
 import { SpendingDeposits } from "../components/SpendingDeposits";
+import { SweepSetting } from "../components/Sweep";
 import { useWallet } from "../state/store";
 
 export function AccountSheet({ id }: { id: string }) {
@@ -113,6 +114,7 @@ export function AccountSheet({ id }: { id: string }) {
         <>
           <p className="group-label">Lightning address</p>
           <LightningAddressCard account={a.id} />
+          <SweepSetting account={a} />
         </>
       )}
 

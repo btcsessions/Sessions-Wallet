@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WalletApi } from "./index";
-import type { BackupStatus, BackupTest, BackupTestErrorCode, BackupTestMethod, BiometricErrorCode, JadeState, RestoreResult } from "./types";
+import type { Arrival, BackupStatus, BackupTest, BackupTestErrorCode, BackupTestMethod, BiometricErrorCode, JadeState, RestoreResult } from "./types";
 import { BackupTestError, BiometricError } from "./types";
 
 const BIOMETRIC_CODES: readonly string[] = [
@@ -143,6 +143,10 @@ export const tauriApi: WalletApi = {
     ]);
     return () => offs.forEach((off) => off());
   },
+  alertsStatus: () => invoke("alerts_status"),
+  alertsRequestNotifications: () => invoke("alerts_request_notifications"),
+  alertsRequestUnrestricted: () => invoke("alerts_request_unrestricted"),
+  onPayment: (cb) => listen<Arrival>("wallet://payment", (e) => cb(e.payload)),
   onChange: (cb) => listen("wallet-changed", () => cb()),
   onWalletChanged: (cb) => listen<{ account: string }>("wallet://changed", (e) => cb(e.payload.account)),
 };

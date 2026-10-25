@@ -275,6 +275,25 @@ impl SparkAccount {
         }
     }
 
+    /// What's sitting at the deposit address right now, unconfirmed
+    /// included: `("txid:vout", amount, confirmed)`. Empty when the
+    /// chain isn't read through our own server. For noticing a payment the
+    /// moment it's broadcast (the SDK only lists deposits it found).
+    pub async fn deposit_outputs(&self) -> Result<Vec<(String, Sats, bool)>> {
+        let Some(chain) = self.chain_service.as_ref() else {
+            return Ok(vec![]);
+        };
+        let address = self.deposit_address().await?;
+        let utxos = chain
+            .get_address_utxos(address)
+            .await
+            .map_err(|e| Error::rail("spark", e))?;
+        Ok(utxos
+            .into_iter()
+            .map(|u| (format!("{}:{}", u.txid, u.vout), u.value, u.status.confirmed))
+            .collect())
+    }
+
     /// On-chain deposits not yet in the balance: waiting for confirmations,
     /// being claimed, or stuck (see [`DepositStatus`]).
     pub async fn deposits(&self) -> Result<Vec<Deposit>> {

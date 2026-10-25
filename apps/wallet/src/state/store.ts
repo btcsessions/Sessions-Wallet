@@ -3,11 +3,13 @@ import { create } from "zustand";
 import { api } from "../api";
 import type { AccountInfo, InstalledModule, Layout, Payment, SpendStyle, WalletStatus } from "../api/types";
 import { errorText, type Unit } from "../format";
+import { buzz } from "../components/SuccessCheck";
+import { normalize, SYNCED_KEYS, type Synced, type SyncedKey } from "./synced";
 
 export type SheetName =
   | { name: "pay"; prefill?: string; from?: string }
   | { name: "receive"; account?: string }
-  | { name: "move"; from?: string; to?: string }
+  | { name: "move"; from?: string; to?: string; amount?: number }
   | { name: "gallery" }
   | { name: "add-account"; kind: "multisig" | "hardware" | "watchOnly" | "ecash" | "savings" }
   | { name: "account"; id: string }
@@ -15,7 +17,9 @@ export type SheetName =
   | { name: "ecash-token"; account: string }
   | { name: "tx"; id: string; back?: string }
   | { name: "coins"; account: string }
-  | { name: "discover"; found: import("../api/types").FoundAccount[] };
+  | { name: "discover"; found: import("../api/types").FoundAccount[] }
+  | { name: "contacts"; add?: string }
+  | { name: "checkin" };
 
 interface Toast {
   kind: "ok" | "error";
@@ -47,6 +51,9 @@ interface State {
   syncing: boolean;
   isMock: boolean;
   unavailable: { id: string; reason: string }[];
+  /** Alerts, contacts, auto-sweep, check-ins: saved in the wallet (and its backup). */
+  synced: Synced;
+  setSynced<K extends SyncedKey>(key: K, value: Synced[K]): void;
 
   boot(): Promise<void>;
   refresh(): Promise<void>;
@@ -85,7 +92,7 @@ function loadPref<T>(key: string, fallback: T): T {
 }
 
 /** Preferences that travel with the wallet backup (not just this device). */
-const SYNCED_PREFS = ["unit", "currency", "currencies", "theme", "appearance", "qrDensity"] as const;
+const SYNCED_PREFS = ["unit", "currency", "currencies", "theme", "appearance", "qrDensity", ...SYNCED_KEYS] as const;
 let prefsTimer: ReturnType<typeof setTimeout> | undefined;
 let prefsReady = false;
 
@@ -177,15 +184,26 @@ export const useWallet = create<State>((set, get) => {
     syncing: false,
     isMock: false,
     unavailable: [],
+    synced: Object.fromEntries(SYNCED_KEYS.map((k) => [k, normalize(k, loadPref(k, undefined))])) as unknown as Synced,
+    setSynced(key, value) {
+      savePref(key, value);
+      set({ synced: { ...get().synced, [key]: value } });
+    },
 
     async boot() {
       set({ bootError: null });
       try {
         const a = await api();
-        const status = await Promise.race([
+        let status = await Promise.race([
           a.status(),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error("The wallet engine didn't respond within 15 seconds.")), 15_000)),
         ]);
+        // The wallet kept running while the app's screen was closed (it was
+        // watching for payments): opening the app again asks for the passcode.
+        if (status === "unlocked" && !a.isMock) {
+          await a.lock();
+          status = await a.status();
+        }
         set({ isMock: a.isMock, status });
         if (status === "unlocked") {
           await get().refresh();
@@ -194,6 +212,21 @@ export const useWallet = create<State>((set, get) => {
         // Refresh as soon as an account reports a change (debounced).
         if (!unlisten) {
           let t: ReturnType<typeof setTimeout> | undefined;
+          // A payment landed while the Receive screen isn't the one showing it.
+          void a.onPayment((e) => {
+            const sheet = get().sheet;
+            if (get().status !== "unlocked" || sheet?.name === "receive") return;
+            const amount = `${e.amountSat.toLocaleString("en-US")} sats`;
+            const text =
+              e.kind === "received"
+                ? `Received ${amount} in ${e.accountName}`
+                : e.kind === "confirmed"
+                  ? `${amount} confirmed in ${e.accountName}`
+                  : `Incoming ${amount} to ${e.accountName}`;
+            get().notify("ok", text);
+            buzz();
+            void get().refresh();
+          });
           void a.onStateRestored(() => {
             void get().refresh();
             void get().loadPrefs();
@@ -266,6 +299,7 @@ export const useWallet = create<State>((set, get) => {
             unit: (saved.unit as Unit) ?? get().unit,
             currency: (saved.currency as string) ?? get().currency,
             currencies: (saved.currencies as string[]) ?? get().currencies,
+            synced: Object.fromEntries(SYNCED_KEYS.map((k) => [k, normalize(k, k in saved ? saved[k] : readPref(k))])) as unknown as Synced,
           });
           prefsReady = true;
           void get().refresh();

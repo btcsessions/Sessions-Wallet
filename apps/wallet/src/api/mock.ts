@@ -3,7 +3,7 @@
 
 import type { WalletApi } from "./index";
 import { BackupTestError, BiometricError } from "./types";
-import type { BiometricStatus } from "./types";
+import type { AlertsStatus, Arrival, BiometricStatus } from "./types";
 import type { AccountInfo, BackupStatus, BackupTest, BitboxEvent, ClaimResult, Deposit, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -39,6 +39,28 @@ function markUnlocked() {
 }
 
 let mockBiometric = false;
+const alerts: AlertsStatus = { supported: true, notifications: "prompt", watching: false, unrestricted: false };
+const paymentListeners = new Set<(a: Arrival) => void>();
+let lastReceive: { account: string; method: Method; amountSat: number | null } | null = null;
+
+/** Design preview / tests: pretend a payment to the last Receive request just arrived. */
+function mockArrive(amountSat?: number) {
+  if (!lastReceive) return;
+  const a = find(lastReceive.account);
+  const sat = amountSat ?? lastReceive.amountSat ?? 21_000;
+  const deposit = a.rail === "spark" && lastReceive.method === "bitcoinAddress";
+  const onchain = lastReceive.method === "bitcoinAddress";
+  const id = `m${Date.now()}`;
+  if (!deposit) {
+    activity.unshift(p(id, a.id, "incoming", sat, 0, lastReceive.method, now(), null, onchain ? "pending" : "complete"));
+    if (onchain) a.balance.pendingIn += sat;
+    else a.balance.confirmed += sat;
+  }
+  const arrival: Arrival = { account: a.id, accountName: a.name, id, amountSat: sat, kind: deposit ? "deposit" : onchain ? "incoming" : "received", onchain };
+  paymentListeners.forEach((cb) => cb(arrival));
+}
+if (typeof window !== "undefined") (window as unknown as { __mockArrive?: typeof mockArrive }).__mockArrive = mockArrive;
+
 function biometricStatus(): BiometricStatus {
   return { available: true, enabled: mockBiometric && status !== "empty", invalidated: false, kind: "biometric", reason: null };
 }
@@ -737,6 +759,7 @@ export const mockApi: WalletApi = {
       liquidAddress: "lq1qqvp9g33gw9y05xava3dvcpq8pnkv82yj3tdnzp547eyp9yrztz2lkyxrhscd55ev4p7lj2n72jtkn5u4xnj4v577c42jhf3ww",
     };
     const req = examples[method];
+    lastReceive = { account: into, method, amountSat };
     const swapped = a.rail === "onchain" && (method === "bolt11" || method === "liquidAddress");
     if (!req || (!a.receives.includes(method) && method !== "liquidAddress" && !swapped)) throw `This account can't receive via ${method}`;
     return {
@@ -845,6 +868,21 @@ export const mockApi: WalletApi = {
     d.claimFeeSat = null;
     d.error = null;
     return refundTxid;
+  },
+  async alertsStatus() {
+    return { ...alerts };
+  },
+  async alertsRequestNotifications() {
+    alerts.notifications = "granted";
+    return { ...alerts };
+  },
+  async alertsRequestUnrestricted() {
+    alerts.unrestricted = true;
+    return { ...alerts };
+  },
+  async onPayment(cb) {
+    paymentListeners.add(cb);
+    return () => paymentListeners.delete(cb);
   },
   async onChange() {
     return () => {};

@@ -11,14 +11,14 @@ import { activeAccounts } from "../modules/AccountModule";
 import { RoutePreview } from "./RoutePreview";
 import { SignStep } from "./SignStep";
 
-export function MoveSheet({ from: initialFrom, to: initialTo }: { from?: string; to?: string }) {
+export function MoveSheet({ from: initialFrom, to: initialTo, amount: initialAmount }: { from?: string; to?: string; amount?: number }) {
   const { accounts: everyAccount, layout, refresh, notify, close } = useWallet();
   const accounts = activeAccounts(everyAccount, layout);
   const [paused, setPaused] = useState<Execution | null>(null);
   const sources = accounts.filter((a) => a.pays.length > 0);
   const [from, setFrom] = useState(initialFrom ?? sources.find((a) => held(a) > 0)?.id ?? sources[0]?.id);
   const [to, setTo] = useState(initialTo ?? accounts.find((a) => a.id !== from && a.custody.type !== "watchOnly")?.id);
-  const [amount, setAmount] = useState<number | null>(null);
+  const [amount, setAmount] = useState<number | null>(initialAmount ?? null);
   /** "All": fees come out of the amount, so it's tuned once fees are known. */
   const [all, setAll] = useState(false);
   const tunes = useRef(0);

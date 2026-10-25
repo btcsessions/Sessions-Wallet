@@ -14,7 +14,7 @@ use sessions_core::{
     parse, AccountId, AccountInfo, Error, FeePriority, Method, Payment, PaymentRequest,
     ReceiveTarget, Result, Sats, Wallet,
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::backup::{self, BackupStatus, RestoreResult, MAX_PREFS_BYTES};
 use crate::config::{check_name, AccountSpec, BackupFlags, SeedOrigin};
@@ -33,8 +33,14 @@ async fn wallet(state: &AppState) -> Result<Arc<Wallet>> {
 
 #[tauri::command]
 pub async fn status(state: State<'_, AppState>) -> Result<&'static str> {
-    Ok(if state.inner.lock().await.is_some() {
+    let unlocked = state.inner.lock().await.is_some();
+    let screen = state
+        .screen_locked
+        .load(std::sync::atomic::Ordering::SeqCst);
+    Ok(if unlocked && !screen {
         "unlocked"
+    } else if unlocked {
+        "locked"
     } else if state.has_vault() {
         "locked"
     } else {
@@ -97,11 +103,27 @@ pub async fn unlock(state: State<'_, AppState>, passcode: String) -> Result<()> 
 /// `unlock`, shared with biometric unlock (`biometric::unlock_biometric`).
 pub(crate) async fn unlock_passcode(state: &AppState, passcode: &str) -> Result<()> {
     let seed = state.open_vault(passcode).await?;
+    // Only the screen was locked (the wallet kept watching): the passcode
+    // was the point.
+    if state.inner.lock().await.is_some() {
+        state
+            .screen_locked
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        return Ok(());
+    }
     state.unlock_with(seed).await
 }
 
 #[tauri::command]
 pub async fn lock(state: State<'_, AppState>) -> Result<()> {
+    // Watching for payments with the app closed: lock the screen only, so
+    // the wallet keeps its connections. Otherwise lock it for real.
+    if state.alerts.settings().background && state.inner.lock().await.is_some() {
+        state
+            .screen_locked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        return Ok(());
+    }
     state.lock().await;
     Ok(())
 }
@@ -1300,5 +1322,39 @@ pub async fn save_prefs(state: State<'_, AppState>, prefs: serde_json::Value) ->
         return Ok(());
     }
     u.config.prefs = prefs;
+    state
+        .alerts
+        .apply(crate::alerts::Settings::from_prefs(&u.config.prefs), true);
     state.save_config(&u.config)
+}
+
+/// Payment alerts: what the phone allows, and whether the watch service runs.
+#[tauri::command]
+pub async fn alerts_status(app: AppHandle) -> Result<tauri_plugin_alerts::Status> {
+    Ok(app
+        .state::<tauri_plugin_alerts::Alerts<tauri::Wry>>()
+        .status()
+        .await)
+}
+
+/// Ask for the notification permission (or open its settings).
+#[tauri::command]
+pub async fn alerts_request_notifications(
+    app: AppHandle,
+) -> Result<tauri_plugin_alerts::Status> {
+    Ok(app
+        .state::<tauri_plugin_alerts::Alerts<tauri::Wry>>()
+        .request_notifications()
+        .await)
+}
+
+/// Ask to keep the network while the phone dozes.
+#[tauri::command]
+pub async fn alerts_request_unrestricted(
+    app: AppHandle,
+) -> Result<tauri_plugin_alerts::Status> {
+    Ok(app
+        .state::<tauri_plugin_alerts::Alerts<tauri::Wry>>()
+        .request_unrestricted()
+        .await)
 }

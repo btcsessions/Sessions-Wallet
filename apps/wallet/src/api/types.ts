@@ -447,6 +447,29 @@ export interface RestoreResult {
 /** The UI's own preferences (theme, currencies, unit…). Stored with the wallet so they're backed up. */
 export type Prefs = Record<string, unknown>;
 
+/** Payment alerts (`alerts_status`). Android only for now: elsewhere `supported: false`. */
+export interface AlertsStatus {
+  supported: boolean;
+  /** "prompt": asking shows the system prompt; "denied": only system settings can turn them on. */
+  notifications: "granted" | "prompt" | "denied";
+  /** The "Watching for payments" service is running (keeps the wallet connected with the app closed). */
+  watching: boolean;
+  /** The phone lets the app use the network while dozing (instant alerts with the screen off). */
+  unrestricted: boolean;
+}
+
+/** `wallet://payment`: a payment just arrived. */
+export interface Arrival {
+  account: string;
+  accountName: string;
+  /** Payment id (txid on-chain), or `txid:vout` for a deposit into Spending. */
+  id: string;
+  amountSat: number;
+  /** received: spendable now; incoming: seen on-chain, unconfirmed; confirmed: an incoming one confirmed; deposit: paid to Spending's bitcoin address, added after confirmations. */
+  kind: "received" | "incoming" | "confirmed" | "deposit";
+  onchain: boolean;
+}
+
 /** Which biometric the phone most likely uses (a guess from its sensors): word the UI ("Unlock with fingerprint"). */
 export type BiometricKind = "fingerprint" | "face" | "biometric";
 

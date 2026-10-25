@@ -11,6 +11,9 @@ import { useWallet } from "../state/store";
 import { RoutePreview } from "./RoutePreview";
 import { activeAccounts } from "../modules/AccountModule";
 import { SignStep } from "./SignStep";
+import { ContactAvatar, ContactForm } from "./ContactsSheet";
+import { SuccessCheck } from "../components/SuccessCheck";
+import { findContact, searchContacts } from "../state/contacts";
 
 type Step = "input" | "amount" | "review" | "sign" | "done";
 
@@ -45,8 +48,10 @@ export function onchainLeg(l: Leg): boolean {
 }
 
 export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; from?: string }) {
-  const { accounts, close, notify, refresh, price, currency } = useWallet();
+  const { accounts, close, notify, refresh, price, currency, open } = useWallet();
+  const contacts = useWallet((s) => s.synced.contacts);
   const [step, setStep] = useState<Step>("input");
+  const [saveContact, setSaveContact] = useState(false);
   const [input, setInput] = useState(prefill ?? "");
   const [request, setRequest] = useState<PaymentRequest | null>(null);
   const [fixedAmount, setFixedAmount] = useState<number | null>(null);
@@ -180,6 +185,10 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
   const layout = useWallet((s) => s.layout);
   const payers = useMemo(() => activeAccounts(accounts, layout).filter((a) => a.pays.length > 0 || a.id === initialFrom), [accounts, layout, initialFrom]);
   const isToken = request?.type === "cashuToken";
+  const contact = request?.type === "lightningAddress" ? findContact(contacts, request.address) : undefined;
+  const to = (r: PaymentRequest) => (contact ? `${contact.label} (${describe(r)})` : describe(r));
+  // Typing a name finds the contact; an empty box shows them all.
+  const contactMatches = request ? [] : searchContacts(contacts, input).slice(0, input.trim() ? 4 : 12);
 
   async function paste() {
     try {
@@ -221,15 +230,22 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
     });
 
   if (step === "done") {
+    const newAddress = request?.type === "lightningAddress" && !contact ? request.address : null;
     return (
       <Sheet title="Sent">
-        <div className="center-screen" style={{ minHeight: 0, padding: "32px 0", textAlign: "center" }}>
-          <div style={{ color: "var(--green)", margin: "0 auto 12px" }}>
-            <Icon name="check" size={56} stroke={2.5} />
+        <div className="center-screen" style={{ minHeight: 0, padding: "28px 0", textAlign: "center" }}>
+          <div style={{ margin: "0 auto 14px" }}>
+            <SuccessCheck size={84} />
           </div>
-          <div className="big-stat num">{formatSats(amount ?? 0)} sats</div>
-          <p className="balance-sub">{request ? describe(request) : ""}</p>
+          <div className="big-stat num received-amount">{formatSats(amount ?? 0)} sats</div>
+          <p className="balance-sub received-amount">{request ? to(request) : ""}</p>
         </div>
+        {newAddress && saveContact && <ContactForm address={newAddress} onDone={() => setSaveContact(false)} />}
+        {newAddress && !saveContact && (
+          <button className="btn block" style={{ marginBottom: 10 }} onClick={() => setSaveContact(true)}>
+            <Icon name="user" size={16} /> Save as a contact
+          </button>
+        )}
         <button className="btn primary block" onClick={close}>
           Done
         </button>
@@ -309,7 +325,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           <div className="big-stat num" style={{ fontSize: 44 }}>
             {formatSats(amount ?? 0)} <span className="balance-unit">sats</span>
           </div>
-          <div className="balance-sub">to {describe(request)}</div>
+          <div className="balance-sub">to {to(request)}</div>
         </div>
 
         <div className="group">
@@ -448,7 +464,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
       {parseError && input.trim().length > 6 && <p className="field-error">{parseError}</p>}
       {request && !isToken && (
         <p className="group-note">
-          <Icon name="check" size={14} /> {describe(request)}
+          <Icon name="check" size={14} /> {to(request)}
         </p>
       )}
 
@@ -466,6 +482,28 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
           }
         />
       </div>
+
+      {contactMatches.length > 0 && (
+        <>
+          <p className="group-label">Contacts</p>
+          <div className="contact-chips">
+            {contactMatches.map((c) => (
+              <button key={c.id} className="contact-chip" onClick={() => setInput(c.address)} aria-label={`Pay ${c.label}`}>
+                <ContactAvatar contact={c} size={48} />
+                <span>{c.label}</span>
+              </button>
+            ))}
+            {!input.trim() && (
+              <button className="contact-chip add" onClick={() => open({ name: "contacts" })} aria-label="Manage contacts">
+                <span className="contact-avatar" style={{ width: 48, height: 48 }}>
+                  <Icon name="edit" size={18} />
+                </span>
+                <span>Edit</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
 
       {isToken ? (
         <>

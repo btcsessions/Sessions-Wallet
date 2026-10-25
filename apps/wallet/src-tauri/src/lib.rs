@@ -1,3 +1,4 @@
+mod alerts;
 mod backup;
 mod backup_check;
 mod biometric;
@@ -31,6 +32,8 @@ pub fn run() {
         .plugin(tauri_plugin_passkey::init())
         // Fingerprint / face unlock (Android Keystore + BiometricPrompt).
         .plugin(tauri_plugin_biometric_vault::init())
+        // Payment notifications, and watching with the app closed.
+        .plugin(tauri_plugin_alerts::init())
         // The QR scanner uses the camera from inside the webview.
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
@@ -52,6 +55,8 @@ pub fn run() {
             // Tell the UI when an account changes so it refreshes at once:
             // `wallet://changed` with `{ account }`, and the older
             // payload-less `wallet-changed`.
+            // Then look for newly arrived payments (`wallet://payment`, and a
+            // notification when the app isn't on screen).
             let emitter = app.handle().clone();
             let notify: state::Notify = Arc::new(move |account: &sessions_core::AccountId| {
                 let _ = emitter.emit(
@@ -59,6 +64,7 @@ pub fn run() {
                     serde_json::json!({ "account": account.0 }),
                 );
                 let _ = emitter.emit("wallet-changed", ());
+                alerts::Alerts::changed(&emitter, account.clone());
             });
             app.manage(bitbox::BitBoxState::new(&dir));
             app.manage(jade::JadeState::new());
@@ -72,6 +78,10 @@ pub fn run() {
                 .set_emitter(Arc::new(move |event: &str, payload| {
                     let _ = emitter.emit(event, payload);
                 }));
+            let emitter = app.handle().clone();
+            state.alerts.set_emitter(Arc::new(move |event: &str, payload| {
+                let _ = emitter.emit(event, payload);
+            }));
             app.manage(state);
 
             // Keep the encrypted state backup up to date.
@@ -183,6 +193,9 @@ pub fn run() {
             biometric::enable_biometric,
             biometric::disable_biometric,
             biometric::unlock_biometric,
+            commands::alerts_status,
+            commands::alerts_request_notifications,
+            commands::alerts_request_unrestricted,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sessions Wallet");

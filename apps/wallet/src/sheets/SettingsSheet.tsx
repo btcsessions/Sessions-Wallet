@@ -7,12 +7,16 @@ import { THEMES, type Appearance } from "../theme";
 import { ModeSwitch } from "../components/ModeSwitch";
 import { BackupSection } from "../components/BackupSection";
 import { BiometricSetting } from "../components/BiometricSetting";
+import { AlertsSetting } from "../components/AlertsSetting";
+import { CheckinSetting } from "../components/Checkins";
 import type { BackupStatus } from "../api/types";
+import { Icon } from "../components/Icon";
 
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
 
 export function SettingsSheet() {
-  const { currencies, setCurrencies, layout, setStatus, close, setSpendStyle } = useWallet();
+  const { currencies, setCurrencies, layout, setStatus, close, setSpendStyle, open } = useWallet();
+  const contacts = useWallet((s) => s.synced.contacts);
   const [phrase, setPhrase] = useState<string | null>(null);
   const [backup, setBackup] = useState<BackupStatus | null>(null);
   const [passcode, setPasscode] = useState("");
@@ -143,9 +147,22 @@ export function SettingsSheet() {
       </>
       )}
 
+      <p className="group-label">Payments</p>
+      <div className="group">
+        <button className="cell" onClick={() => open({ name: "contacts" })}>
+          <span className="grow">Contacts</span>
+          <span className="value">{contacts.length || ""}</span>
+          <Icon name="chevron" size={16} />
+        </button>
+      </div>
+
+      <AlertsSetting />
+
       <BiometricSetting />
 
       <BackupSection onStatus={setBackup} />
+
+      <CheckinSetting />
 
       {/* Passkey wallets keep their words out of sight in Basic mode. */}
       {(layout?.advanced || backup?.seedOrigin !== "passkey") && (

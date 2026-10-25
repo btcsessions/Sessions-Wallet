@@ -4,6 +4,7 @@ import type { IconName } from "../components/Icon";
 import { ActivityModule } from "./ActivityModule";
 import { AccountModule } from "./AccountModule";
 import { BalanceModule } from "./BalanceModule";
+import { ContactsModule } from "./ContactsModule";
 import { FeesModule } from "./FeesModule";
 import { LiquidModule } from "./LiquidModule";
 import { MoveModule } from "./MoveModule";
@@ -135,6 +136,16 @@ const defs: ModuleDef[] = [
     section: "move",
     sizes: ["medium", "small"],
     component: MoveModule,
+  },
+  {
+    type: "contacts",
+    name: "Contacts",
+    blurb: "People you pay often. Tap a face to pay their Lightning address.",
+    icon: "user",
+    tint: "#AF52DE",
+    section: "move",
+    sizes: ["medium", "small"],
+    component: ContactsModule,
   },
   {
     type: "liquid",

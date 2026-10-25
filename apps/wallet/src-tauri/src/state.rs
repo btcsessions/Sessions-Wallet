@@ -94,6 +94,11 @@ pub struct AppState {
     failures: Mutex<(u32, Option<Instant>)>,
     /// The encrypted state backup on relays.
     pub backup: Arc<Backup>,
+    /// Payment alerts (new payments → UI event + notification).
+    pub alerts: Arc<crate::alerts::Alerts>,
+    /// The app's screen is locked while the wallet keeps running (so it can
+    /// keep watching for payments): unlocking only checks the passcode.
+    pub screen_locked: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -110,6 +115,8 @@ impl AppState {
             notify,
             inner: Mutex::new(None),
             failures: Mutex::new((0, None)),
+            alerts: Arc::default(),
+            screen_locked: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -199,6 +206,8 @@ impl AppState {
 
     pub async fn unlock_with(&self, seed: Seed) -> Result<()> {
         let config = Config::load(&self.paths.config())?.unwrap_or_else(|| Config::new(NETWORK));
+        self.alerts.reset();
+        self.alerts.apply(crate::alerts::Settings::from_prefs(&config.prefs), false);
         let wallet = Arc::new(Wallet::new());
         let mut onchain = HashMap::new();
         let mut spark = HashMap::new();
@@ -253,7 +262,13 @@ impl AppState {
         };
         if let Some(m) = &monitor {
             for (id, a) in &spark {
-                watch_deposits(m.watcher(), id.clone(), a);
+                let name = config
+                    .accounts
+                    .iter()
+                    .find(|s| s.id() == id)
+                    .map(|s| s.name().to_string())
+                    .unwrap_or_default();
+                watch_deposits(m.watcher(), id.clone(), name, a, self.alerts.clone());
             }
         }
         let backup_config = config.clone();
@@ -268,6 +283,10 @@ impl AppState {
             monitor,
         });
         self.backup.unlocked(backup_keys, &backup_config);
+        self.screen_locked
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.alerts
+            .apply(crate::alerts::Settings::from_prefs(&backup_config.prefs), true);
         Ok(())
     }
 
@@ -456,7 +475,13 @@ impl AppState {
                     u.forwarder = self.add_forwarder(&u.wallet, &id, &a).await;
                 }
                 if let Some(m) = &u.monitor {
-                    watch_deposits(m.watcher(), id.clone(), &a);
+                    watch_deposits(
+                        m.watcher(),
+                        id.clone(),
+                        spec.name().to_string(),
+                        &a,
+                        self.alerts.clone(),
+                    );
                 }
                 u.wallet.add_account(a).await;
             }
@@ -535,6 +560,11 @@ impl AppState {
         self.backup.locked();
         // Dropping Unlocked drops the seed and all rails.
         *self.inner.lock().await = None;
+        self.screen_locked
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.alerts.reset();
+        let settings = self.alerts.settings();
+        self.alerts.apply(settings, false);
     }
 }
 
@@ -569,7 +599,13 @@ fn spark_chain(cfg: &Config) -> SparkChain {
 /// and new blocks while one waits for confirmations claim it as soon as it
 /// matures. The address may need the Spark operators, so it's found in the
 /// background.
-fn watch_deposits(watcher: Watcher, id: AccountId, account: &Arc<SparkAccount>) {
+fn watch_deposits(
+    watcher: Watcher,
+    id: AccountId,
+    name: String,
+    account: &Arc<SparkAccount>,
+    alerts: Arc<crate::alerts::Alerts>,
+) {
     let Ok(rt) = tokio::runtime::Handle::try_current() else {
         return;
     };
@@ -585,10 +621,24 @@ fn watch_deposits(watcher: Watcher, id: AccountId, account: &Arc<SparkAccount>) 
                 return;
             }
         };
+        // What's there already isn't news.
+        if let Ok(outputs) = account.deposit_outputs().await {
+            alerts.deposits(&id, &name, &outputs);
+        }
         drop(account);
+        let owner = id.clone();
         let hook = Arc::new(move |activity: Activity| {
             if let Some(a) = weak.upgrade() {
-                tokio::spawn(async move { a.chain_activity(activity == Activity::Payment).await });
+                let (alerts, owner, name) = (alerts.clone(), owner.clone(), name.clone());
+                tokio::spawn(async move {
+                    if activity == Activity::Payment {
+                        // Tell the user first: the SDK's sync can take a while.
+                        if let Ok(outputs) = a.deposit_outputs().await {
+                            alerts.deposits(&owner, &name, &outputs);
+                        }
+                    }
+                    a.chain_activity(activity == Activity::Payment).await
+                });
             }
         });
         watcher.watch_external(id, address, hook);

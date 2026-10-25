@@ -35,6 +35,11 @@ const paths: Record<string, string> = {
   server: "M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01",
   ticket: "M4 7a2 2 0 0 0 2-2h12a2 2 0 0 0 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 0-2 2H6a2 2 0 0 0-2-2v-3a2 2 0 0 0 0-4V7Z",
   chevron: "M9 6l6 6-6 6",
+  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 9v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1",
+  edit: "M4 20h4L19 9l-4-4L4 16v4ZM14 6l4 4",
+  trash: "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
+  bell: "M6 16V11a6 6 0 1 1 12 0v5l2 2H4l2-2ZM10 21h4",
+  plug: "M9 3v5M15 3v5M7 8h10v4a5 5 0 0 1-10 0V8ZM12 17v4",
   back: "M15 6l-6 6 6 6",
   refresh: "M20 11a8 8 0 0 0-14.9-3M4 4v4h4M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4",
 };

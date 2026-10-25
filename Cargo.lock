@@ -7865,6 +7865,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "sessions-nwc"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "async-trait",
+ "base64 0.22.1",
+ "bitcoin",
+ "cbc",
+ "chacha20 0.9.1",
+ "futures-util",
+ "hkdf",
+ "hmac",
+ "lightning-invoice 0.34.1",
+ "rand 0.8.8",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sessions-backup",
+ "sha2",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "sessions-wallet-app"
 version = "0.1.0"
 dependencies = [
@@ -7887,6 +7914,7 @@ dependencies = [
  "sessions-core",
  "tauri",
  "tauri-build",
+ "tauri-plugin-alerts",
  "tauri-plugin-biometric-vault",
  "tauri-plugin-bitbox",
  "tauri-plugin-deep-link",
@@ -8602,6 +8630,18 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-alerts"
+version = "0.1.0"
+dependencies = [
+ "jni 0.21.1",
+ "ndk-context",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

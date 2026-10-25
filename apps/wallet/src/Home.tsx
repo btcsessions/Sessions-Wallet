@@ -8,6 +8,8 @@ import { Scanner, scanText } from "./components/Scanner";
 import { api } from "./api";
 import { moduleDef } from "./modules/catalog";
 import { useWallet } from "./state/store";
+import { SweepOffers } from "./components/Sweep";
+import { CheckinReminder } from "./components/Checkins";
 
 function Tile({ module, editing }: { module: InstalledModule; editing: boolean }) {
   const { removeModule, resizeModule, setEditing } = useWallet();
@@ -173,6 +175,9 @@ export function Home() {
           <strong>{accounts.find((a) => a.id === u.id)?.name ?? (u.id === "spending" ? "Spending" : u.id)} is unavailable.</strong> {u.reason}, then lock and unlock to try again.
         </p>
       ))}
+
+      {!editing && <SweepOffers />}
+      {!editing && <CheckinReminder />}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={() => navigator.vibrate?.(8)} onDragEnd={onDragEnd}>
         <SortableContext items={ids} strategy={rectSortingStrategy}>

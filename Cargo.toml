@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/sessions-core",
     "crates/sessions-backup",
+    "crates/sessions-nwc",
     "crates/rail-onchain",
     "crates/rail-spark",
     "crates/rail-liquid",
@@ -12,10 +13,12 @@ members = [
     "apps/wallet/src-tauri/plugins/tauri-plugin-jade",
     "apps/wallet/src-tauri/plugins/tauri-plugin-passkey",
     "apps/wallet/src-tauri/plugins/tauri-plugin-biometric-vault",
+    "apps/wallet/src-tauri/plugins/tauri-plugin-alerts",
 ]
 default-members = [
     "crates/sessions-core",
     "crates/sessions-backup",
+    "crates/sessions-nwc",
     "crates/rail-onchain",
     "crates/rail-spark",
     "crates/rail-liquid",
@@ -32,6 +35,7 @@ rust-version = "1.89"
 [workspace.dependencies]
 sessions-core = { path = "crates/sessions-core" }
 sessions-backup = { path = "crates/sessions-backup" }
+sessions-nwc = { path = "crates/sessions-nwc" }
 rail-onchain = { path = "crates/rail-onchain" }
 rail-spark = { path = "crates/rail-spark" }
 rail-liquid = { path = "crates/rail-liquid" }
