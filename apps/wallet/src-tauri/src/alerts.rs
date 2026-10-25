@@ -291,6 +291,8 @@ fn diff(
         let kind = match (before, p.status) {
             (None, PaymentStatus::Failed) | (Some(_), PaymentStatus::Failed) => continue,
             (None, _) if !recent => continue,
+            // A Lightning receive in progress isn't news until it settles.
+            (None, PaymentStatus::Pending) if p.method != Method::BitcoinAddress => continue,
             (None, PaymentStatus::Pending) => Kind::Incoming,
             (None, PaymentStatus::Complete) => Kind::Received,
             (Some(PaymentStatus::Pending), PaymentStatus::Complete) => {
@@ -430,6 +432,25 @@ mod tests {
             Kind::Confirmed
         );
         assert!(diff(&mut seen, since, &[c]).is_empty());
+    }
+
+    #[test]
+    fn lightning_announced_once_settled() {
+        let mut seen = HashMap::new();
+        let since = 1_000_000;
+        let p = pay(
+            "ln",
+            Direction::Incoming,
+            PaymentStatus::Pending,
+            Method::Bolt11,
+            since + 1,
+        );
+        assert!(diff(&mut seen, since, std::slice::from_ref(&p)).is_empty());
+        let done = Payment {
+            status: PaymentStatus::Complete,
+            ..p
+        };
+        assert_eq!(diff(&mut seen, since, &[done])[0].1, Kind::Received);
     }
 
     #[test]

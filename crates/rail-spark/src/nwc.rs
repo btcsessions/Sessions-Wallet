@@ -179,14 +179,12 @@ impl NwcWallet for SparkNwc {
 
     async fn pay_invoice(&self, req: PayInvoiceRequest) -> Result<PayInvoiceResponse, NwcError> {
         let sdk = self.account.sdk();
-        // Amountless invoices: whole sats only (Spark has no msats).
-        let amount = match req.amount_msat {
-            Some(m) if m % 1000 != 0 => {
-                return Err(NwcError::other("This wallet pays whole sats only"));
-            }
-            Some(m) => Some(u128::from(m / 1000)),
-            None => None,
-        };
+        // Whole sats only (Spark has no msats): rounding would spend more
+        // than the app was budgeted.
+        if !req.total_amount_msat.is_multiple_of(1000) {
+            return Err(NwcError::other("This wallet pays whole sats only"));
+        }
+        let amount = req.amount_msat.map(|m| u128::from(m / 1000));
         let prepared = sdk
             .prepare_send_payment(PrepareSendPaymentRequest {
                 payment_request: breez_sdk_spark::PaymentRequest::Input {
@@ -230,9 +228,18 @@ impl NwcWallet for SparkNwc {
                 }),
                 idempotency_key: idempotency_key(&req.payment_hash),
             })
-            .await
-            .map_err(|e| NwcError::payment_failed(e.to_string()))?
-            .payment;
+            .await;
+        let payment = match payment {
+            Ok(r) => r.payment,
+            // Did it go out anyway? Then it may still settle: never report
+            // that as a plain failure (the app would pay again, and the
+            // budget would forget it).
+            Err(e) => match self.find_by_hash(&req.payment_hash).await {
+                Ok(Some(p)) if p.status != PaymentStatus::Failed => p,
+                Ok(_) => return Err(NwcError::payment_failed(e.to_string())),
+                Err(_) => return Err(NwcError::in_flight(format!("Outcome unknown: {e}"))),
+            },
+        };
         let payment = self.settle(payment).await?;
         let preimage = match &payment.details {
             Some(PaymentDetails::Lightning { htlc_details, .. }) => htlc_details.preimage.clone(),
@@ -246,7 +253,7 @@ impl NwcWallet for SparkNwc {
                     .saturating_mul(1000),
             }),
             (PaymentStatus::Failed, _) => Err(NwcError::payment_failed("The payment failed")),
-            _ => Err(NwcError::payment_failed(
+            _ => Err(NwcError::in_flight(
                 "The payment is still in flight; check again later",
             )),
         }

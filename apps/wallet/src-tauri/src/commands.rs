@@ -21,6 +21,7 @@ use crate::config::{check_name, AccountSpec, BackupFlags, SeedOrigin};
 use crate::state::AppState;
 
 async fn wallet(state: &AppState) -> Result<Arc<Wallet>> {
+    state.check_screen()?;
     Ok(state
         .inner
         .lock()

@@ -76,10 +76,11 @@ fn current(u: &Unlocked) -> Vec<Connection> {
                 .nwc
                 .iter()
                 .map(|e| {
-                    live.iter()
-                        .find(|c| c.id == e.connection.id)
-                        .cloned()
-                        .unwrap_or_else(|| e.connection.clone())
+                    let mut c = e.connection.clone();
+                    if let Some(l) = live.iter().find(|l| l.id == c.id) {
+                        merge_usage(&mut c, l);
+                    }
+                    c
                 })
                 .collect()
         }
@@ -124,14 +125,43 @@ pub fn sync_service(u: &mut Unlocked, store: Arc<dyn ConnectionStore>) {
     }
 }
 
+/// Fold the service's report into a saved connection: only what the
+/// service tracks (budget use, last use, recent payments), never the user's
+/// settings, and never less spent than already saved for the period (a late
+/// report from a stopped service mustn't undo a newer one).
+fn merge_usage(saved: &mut Connection, from: &Connection) {
+    saved.last_used_at = saved.last_used_at.max(from.last_used_at);
+    saved.recent = from.recent.clone();
+    let (a, b) = (&mut saved.usage, &from.usage);
+    if b.period_start > a.period_start {
+        *a = *b;
+    } else if b.period_start == a.period_start {
+        a.spent_msat = a.spent_msat.max(b.spent_msat);
+    }
+}
+
 /// Save a connection's budget use, as the service reports it.
 pub async fn save_usage(state: &AppState, c: &Connection) {
     let mut guard = state.inner.lock().await;
-    let Some(u) = guard.as_mut() else { return };
+    let Some(u) = guard.as_mut() else {
+        // Locked meanwhile (a payment finished after the lock): straight to
+        // the config file.
+        drop(guard);
+        let path = state.paths.config();
+        if let Ok(Some(mut config)) = crate::config::Config::load(&path) {
+            if let Some(e) = config.nwc.iter_mut().find(|e| e.connection.id == c.id) {
+                merge_usage(&mut e.connection, c);
+                if let Err(e) = config.save(&path) {
+                    tracing::warn!("nwc: couldn't save a connection: {e}");
+                }
+            }
+        }
+        return;
+    };
     let Some(entry) = u.config.nwc.iter_mut().find(|e| e.connection.id == c.id) else {
         return;
     };
-    entry.connection = c.clone();
+    merge_usage(&mut entry.connection, c);
     if let Err(e) = state.save_config(&u.config) {
         tracing::warn!("nwc: couldn't save a connection: {e}");
     }
@@ -194,6 +224,7 @@ pub async fn nwc_list(state: State<'_, AppState>) -> Result<Vec<View>> {
 
 #[tauri::command]
 pub async fn nwc_create(state: State<'_, AppState>, req: NewRequest) -> Result<Created> {
+    state.check_screen()?;
     let name = check_name(&req.name)?;
     if req.permissions.is_empty() {
         return Err(Error::Invalid("Allow the app at least one thing".into()));
@@ -232,6 +263,7 @@ pub async fn nwc_create(state: State<'_, AppState>, req: NewRequest) -> Result<C
 
 #[tauri::command]
 pub async fn nwc_update(state: State<'_, AppState>, id: String, patch: Patch) -> Result<View> {
+    state.check_screen()?;
     let mut guard = state.inner.lock().await;
     let u = guard.as_mut().ok_or(Error::Locked)?;
     let live = current(u);
@@ -275,6 +307,7 @@ pub async fn nwc_delete(state: State<'_, AppState>, id: String) -> Result<()> {
 
 #[tauri::command]
 pub async fn nwc_uri(state: State<'_, AppState>, id: String) -> Result<String> {
+    state.check_screen()?;
     let guard = state.inner.lock().await;
     let u = guard.as_ref().ok_or(Error::Locked)?;
     u.config

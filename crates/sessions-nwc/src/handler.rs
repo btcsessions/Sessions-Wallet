@@ -655,9 +655,15 @@ impl<W: NwcWallet> WalletService<W> {
             })
             .await;
 
-        let ok = result.as_ref().ok().map(|r| r.fees_paid_msat);
-        // Release the reservation; count it if it went through. If the
-        // connection was removed meanwhile there's nothing to update.
+        // Fees paid when it went through; zero when it may still go through
+        // (counted in full and never paid again); nothing when it failed.
+        let ok = match &result {
+            Ok(r) => Some(r.fees_paid_msat),
+            Err(e) if e.in_flight => Some(0),
+            Err(_) => None,
+        };
+        // Release the reservation; count it if it went (or may go) through.
+        // If the connection was removed meanwhile there's nothing to update.
         self.update(&req.wallet_pk, |l| {
             l.reserved_msat = l.reserved_msat.saturating_sub(amount_msat);
             l.in_flight.remove(&hash);

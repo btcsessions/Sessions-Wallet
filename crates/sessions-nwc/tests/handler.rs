@@ -418,6 +418,36 @@ async fn failed_payment_releases_the_reservation() {
 }
 
 #[tokio::test]
+async fn a_payment_that_may_still_settle_stays_counted_and_isnt_paid_again() {
+    let s = setup(
+        ALL,
+        Budget {
+            limit_sat: Some(10_000),
+            ..Default::default()
+        },
+    );
+    s.wallet.stuck_next.store(true, Ordering::SeqCst);
+    let (inv, _) = invoice(Some(8_000_000), 1);
+    assert_eq!(
+        err(&s.call("pay_invoice", json!({ "invoice": inv })).await),
+        ErrorCode::PaymentFailed
+    );
+    // Still counted: the app can't use the budget again while it's out.
+    assert_eq!(
+        ok(&s.call("get_budget", json!({})).await)["used_budget"],
+        8_000_000
+    );
+    let (other, _) = invoice(Some(3_000_000), 2);
+    assert_eq!(
+        err(&s.call("pay_invoice", json!({ "invoice": other })).await),
+        ErrorCode::QuotaExceeded
+    );
+    // And the same invoice isn't sent a second time.
+    let _ = s.call("pay_invoice", json!({ "invoice": inv })).await;
+    assert_eq!(s.wallet.paid.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn in_flight_payments_count_against_the_budget() {
     let gate = Arc::new(tokio::sync::Notify::new());
     let s = Arc::new(setup_with(

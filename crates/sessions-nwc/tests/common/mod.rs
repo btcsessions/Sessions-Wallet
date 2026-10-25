@@ -39,6 +39,8 @@ pub struct Mock {
     pub paid: Mutex<Vec<PayInvoiceRequest>>,
     pub txs: Mutex<HashMap<String, Transaction>>,
     pub fail_next: AtomicBool,
+    /// The next payment is sent but doesn't settle in time.
+    pub stuck_next: AtomicBool,
     /// When set, payments wait for `gate.notify_one()`.
     pub gate: Option<Arc<Notify>>,
     pub pay_started: AtomicUsize,
@@ -84,6 +86,9 @@ impl NwcWallet for Mock {
         }
         if self.fail_next.swap(false, Ordering::SeqCst) {
             return Err(NwcError::payment_failed("no route"));
+        }
+        if self.stuck_next.swap(false, Ordering::SeqCst) {
+            return Err(NwcError::in_flight("still in flight"));
         }
         let preimage = format!("{:0>64}", req.payment_hash.len());
         let mut t = tx(

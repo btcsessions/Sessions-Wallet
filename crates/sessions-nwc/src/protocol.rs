@@ -70,6 +70,11 @@ pub enum ErrorCode {
 pub struct NwcError {
     pub code: ErrorCode,
     pub message: String,
+    /// `pay_invoice` only: the payment may still go through (it was sent
+    /// but hasn't settled, or the outcome is unknown). The budget keeps
+    /// counting it and the invoice isn't paid again. Never sent to clients.
+    #[serde(skip)]
+    pub in_flight: bool,
 }
 
 impl NwcError {
@@ -77,6 +82,7 @@ impl NwcError {
         NwcError {
             code,
             message: message.into(),
+            in_flight: false,
         }
     }
     pub fn internal(message: impl Into<String>) -> Self {
@@ -84,6 +90,14 @@ impl NwcError {
     }
     pub fn other(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Other, message)
+    }
+    /// Sent, but not settled (or the outcome is unknown): see
+    /// [`NwcError::in_flight`].
+    pub fn in_flight(message: impl Into<String>) -> Self {
+        NwcError {
+            in_flight: true,
+            ..Self::new(ErrorCode::PaymentFailed, message)
+        }
     }
     pub fn payment_failed(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::PaymentFailed, message)

@@ -125,6 +125,15 @@ impl AppState {
         }
     }
 
+    /// Refuse while the screen is locked (the wallet runs, the user hasn't
+    /// entered the passcode).
+    pub fn check_screen(&self) -> Result<()> {
+        if self.screen_locked.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Error::Locked);
+        }
+        Ok(())
+    }
+
     /// Where the NWC service reports budget use (a no-op in tests).
     pub fn nwc_store(&self) -> Arc<dyn sessions_nwc::ConnectionStore> {
         self.nwc_saver
@@ -302,9 +311,9 @@ impl AppState {
                 crate::nwc::sync_service(u, self.nwc_store());
             }
         }
+        // `screen_locked` stays as it is: only the passcode clears it (a
+        // restore applied in the background must not open the screen).
         self.backup.unlocked(backup_keys, &backup_config);
-        self.screen_locked
-            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.alerts.apply(
             crate::alerts::Settings::from_prefs(&backup_config.prefs),
             true,
@@ -644,9 +653,9 @@ fn watch_deposits(
             }
         };
         // What's there already isn't news.
-        if let Ok(outputs) = account.deposit_outputs().await {
-            alerts.deposits(&id, &name, &outputs);
-        }
+        // (Nothing known if that fails: then the next look announces all.)
+        let outputs = account.deposit_outputs().await.unwrap_or_default();
+        alerts.deposits(&id, &name, &outputs);
         drop(account);
         let owner = id.clone();
         let hook = Arc::new(move |activity: Activity| {
