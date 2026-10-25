@@ -423,7 +423,11 @@ pub async fn test_backup(
             })
         }
         Method::Passkey => {
-            let got = sign_in(&app).await.map_err(from_passkey)?;
+            // Name the passkey this phone made, so managers that don't list
+            // passkeys on their own (some only answer when asked by id) work.
+            let got = sign_in(&app, credential.iter().cloned().collect())
+                .await
+                .map_err(from_passkey)?;
             let pk = PasskeyKeys::from_prf(&got.prf)?;
             let lookup = passkey_seed(&state, &pk).await?;
             let (found, matches) = match &lookup.found {

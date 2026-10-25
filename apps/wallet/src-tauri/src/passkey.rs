@@ -117,13 +117,19 @@ pub async fn create_passkey_wallet(
 
 /// The passkey sign-in (the user picks one of this app's passkeys), with
 /// the PRF evaluated on the wallet's salt.
-pub(crate) async fn sign_in(app: &AppHandle) -> std::result::Result<PrfResult, PasskeyError> {
+/// `allow` names the passkey to use when we know it (this phone made it);
+/// empty lets the user pick any of this app's passkeys (a new phone).
+/// Some passkey managers only answer when the passkey is named.
+pub(crate) async fn sign_in(
+    app: &AppHandle,
+    allow: Vec<String>,
+) -> std::result::Result<PrfResult, PasskeyError> {
     app.try_state::<Passkeys<tauri::Wry>>()
         .ok_or(PasskeyError::NotSupported)?
         .get(GetRequest {
             rp_id: PASSKEY_RP_ID.into(),
             prf_salt: prf_salt().to_vec(),
-            allow_credentials: vec![],
+            allow_credentials: allow,
         })
         .await
 }
@@ -197,7 +203,7 @@ pub async fn restore_with_passkey(
             "A wallet already exists on this device".into(),
         ));
     }
-    let got = sign_in(&app).await.map_err(err)?;
+    let got = sign_in(&app, vec![]).await.map_err(err)?;
     let keys = PasskeyKeys::from_prf(&got.prf)?;
     let (seed, origin, envelope_event) = match passkey_seed(&state, &keys).await?.found {
         PasskeySeed::Envelope { seed, event } => (seed, SeedOrigin::Phrase, event),
