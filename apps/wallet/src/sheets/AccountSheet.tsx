@@ -114,11 +114,15 @@ export function AccountSheet({ id }: { id: string }) {
         <>
           <p className="group-label">Lightning address</p>
           <LightningAddressCard account={a.id} />
-          <SweepSetting account={a} />
-          <button className="btn block" style={{ marginBottom: 22 }} onClick={() => open({ name: "nwc" })}>
-            <Icon name="plug" size={16} />
-            Connected apps (Nostr Wallet Connect)
-          </button>
+          {advanced && (
+            <>
+              <SweepSetting account={a} />
+              <button className="btn block" style={{ marginBottom: 22 }} onClick={() => open({ name: "nwc" })}>
+                <Icon name="plug" size={16} />
+                Connected apps (Nostr Wallet Connect)
+              </button>
+            </>
+          )}
         </>
       )}
 

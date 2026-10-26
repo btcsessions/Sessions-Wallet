@@ -176,7 +176,7 @@ export function Home() {
         </p>
       ))}
 
-      {!editing && <SweepOffers />}
+      {!editing && layout.advanced && <SweepOffers />}
       {!editing && <CheckinReminder />}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={() => navigator.vibrate?.(8)} onDragEnd={onDragEnd}>

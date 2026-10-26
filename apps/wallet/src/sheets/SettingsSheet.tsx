@@ -154,10 +154,12 @@ export function SettingsSheet() {
           <span className="value">{contacts.length || ""}</span>
           <Icon name="chevron" size={16} />
         </button>
-        <button className="cell" onClick={() => open({ name: "nwc" })}>
-          <span className="grow">Connected apps (Nostr Wallet Connect)</span>
-          <Icon name="chevron" size={16} />
-        </button>
+        {layout?.advanced && (
+          <button className="cell" onClick={() => open({ name: "nwc" })}>
+            <span className="grow">Connected apps (Nostr Wallet Connect)</span>
+            <Icon name="chevron" size={16} />
+          </button>
+        )}
       </div>
 
       <AlertsSetting />
