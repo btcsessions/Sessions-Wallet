@@ -22,6 +22,7 @@ export async function keyTextFromScan(r: ScanResult): Promise<string> {
 }
 
 const QR_HINT: Record<string, string> = {
+  "passport-prime": "On Prime: open Bitcoin Wallet, tap your account, then Connect Wallet › Sparrow › Multisig. Scan the animated QR.",
   jade: "On Jade: Options › Wallet › Export Xpub. Choose Multisig and Native SegWit, then scan the QR.",
   seedsigner: "On SeedSigner: load your seed, then Export Xpub › Multisig › Native SegWit › Sparrow. Scan the animated QR.",
 };

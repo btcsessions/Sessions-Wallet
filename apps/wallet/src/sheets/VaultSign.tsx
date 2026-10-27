@@ -109,7 +109,9 @@ function SignWith({ signer, account, psbt, onSigned, onBack }: { signer: Signer;
           <p className="notice">
             {signer.source.type === "external"
               ? `Send this to whoever holds ${signer.label}: show them the QR, or share the PSBT file. Then scan or paste what they send back.`
-              : `Scan this with ${signer.label}, check the amount and address on its screen, then scan the signed transaction it shows.`}
+              : def?.id === "passport-prime"
+                ? `On ${signer.label}, tap the QR icon at the bottom right and scan this. Check the amount and address, slide to sign, then scan the signed transaction it shows.`
+                : `Scan this with ${signer.label}, check the amount and address on its screen, then scan the signed transaction it shows.`}
           </p>
           <div className="qr-wrap">
             <AnimatedPsbtQR psbt={psbt} adjustable />

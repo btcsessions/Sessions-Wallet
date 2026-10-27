@@ -149,8 +149,14 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
             </p>
           )}
           <p className="notice">
-            Scan this with {name}
-            {more}. Check the amount and address on its screen, then scan the signed transaction it shows.
+            {def?.id === "passport-prime" ? (
+              "On Passport Prime, tap the QR icon at the bottom right and scan this. Check the amount and address, slide to sign, then scan the signed transaction it shows."
+            ) : (
+              <>
+                Scan this with {name}
+                {more}. Check the amount and address on its screen, then scan the signed transaction it shows.
+              </>
+            )}
           </p>
           <div className="qr-wrap">
             <AnimatedPsbtQR psbt={ns.psbtBase64} adjustable />

@@ -38,6 +38,13 @@ export const DEVICES: DeviceDef[] = [
     exportHint: "On Jade: unlock, then Options › Wallet › Export Xpub. Scan the QR.",
   },
   {
+    id: "passport-prime",
+    name: "Passport Prime",
+    connect: "qr",
+    via: "Air-gapped, by QR code",
+    exportHint: "On Prime: open Bitcoin Wallet, tap your account, then Connect Wallet › Sparrow › Single-sig. Scan the animated QR.",
+  },
+  {
     id: "seedsigner",
     name: "SeedSigner",
     connect: "qr",
@@ -83,6 +90,14 @@ function Drawing({ id }: { id: string }) {
           <circle cx="19.4" cy="9" r="0.6" fill="currentColor" />
           <circle cx="19.4" cy="12" r="0.6" fill="currentColor" />
           <circle cx="19.4" cy="15" r="0.6" fill="currentColor" />
+        </>
+      );
+    case "passport-prime":
+      return (
+        <>
+          <rect x="5" y="1.5" width="14" height="21" rx="3.5" />
+          <rect x="7" y="4" width="10" height="12" rx="1.2" {...screen} />
+          <path d="M10 19.2h4" />
         </>
       );
     case "jade":

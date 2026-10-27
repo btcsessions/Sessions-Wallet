@@ -17,7 +17,9 @@ import { walletHasCard } from "../modules/AccountModule";
 /** Turn whatever the device showed into text the import understands. */
 async function exportText(r: ScanResult): Promise<string> {
   if (r.kind === "text") return r.text;
-  const { descriptorFromUr } = await import("../hw/ur");
+  const { descriptorFromUr, textFromUr } = await import("../hw/ur");
+  // Passport (Prime and Core) shows its export file as a "bytes" UR.
+  if (r.type === "bytes") return textFromUr(r.type, r.cbor);
   const { Buffer } = await import("buffer");
   return descriptorFromUr(r.type, Buffer.from(r.cbor));
 }

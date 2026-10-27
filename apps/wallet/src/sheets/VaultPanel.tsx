@@ -31,8 +31,8 @@ function useVault(account: string) {
 }
 
 /** An animated QR of the vault, in the format the scanning wallet reads. */
-function VaultQR({ details, account }: { details: VaultDetails; account: string }) {
-  const [kind, setKind] = useState<"output" | "file">("output");
+function VaultQR({ details, account, initial = "output" }: { details: VaultDetails; account: string; initial?: "output" | "file" }) {
+  const [kind, setKind] = useState<"output" | "file">(initial);
   const [file, setFile] = useState<ExportFile | null>(null);
   const [frame, setFrame] = useState<string>("");
   const [svg, setSvg] = useState("");
@@ -195,8 +195,11 @@ export function VaultRegister({ account }: { account: string }) {
   const [done, setDone] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const notify = useWallet((s) => s.notify);
+  const [showQr, setShowQr] = useState(false);
   const devices = (details?.keys ?? []).filter((k) => k.source.type === "device" && ["bitbox", "jade"].includes(deviceFor(k.source.device).connect));
-  if (!devices.length) return null;
+  // Passport Prime learns the vault by scanning its setup file.
+  const prime = (details?.keys ?? []).filter((k) => k.source.type === "device" && deviceFor(k.source.device).id === "passport-prime");
+  if (!devices.length && !prime.length) return null;
   const register = async (fp: string, connect: string) => {
     setBusy(fp);
     try {
@@ -229,7 +232,22 @@ export function VaultRegister({ account }: { account: string }) {
             </div>
           );
         })}
+        {prime.map((k) => (
+          <div className="cell key-row" key={k.xpub}>
+            <KeyIcon source={k.source} />
+            <span className="grow">{k.label}</span>
+            <button className="btn small" onClick={() => setShowQr(!showQr)}>
+              {showQr ? "Hide QR" : "Show QR"}
+            </button>
+          </div>
+        ))}
       </div>
+      {showQr && details && (
+        <>
+          <p className="notice">On Prime: open Bitcoin Wallet, tap ⋯ on the Accounts page, choose Import Multisig and scan this. Check the details on Prime and give it a name.</p>
+          <VaultQR details={details} account={account} initial="file" />
+        </>
+      )}
       <p className="group-note">So the device can check change and show vault addresses. You confirm the vault on its screen once. It's also done the first time it signs.</p>
     </>
   );

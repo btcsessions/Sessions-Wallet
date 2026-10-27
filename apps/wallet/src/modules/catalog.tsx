@@ -105,7 +105,7 @@ const defs: ModuleDef[] = [
   {
     type: "hardware",
     name: "Hardware wallet",
-    blurb: "Trezor, BitBox02, Jade or SeedSigner. Keys stay on the device; you sign each payment there.",
+    blurb: "Trezor, BitBox02, Jade, Passport Prime or SeedSigner. Keys stay on the device; you sign each payment there.",
     icon: "device",
     tint: "#A2845E",
     section: "accounts",
