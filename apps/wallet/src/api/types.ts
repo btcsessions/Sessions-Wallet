@@ -593,7 +593,7 @@ export interface VaultImportPreview {
 export interface VaultImport {
   name: string;
   descriptor: string;
-  keys: { fingerprint: string; label: string; source: KeySource }[];
+  keys: { xpub: string; label: string; source: KeySource }[];
 }
 
 export interface VaultDetails {
@@ -606,6 +606,8 @@ export interface VaultDetails {
   coordination: { type: "solo" } | { type: "group"; group_id: string };
   descriptor: string;
   firstAddress: string;
+  /** sortedmulti (BIP67); false for an imported fixed-order `multi` vault. */
+  sorted: boolean;
 }
 
 /**

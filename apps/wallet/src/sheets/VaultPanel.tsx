@@ -41,30 +41,34 @@ function VaultQR({ details, account }: { details: VaultDetails; account: string 
     if (kind !== "file" || file) return;
     void api()
       .then((a) => a.vaultExport(account, "coldcard"))
-      .then(setFile);
+      .then(setFile)
+      .catch((e) => setQrError(errorText(e)));
   }, [kind, file, account]);
 
   const [qrError, setQrError] = useState<string | null>(null);
   const frames = useMemo(() => {
     let gen: { next: () => string; count: number } | null = null;
     setQrError(null);
-    return import("../hw/ur").then((ur) => {
-      gen =
-        kind === "output"
-          ? ur.multisigOutputFrames(
-              details.threshold,
-              details.keys.map((k) => ({ fingerprint: k.fingerprint, path: k.path, xpub: k.xpub })),
-              details.script,
-              details.keys.some((k) => k.xpub.startsWith("tpub")),
-            )
-          : file
-            ? ur.textFrames(file.content)
-            : null;
-      return gen;
-    }).catch((e) => {
-      setQrError(errorText(e));
-      return null;
-    });
+    return import("../hw/ur")
+      .then((ur) => {
+        gen =
+          kind === "output"
+            ? ur.multisigOutputFrames(
+                details.threshold,
+                details.keys.map((k) => ({ fingerprint: k.fingerprint, path: k.path, xpub: k.xpub })),
+                details.script,
+                details.keys.some((k) => k.xpub.startsWith("tpub")),
+                details.sorted,
+              )
+            : file
+              ? ur.textFrames(file.content)
+              : null;
+        return gen;
+      })
+      .catch((e) => {
+        setQrError(errorText(e));
+        return null;
+      });
   }, [kind, details, file]);
 
   useEffect(() => {
@@ -251,9 +255,9 @@ export function VaultPanel({ account }: { account: string }) {
   if (error) return <p className="field-error">{error}</p>;
   if (!details) return null;
 
-  const saveLabel = async (fp: string) => {
+  const saveLabel = async (xpub: string) => {
     try {
-      await (await api()).vaultSetKeyLabel(account, fp, label);
+      await (await api()).vaultSetKeyLabel(account, xpub, label);
       setEditing(null);
       await reload();
     } catch (e) {
@@ -309,17 +313,18 @@ export function VaultPanel({ account }: { account: string }) {
             <div className="cell key-row" key={k.fingerprint}>
               <KeyIcon source={k.source} />
               <span className="grow">
-                {editing === k.fingerprint ? (
-                  <input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={32} autoFocus onKeyDown={(e) => e.key === "Enter" && void saveLabel(k.fingerprint)} />
+                {editing === k.xpub ? (
+                  <input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={32} autoFocus onKeyDown={(e) => e.key === "Enter" && void saveLabel(k.xpub)} />
                 ) : (
                   k.label
                 )}
                 <span className="key-meta">
-                  {sourceText(k.source) !== k.label ? `${sourceText(k.source)} · ` : ""}{k.fingerprint}
+                  {sourceText(k.source) !== k.label ? `${sourceText(k.source)} · ` : ""}
+                  {k.fingerprint}
                 </span>
               </span>
-              {editing === k.fingerprint ? (
-                <button className="btn small" onClick={() => void saveLabel(k.fingerprint)}>
+              {editing === k.xpub ? (
+                <button className="btn small" onClick={() => void saveLabel(k.xpub)}>
                   Save
                 </button>
               ) : (
@@ -334,7 +339,7 @@ export function VaultPanel({ account }: { account: string }) {
                       <Icon name={verify === k.fingerprint ? "clock" : "eye"} size={18} />
                     </button>
                   )}
-                  <button className="icon-button" aria-label={`Rename ${k.label}`} onClick={() => (setEditing(k.fingerprint), setLabel(k.label))}>
+                  <button className="icon-button" aria-label={`Rename ${k.label}`} onClick={() => (setEditing(k.xpub), setLabel(k.label))}>
                     <Icon name="edit" size={18} />
                   </button>
                 </>

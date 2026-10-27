@@ -1879,6 +1879,111 @@ mod tests {
         assert!(finalizes(&a, &combined.to_string()).await);
     }
 
+    #[tokio::test]
+    async fn vault_signers_destinations_and_verified_combine() {
+        use crate::multisig::{self, Cosigner, MultisigConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let m = |s: Seed| s.master_xpriv(Network::Bitcoin).unwrap();
+        let ours = m(Seed::from_phrase(ABANDON).unwrap());
+        let theirs = m(Seed::generate(12).unwrap());
+        let third = m(Seed::generate(12).unwrap());
+        let key = |x: &Xpriv| {
+            Cosigner::parse(
+                &descriptors::multisig_cosigner_key(x, Network::Bitcoin, 0).unwrap(),
+                Network::Bitcoin,
+            )
+            .unwrap()
+        };
+        let config = MultisigConfig::sorted_p2wsh(2, vec![key(&ours), key(&theirs), key(&third)]);
+        let pair = config.descriptors().unwrap();
+        let open = |name: &str, signer: Xpriv| {
+            OnchainAccount::open(OnchainConfig {
+                id: name.into(),
+                name: name.into(),
+                network: Network::Bitcoin,
+                db_path: dir.path().join(format!("{name}.db")),
+                esplora_url: None,
+                electrum_url: None,
+                descriptors: pair.clone(),
+                custody: Custody::Multisig {
+                    threshold: 2,
+                    total: 3,
+                    local_signers: 1,
+                },
+                signer: Some(signer),
+                payjoin_receive: false,
+                payjoin_dir: None,
+                group: None,
+                account_index: None,
+            })
+            .unwrap()
+        };
+        let a = open("vault", ours);
+        let cosigner = open("cosigner", theirs);
+        fund(&a, 200_000).await;
+        let q = a.prepare_send(send_req(50_000)).await.unwrap();
+        let psbt = OnchainAccount::psbt_from_b64(&q.needs_signature.unwrap().psbt_base64).unwrap();
+
+        // Only this phone has signed; the money goes to one place (change hidden).
+        assert_eq!(
+            multisig::signers(&config, &psbt).unwrap(),
+            vec![true, false, false]
+        );
+        let dest = multisig::destinations(&config, &psbt, Network::Bitcoin).unwrap();
+        assert_eq!(dest.len(), 1);
+        assert_eq!(dest[0].1, 50_000);
+
+        // A cosigner's signature is checked and added once.
+        let mut signed = psbt.clone();
+        cosigner.sign_locally(&mut signed).unwrap();
+        let mut running = psbt.clone();
+        assert!(multisig::combine_verified(&config, &mut running, &signed).unwrap() > 0);
+        assert_eq!(
+            multisig::signers(&config, &running).unwrap(),
+            vec![true, true, false]
+        );
+        assert_eq!(
+            multisig::combine_verified(&config, &mut running, &signed).unwrap(),
+            0
+        );
+        assert!(finalizes(&a, &running.to_string()).await);
+
+        // A forged signature (right key, wrong message) is ignored.
+        let mut forged = signed.clone();
+        for input in &mut forged.inputs {
+            for sig in input.partial_sigs.values_mut() {
+                let mut der = sig.signature.serialize_compact();
+                der[5] ^= 1;
+                if let Ok(bad) =
+                    bdk_wallet::bitcoin::secp256k1::ecdsa::Signature::from_compact(&der)
+                {
+                    sig.signature = bad;
+                }
+            }
+        }
+        let mut fresh = psbt.clone();
+        assert_eq!(
+            multisig::combine_verified(&config, &mut fresh, &forged).unwrap(),
+            0
+        );
+
+        // Signatures from a finalized witness are read and checked too.
+        let mut finalized = running.clone();
+        {
+            let inner = a.inner.lock().await;
+            assert!(inner
+                .wallet
+                .finalize_psbt(&mut finalized, SignOptions::default())
+                .unwrap());
+        }
+        let mut again = psbt.clone();
+        assert!(multisig::combine_verified(&config, &mut again, &finalized).unwrap() > 0);
+        assert_eq!(
+            multisig::signers(&config, &again).unwrap(),
+            vec![true, true, false]
+        );
+    }
+
     /// Fund receive address `index` with one coin of `sats`.
     async fn fund_at(a: &OnchainAccount, index: u32, sats: u64, salt: u8) {
         use bdk_wallet::bitcoin::hashes::Hash;

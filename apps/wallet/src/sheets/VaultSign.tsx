@@ -202,7 +202,7 @@ export function VaultSign({ account, paused, fee, proposal, onDone }: { account:
   };
 
   const added = async (signed: string) => {
-    const combined = await (await api()).vaultCombine(psbt, signed);
+    const combined = await (await api()).vaultCombine(account, psbt, signed);
     const before = sigs?.signed ?? 0;
     const after = await (await api()).vaultSignatures(account, combined);
     if (after.signed <= before) throw new Error("No new signature in that. Make sure it's this vault's transaction, signed by a key that hasn't signed yet");

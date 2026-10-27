@@ -186,7 +186,7 @@ export function VaultSheet() {
         ).vaultImport({
           name: name.trim() || preview.name,
           descriptor: preview.descriptor,
-          keys: preview.keys.map((k) => ({ fingerprint: k.fingerprint, label: k.label, source: k.source })),
+          keys: preview.keys.map((k) => ({ xpub: k.xpub, label: k.label, source: k.source })),
         });
         await finish(account);
       } catch (e) {
@@ -219,7 +219,8 @@ export function VaultSheet() {
     return (
       <Sheet title={created.name}>
         <p className="notice">
-          <b>Save a copy of this vault's setup.</b> To recover it you need this file (or the keys' xpubs) <i>and</i> {m} of your keys. Your encrypted wallet backup keeps it too.
+          <b>Save a copy of this vault's setup.</b> To recover it you need this file (or the keys' xpubs) <i>and</i>{" "}
+          {created.custody.type === "multisig" ? created.custody.threshold : m} of your keys. Your encrypted wallet backup keeps it too.
         </p>
         <VaultRegister account={created.id} />
         <VaultExport account={created.id} />
@@ -313,7 +314,8 @@ export function VaultSheet() {
                     onChange={(e) => setKeys((ks) => ks.map((x, j) => (j === i && x ? { ...x, label: e.target.value } : x)))}
                   />
                   <span className="key-meta">
-                    {sourceText(k.source) !== k.label ? `${sourceText(k.source)} · ` : ""}{k.fingerprint}
+                    {sourceText(k.source) !== k.label ? `${sourceText(k.source)} · ` : ""}
+                    {k.fingerprint}
                   </span>
                 </span>
                 <button className="icon-button" aria-label={`Remove key ${i + 1}`} onClick={() => setKeys((ks) => ks.map((x, j) => (j === i ? null : x)))}>
@@ -374,7 +376,8 @@ export function VaultSheet() {
               <span className="grow">
                 {k!.label.trim() || `Key ${i + 1}`}
                 <span className="key-meta">
-                  {sourceText(k!.source) !== k!.label ? `${sourceText(k!.source)} · ` : ""}{k!.fingerprint}
+                  {sourceText(k!.source) !== k!.label ? `${sourceText(k!.source)} · ` : ""}
+                  {k!.fingerprint}
                 </span>
               </span>
             </div>
@@ -477,7 +480,7 @@ export function VaultSheet() {
         <p className="group-label">Keys</p>
         <div className="group">
           {preview.keys.map((k, i) => (
-            <div className="cell key-row" key={k.fingerprint}>
+            <div className="cell key-row" key={k.xpub}>
               <KeyIcon source={k.source} />
               <span className="grow">
                 <input

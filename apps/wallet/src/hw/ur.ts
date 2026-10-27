@@ -183,17 +183,19 @@ export function multisigOutputFrames(
   keys: { fingerprint: string; path: string; xpub: string }[],
   script: string,
   testnet = false,
+  sorted = true,
   maxFragment = 250,
 ): { next: () => string; count: number } {
   const multi = new MultiKey(
     threshold,
     keys.map((k) => hdKeyFrom(k.fingerprint, k.path, k.xpub, testnet)),
   );
+  const multiExpr = sorted ? ScriptExpressions.SORTED_MULTISIG : ScriptExpressions.MULTISIG;
   const exprs = /Nested/i.test(script)
-    ? [ScriptExpressions.SCRIPT_HASH, ScriptExpressions.WITNESS_SCRIPT_HASH, ScriptExpressions.SORTED_MULTISIG]
+    ? [ScriptExpressions.SCRIPT_HASH, ScriptExpressions.WITNESS_SCRIPT_HASH, multiExpr]
     : /Legacy/i.test(script)
-      ? [ScriptExpressions.SCRIPT_HASH, ScriptExpressions.SORTED_MULTISIG]
-      : [ScriptExpressions.WITNESS_SCRIPT_HASH, ScriptExpressions.SORTED_MULTISIG];
+      ? [ScriptExpressions.SCRIPT_HASH, multiExpr]
+      : [ScriptExpressions.WITNESS_SCRIPT_HASH, multiExpr];
   const ur = new CryptoOutput(exprs, multi).toUR();
   const enc = new UREncoder(ur, maxFragment);
   return { next: () => enc.nextPart().toUpperCase(), count: enc.fragmentsLength };

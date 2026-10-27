@@ -940,16 +940,16 @@ export const mockApi: WalletApi = {
     return { name: "Imported vault", threshold: 2, total: 3, script: "Native SegWit (P2WSH)", keys, notes: ["None of these keys is this phone's: you'll sign with your hardware wallets or other cosigners."], descriptor: "wsh(sortedmulti(2,…))" };
   },
   async vaultImport(v) {
-    return this.vaultCreate({ name: v.name, threshold: 2, keys: v.keys.map((k) => ({ key: fakeKey(k.fingerprint), label: k.label, source: k.source })) });
+    return this.vaultCreate({ name: v.name, threshold: 2, keys: v.keys.map((k, i) => ({ key: fakeKey(randFp() + String(i)), label: k.label, source: k.source })) });
   },
   async vaultDetails(account) {
     const v = vaults.get(account) ?? { threshold: 2, keys: [mkKey(fakeKey("73c5da0a"), "This phone", { type: "phone", account: 0 }), mkKey(fakeKey("b17b0a02"), "BitBox02", { type: "device", device: "BitBox02" }), mkKey(fakeKey("5eed5157"), "SeedSigner", { type: "device", device: "SeedSigner" })] };
     const a = find(account);
-    return { name: a.name, threshold: v.threshold, total: v.keys.length, script: "Native SegWit (P2WSH)", keys: v.keys, coordination: { type: "solo" as const }, descriptor: `wsh(sortedmulti(${v.threshold},${v.keys.map((k) => k.key + "/<0;1>/*").join(",")}))#mockcsum`, firstAddress: "bc1qmockvaultaddress0000000000000000000000000000000000000000" };
+    return { name: a.name, threshold: v.threshold, total: v.keys.length, script: "Native SegWit (P2WSH)", keys: v.keys, coordination: { type: "solo" as const }, sorted: true, descriptor: `wsh(sortedmulti(${v.threshold},${v.keys.map((k) => k.key + "/<0;1>/*").join(",")}))#mockcsum`, firstAddress: "bc1qmockvaultaddress0000000000000000000000000000000000000000" };
   },
-  async vaultSetKeyLabel(account, fingerprint, label) {
+  async vaultSetKeyLabel(account, xpub, label) {
     const v = vaults.get(account);
-    const k = v?.keys.find((x) => x.fingerprint === fingerprint);
+    const k = v?.keys.find((x) => x.xpub === xpub);
     if (k) k.label = label.trim();
   },
   async vaultExport(account, format) {
@@ -976,7 +976,7 @@ export const mockApi: WalletApi = {
     const needed = v?.threshold ?? 2;
     return { keys, signed, needed, ready: signed >= needed, destinations: [{ address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", amountSat: 50_000 }] };
   },
-  async vaultCombine(psbt) {
+  async vaultCombine(_account, psbt) {
     await sleep(200);
     return psbt + "+sig";
   },

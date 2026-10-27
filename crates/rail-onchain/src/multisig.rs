@@ -24,6 +24,10 @@ use crate::descriptors::{self, DescriptorPair};
 mod files;
 pub use files::{cosigner_from_export, ExportFile, ExportFormat};
 
+#[path = "multisig_psbt.rs"]
+mod psbt;
+pub use psbt::{combine_verified, destinations, signers};
+
 /// Largest quorum (`sortedmulti` under P2WSH allows 20; wallets agree on 15).
 pub const MAX_KEYS: usize = 15;
 
@@ -186,6 +190,19 @@ impl MultisigConfig {
         match self.policy {
             Policy::Multi { threshold, .. } => threshold,
         }
+    }
+
+    /// Same wallet, however it's written: script type, quorum, sorting and
+    /// the set of keys (in any order for sorted multisig).
+    pub fn same_wallet(&self, other: &MultisigConfig) -> bool {
+        let keys = |c: &MultisigConfig| {
+            let mut k: Vec<String> = c.cosigners.iter().map(|x| x.xpub.clone()).collect();
+            if matches!(c.policy, Policy::Multi { sorted: true, .. }) {
+                k.sort();
+            }
+            k
+        };
+        self.script == other.script && self.policy == other.policy && keys(self) == keys(other)
     }
 
     pub fn total(&self) -> u8 {

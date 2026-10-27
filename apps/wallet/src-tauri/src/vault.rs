@@ -7,7 +7,6 @@
 //! wallet will share between members later (over a WhiteNoise / Marmot group
 //! on Nostr), so they carry everything needed to finish the spend.
 
-use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use bitcoin::psbt::Psbt;
@@ -272,9 +271,14 @@ fn build(u: &mut crate::state::Unlocked, v: NewVault) -> Result<AccountSpec> {
         });
         cosigners.push(c);
     }
-    let fps: std::collections::HashSet<_> =
-        cosigners.iter().map(|c| c.fingerprint.clone()).collect();
-    if fps.len() != cosigners.len() {
+    // Unknown fingerprints (00000000, from some files) can't be compared.
+    let known: Vec<_> = cosigners
+        .iter()
+        .map(|c| c.fingerprint.clone())
+        .filter(|f| f != "00000000")
+        .collect();
+    let fps: std::collections::HashSet<_> = known.iter().collect();
+    if fps.len() != known.len() {
         return Err(Error::Invalid(
             "Two keys come from the same seed. Each key needs its own device or seed, or one loss could cost you two keys".into(),
         ));
@@ -397,14 +401,14 @@ pub async fn vault_import_preview(
 pub struct ImportVault {
     pub name: String,
     pub descriptor: String,
-    /// Labels by fingerprint (and the source the user picked).
+    /// Labels by xpub (and the source the user picked).
     pub keys: Vec<ImportKey>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportKey {
-    pub fingerprint: String,
+    pub xpub: String,
     pub label: String,
     pub source: KeySource,
 }
@@ -430,7 +434,7 @@ pub async fn vault_import(state: State<'_, AppState>, vault: ImportVault) -> Res
             .enumerate()
             .map(|(i, c)| {
                 let (seen, _) = recognise(c, &u.config, &our_fp, network, &master);
-                let picked = vault.keys.iter().find(|k| k.fingerprint == c.fingerprint);
+                let picked = vault.keys.iter().find(|k| k.xpub == c.xpub);
                 let source = match (&seen, picked) {
                     (KeySource::Phone { account }, _) => {
                         local_account = Some(*account);
@@ -494,6 +498,8 @@ pub struct VaultDetails {
     /// `<0;1>` multipath with checksum, as Sparrow shows it.
     pub descriptor: String,
     pub first_address: String,
+    /// Keys sorted per BIP67 (`sortedmulti`); false for an imported `multi`.
+    pub sorted: bool,
 }
 
 fn find<'a>(config: &'a Config, id: &AccountId) -> Result<&'a AccountSpec> {
@@ -534,6 +540,7 @@ pub async fn vault_details(state: State<'_, AppState>, account: AccountId) -> Re
         coordination: coordination.clone(),
         descriptor: config.descriptor_with_checksum()?,
         first_address: config.first_address(network)?,
+        sorted: matches!(config.policy, multisig::Policy::Multi { sorted: true, .. }),
     })
 }
 
@@ -541,7 +548,7 @@ pub async fn vault_details(state: State<'_, AppState>, account: AccountId) -> Re
 pub async fn vault_set_key_label(
     state: State<'_, AppState>,
     account: AccountId,
-    fingerprint: String,
+    xpub: String,
     label: String,
 ) -> Result<()> {
     state.check_screen()?;
@@ -553,7 +560,7 @@ pub async fn vault_set_key_label(
     let (_, mut keys) = vault_keys(&spec, network, &our_fp)?;
     let k = keys
         .iter_mut()
-        .find(|k| k.fingerprint == fingerprint)
+        .find(|k| k.xpub == xpub)
         .ok_or_else(|| Error::Invalid("That key isn't in this vault".into()))?;
     let l = label.trim();
     if l.is_empty() || l.chars().count() > 32 {
@@ -591,7 +598,7 @@ pub async fn vault_export(
     for c in &mut config.cosigners {
         c.label = keys
             .iter()
-            .find(|k| k.fingerprint == c.fingerprint)
+            .find(|k| k.xpub == c.xpub)
             .map(|k| k.label.clone());
     }
     config.export(format, network)
@@ -627,25 +634,6 @@ pub struct Destination {
     pub amount_sat: u64,
 }
 
-/// Which keys have signed every input of `psbt`.
-fn signed_by(psbt: &Psbt) -> BTreeMap<String, bool> {
-    let mut out: BTreeMap<String, bool> = BTreeMap::new();
-    for input in &psbt.inputs {
-        let finalized = input.final_script_witness.is_some() || input.final_script_sig.is_some();
-        let mut here: BTreeMap<String, bool> = BTreeMap::new();
-        for (pk, (fp, _)) in &input.bip32_derivation {
-            let key = bitcoin::PublicKey::new(*pk);
-            let has = finalized || input.partial_sigs.contains_key(&key);
-            here.insert(fp.to_string(), has);
-        }
-        for (fp, has) in here {
-            let e = out.entry(fp).or_insert(true);
-            *e &= has;
-        }
-    }
-    out
-}
-
 #[tauri::command]
 pub async fn vault_signatures(
     state: State<'_, AppState>,
@@ -659,32 +647,27 @@ pub async fn vault_signatures(
     let (config, keys) = vault_keys(spec, u.config.network, &our_fingerprint(u)?)?;
     let psbt =
         Psbt::from_str(psbt.trim()).map_err(|_| Error::Invalid("That isn't a PSBT".into()))?;
-    let by = signed_by(&psbt);
+    let signed_list = multisig::signers(&config, &psbt)?;
     let keys: Vec<SignerStatus> = keys
         .iter()
         .map(|k| SignerStatus {
             fingerprint: k.fingerprint.clone(),
             label: k.label.clone(),
             source: k.source.clone(),
-            signed: by.get(&k.fingerprint).copied().unwrap_or(false),
+            signed: config
+                .cosigners
+                .iter()
+                .zip(&signed_list)
+                .any(|(c, s)| *s && c.xpub == k.xpub),
         })
         .collect();
     let signed = keys.iter().filter(|k| k.signed).count() as u8;
     let needed = config.threshold();
-    let destinations = psbt
-        .unsigned_tx
-        .output
-        .iter()
-        .zip(&psbt.outputs)
-        .filter(|(_, o)| o.bip32_derivation.is_empty() && o.witness_script.is_none())
-        .map(|(txo, _)| Destination {
-            address: bitcoin::Address::from_script(
-                &txo.script_pubkey,
-                u.config.network.to_bitcoin(),
-            )
-            .map(|a| a.to_string())
-            .unwrap_or_else(|_| "an unusual output".into()),
-            amount_sat: txo.value.to_sat(),
+    let destinations = multisig::destinations(&config, &psbt, u.config.network)?
+        .into_iter()
+        .map(|(address, amount_sat)| Destination {
+            address,
+            amount_sat,
         })
         .collect();
     Ok(Signatures {
@@ -696,20 +679,33 @@ pub async fn vault_signatures(
     })
 }
 
-/// Fold a cosigner's signatures into the running PSBT.
+/// Fold a cosigner's signatures into the running PSBT: only signatures that
+/// verify against this transaction are taken, and none already there is
+/// replaced.
 #[tauri::command]
-pub async fn vault_combine(psbt: String, other: String) -> Result<String> {
+pub async fn vault_combine(
+    state: State<'_, AppState>,
+    account: AccountId,
+    psbt: String,
+    other: String,
+) -> Result<String> {
+    state.check_screen()?;
+    let config = {
+        let guard = state.inner.lock().await;
+        let u = guard.as_ref().ok_or(Error::Locked)?;
+        let spec = find(&u.config, &account)?;
+        vault_keys(spec, u.config.network, &our_fingerprint(u)?)?.0
+    };
     let mut a =
         Psbt::from_str(psbt.trim()).map_err(|_| Error::Invalid("That isn't a PSBT".into()))?;
     let b = Psbt::from_str(other.trim())
         .map_err(|_| Error::Invalid("That isn't a signed transaction (PSBT)".into()))?;
-    if a.unsigned_tx.compute_txid() != b.unsigned_tx.compute_txid() {
+    let added = multisig::combine_verified(&config, &mut a, &b)?;
+    if added == 0 {
         return Err(Error::Invalid(
-            "That's a different transaction. Sign this one".into(),
+            "No new signature in that. Make sure it's this payment, signed by a key that hasn't signed yet".into(),
         ));
     }
-    a.combine(b)
-        .map_err(|e| Error::Invalid(format!("Couldn't add those signatures: {e}")))?;
     Ok(a.to_string())
 }
 

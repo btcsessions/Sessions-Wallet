@@ -239,12 +239,12 @@ export interface WalletApi {
   vaultImportPreview(text: string): Promise<VaultImportPreview>;
   vaultImport(vault: VaultImport): Promise<AccountInfo>;
   vaultDetails(account: string): Promise<VaultDetails>;
-  vaultSetKeyLabel(account: string, fingerprint: string, label: string): Promise<void>;
+  vaultSetKeyLabel(account: string, xpub: string, label: string): Promise<void>;
   vaultExport(account: string, format: VaultExportFormat): Promise<ExportFile>;
   /** Which keys have signed this PSBT. */
   vaultSignatures(account: string, psbt: string): Promise<VaultSignatures>;
   /** Add another signer's signatures (a PSBT of the same transaction) to `psbt`. */
-  vaultCombine(psbt: string, other: string): Promise<string>;
+  vaultCombine(account: string, psbt: string, other: string): Promise<string>;
   proposals(account?: string): Promise<Proposal[]>;
   /** Save or update (by id; empty id = new). */
   proposalSave(p: Proposal): Promise<Proposal>;

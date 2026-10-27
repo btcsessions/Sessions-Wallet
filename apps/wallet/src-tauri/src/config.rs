@@ -337,9 +337,23 @@ impl Config {
                     return dup();
                 }
             }
-            AccountSpec::Multisig { descriptors: new, .. } => {
-                if self.accounts.iter().any(|a| {
-                    matches!(a, AccountSpec::Multisig { descriptors: d, .. } if descriptors::same_account(d, new))
+            AccountSpec::Multisig {
+                descriptors: new, ..
+            } => {
+                let read = |d: &DescriptorPair| {
+                    rail_onchain::multisig::MultisigConfig::from_descriptor(
+                        &d.external,
+                        self.network,
+                    )
+                    .ok()
+                };
+                let new_cfg = read(new);
+                if self.accounts.iter().any(|a| match a {
+                    AccountSpec::Multisig { descriptors: d, .. } => {
+                        descriptors::same_account(d, new)
+                            || matches!((read(d), &new_cfg), (Some(x), Some(y)) if x.same_wallet(y))
+                    }
+                    _ => false,
                 }) {
                     return Err(Error::Invalid("That vault is already in the wallet".into()));
                 }
