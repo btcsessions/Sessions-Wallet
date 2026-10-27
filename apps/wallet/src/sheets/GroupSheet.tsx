@@ -363,6 +363,7 @@ function GroupVaultView({ initial }: { initial: GroupView }) {
           </button>
         )}
         {errorLine}
+        <DeleteGroup groupId={id} name={view.vault.name} creator={creator} />
       </Sheet>
     );
   }
@@ -496,7 +497,38 @@ function GroupVaultView({ initial }: { initial: GroupView }) {
       )}
       {members}
       {errorLine}
+      {!view.vault.account && <DeleteGroup groupId={id} name={view.vault.name} creator={view.vault.creator} />}
     </Sheet>
+  );
+}
+
+/** Abandon a vault that isn't set up: everyone is taken out and it's gone from here. */
+function DeleteGroup({ groupId, name, creator }: { groupId: string; name: string; creator: boolean }) {
+  const { open, notify } = useWallet();
+  const [busy, run] = useBusy();
+  const [setError, errorLine] = useError();
+  const del = () =>
+    run(async () => {
+      const what = creator
+        ? `Delete ${name}? Everyone is taken out of it and its invite code stops working. No funds are involved: it isn't set up yet.`
+        : `Leave ${name}? It's removed from this phone. No funds are involved: it isn't set up yet.`;
+      if (!window.confirm(what)) return;
+      setError(null);
+      try {
+        await (await api()).groupDelete(groupId);
+        notify("ok", creator ? `Deleted ${name}` : `Left ${name}`);
+        open({ name: "vault" });
+      } catch (e) {
+        setError(errorText(e));
+      }
+    });
+  return (
+    <>
+      <button className="btn block" style={{ color: "var(--red)", marginTop: 22 }} disabled={busy} onClick={del}>
+        {creator ? "Delete this vault" : "Leave this vault"}
+      </button>
+      {errorLine}
+    </>
   );
 }
 
@@ -521,6 +553,7 @@ export function GroupSheet({ groupId }: { groupId?: string }) {
   return (
     <Sheet title="Group vault">
       <p className="empty">{error ?? "Loading…"}</p>
+      {error && <DeleteGroup groupId={groupId} name="this vault" creator={false} />}
     </Sheet>
   );
 }

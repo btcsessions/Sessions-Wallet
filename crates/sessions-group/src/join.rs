@@ -317,9 +317,9 @@ mod tests {
         let ev = beacon_event(&code, &beacon, now).unwrap();
         assert!(!ev.content.contains("Family"));
         assert_ne!(ev.pubkey, host.public_hex());
-        assert_eq!(open_beacon(&code, &[ev.clone()], now), Some(beacon.clone()));
+        assert_eq!(open_beacon(&code, std::slice::from_ref(&ev), now), Some(beacon.clone()));
         // Wrong code, or expired: nothing.
-        assert_eq!(open_beacon(&JoinCode::generate(), &[ev.clone()], now), None);
+        assert_eq!(open_beacon(&JoinCode::generate(), std::slice::from_ref(&ev), now), None);
         assert_eq!(open_beacon(&code, &[ev], now + CODE_LIFETIME_SECS + 1), None);
 
         let req = request_event(&code, &host.public_hex(), &joiner, "Mom", now).unwrap();

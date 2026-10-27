@@ -258,6 +258,19 @@ class MarmotPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun leave(invoke: Invoke) {
+        val args = invoke.parseArgs(GroupArgs::class.java)
+        run(invoke, "leave") {
+            val (m, a) = ready()
+            // Leaving fails when we're the only member or admin; wiping it
+            // here is what matters.
+            try { m.leaveGroup(a, args.groupId) } catch (e: Throwable) { Log.w(TAG, "leave", e) }
+            m.deleteGroupLocal(a, args.groupId)
+            JSObject()
+        }
+    }
+
+    @Command
     fun groups(invoke: Invoke) {
         run(invoke, "groups") {
             val (m, a) = ready()

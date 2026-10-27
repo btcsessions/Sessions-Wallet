@@ -96,6 +96,7 @@ pub struct Message {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 struct GroupId {
     group_id: String,
@@ -195,6 +196,12 @@ impl<R: Runtime> Marmot<R> {
 
     pub async fn decline(&self, group: &str) -> Result<()> {
         let _: Empty = call!(self, "decline", serde_json::json!({ "groupId": group }))?;
+        Ok(())
+    }
+
+    /// Leave a group (if the group allows it) and wipe it from this device.
+    pub async fn leave(&self, group: &str) -> Result<()> {
+        let _: Empty = call!(self, "leave", serde_json::json!({ "groupId": group }))?;
         Ok(())
     }
 

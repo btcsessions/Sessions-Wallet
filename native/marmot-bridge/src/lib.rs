@@ -286,6 +286,14 @@ fn dispatch(method: &str, a: &Value) -> Result<Value, String> {
             b.rt.block_on(m.decline_group_invite(acct, str_arg(a, "groupId")?)).map_err(msg)?;
             Ok(json!({}))
         }
+        "leave" => {
+            let (m, acct) = current(b)?;
+            let g = str_arg(a, "groupId")?;
+            // Fails when we're the only member or admin; the wipe is what matters.
+            let _ = b.rt.block_on(m.leave_group(acct.clone(), g.clone()));
+            b.rt.block_on(m.delete_group_local(acct, g)).map_err(msg)?;
+            Ok(json!({}))
+        }
         "groups" => {
             let (m, acct) = current(b)?;
             let rows = m.chat_list(acct.clone(), true).map_err(msg)?;

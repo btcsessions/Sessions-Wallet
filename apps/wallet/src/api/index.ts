@@ -274,6 +274,8 @@ export interface WalletApi {
   groupList(): Promise<GroupList>;
   /** Account ids of vaults run as group vaults. */
   groupAccounts(): Promise<string[]>;
+  /** Abandon a group vault that isn't set up yet. */
+  groupDelete(groupId: string): Promise<void>;
   groupRespond(groupId: string, accept: boolean): Promise<void>;
   groupSetName(name: string): Promise<void>;
   groupPropose(groupId: string, slots: { holder: string; label: string }[]): Promise<GroupView>;

@@ -57,6 +57,9 @@ struct Store {
     /// Our own name, as given when creating or joining.
     #[serde(default)]
     my_name: String,
+    /// Groups deleted here: not picked up again from the runtime.
+    #[serde(default)]
+    removed: Vec<String>,
 }
 
 fn path(state: &AppState) -> std::path::PathBuf {
@@ -402,6 +405,9 @@ pub async fn group_list(app: AppHandle, state: State<'_, AppState>) -> Result<Gr
     let mut invites = Vec::new();
     let mut changed = false;
     for r in rows {
+        if s.removed.contains(&r.group_id) {
+            continue;
+        }
         if r.pending {
             let from = r.welcomer.clone().unwrap_or_default();
             if let Some(i) = js.requested.iter().position(|q| q.host == from) {
@@ -471,6 +477,39 @@ pub async fn group_respond(app: AppHandle, state: State<'_, AppState>, group_id:
         marmot(&app).decline(&group_id).await.map_err(net)?;
     }
     Ok(())
+}
+
+/// Abandon a group vault that isn't set up yet: stop the join code, take
+/// everyone out (when we made it), leave, and forget it on this device.
+/// A finished vault is a wallet account; that's removed like any account.
+#[tauri::command]
+pub async fn group_delete(app: AppHandle, state: State<'_, AppState>, group_id: String) -> Result<()> {
+    state.check_screen()?;
+    let mut s = load(&state);
+    let v = s.vaults.iter().find(|v| v.group_id == group_id).cloned();
+    if v.as_ref().is_some_and(|v| v.account.is_some()) {
+        return Err(Error::Invalid(
+            "This vault is set up: it's a wallet account now. Remove it from the account's settings.".into(),
+        ));
+    }
+    let _ = group_join::close_code(&state, &group_id);
+    if marmot(&app).available() {
+        let me = ready(&app, &state).await?;
+        if v.as_ref().is_some_and(|v| v.creator) {
+            if let Ok(m) = marmot(&app).members(&group_id).await {
+                let others: Vec<String> = m.members.into_iter().filter(|x| *x != me).collect();
+                if !others.is_empty() {
+                    let _ = marmot(&app).remove(&group_id, &others).await;
+                }
+            }
+        }
+        marmot(&app).leave(&group_id).await.map_err(net)?;
+    }
+    s.vaults.retain(|v| v.group_id != group_id);
+    if !s.removed.contains(&group_id) {
+        s.removed.push(group_id);
+    }
+    save(&state, &s)
 }
 
 pub(crate) fn remember_name(state: &AppState, name: &str) -> Result<()> {
