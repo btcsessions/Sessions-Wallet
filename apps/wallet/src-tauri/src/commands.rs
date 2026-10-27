@@ -114,7 +114,7 @@ pub(crate) async fn unlock_passcode(state: &AppState, passcode: &str) -> Result<
 }
 
 #[tauri::command]
-pub async fn lock(state: State<'_, AppState>) -> Result<()> {
+pub async fn lock(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<()> {
     // Watching for payments with the app closed: lock the screen only, so
     // the wallet keeps its connections. Otherwise lock it for real.
     if state.alerts.settings().background && state.inner.lock().await.is_some() {
@@ -124,6 +124,14 @@ pub async fn lock(state: State<'_, AppState>) -> Result<()> {
         return Ok(());
     }
     state.lock().await;
+    // Group messaging holds the wallet's Nostr key in memory: drop it too.
+    {
+        use tauri::Manager;
+        let m = app.state::<tauri_plugin_marmot::Marmot<tauri::Wry>>();
+        if m.available() {
+            let _ = m.stop().await;
+        }
+    }
     Ok(())
 }
 

@@ -42,6 +42,34 @@ let mockBiometric = false;
 const alerts: AlertsStatus = { supported: true, notifications: "prompt", watching: false, unrestricted: false };
 const paymentListeners = new Set<(a: Arrival) => void>();
 let nwc: { c: NwcConnection; uri: string }[] = [];
+const ME = "a".repeat(64);
+const MOM = "b".repeat(64);
+const DAN = "c".repeat(64);
+interface MockGroup {
+  vault: import("./types").GroupVault;
+  members: string[];
+  code: import("./types").GroupCode | null;
+  setup: import("./types").GroupSetupState | null;
+  waiting: import("./types").GroupJoiner[];
+}
+const groups = new Map<string, MockGroup>();
+function group(id: string): MockGroup {
+  const g = groups.get(id);
+  if (!g) throw "That group vault isn't on this phone";
+  return g;
+}
+function groupView(g: MockGroup): import("./types").GroupView {
+  const npub = (p: string) => `npub1${p.slice(0, 1).repeat(58)}`;
+  return {
+    vault: { ...g.vault, names: { ...g.vault.names } },
+    me: ME,
+    members: g.members.map((p) => ({ pubkey: p, npub: npub(p), name: g.vault.names[p] ?? "Someone", admin: p === ME })),
+    code: g.code,
+    setup: g.setup ? JSON.parse(JSON.stringify(g.setup)) : null,
+    mySlots: g.setup ? g.setup.slots.flatMap((x, i) => (x.holder === ME ? [i] : [])) : [],
+    shortCode: g.setup?.hash ? "512 334" : null,
+  };
+}
 let nostrId: import("./types").NostrIdentity = {
   npub: "npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw038js35mp4dma8qzvjptg",
   pubkey: "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e",
@@ -1012,6 +1040,108 @@ export const mockApi: WalletApi = {
       /* preview only */
     }
     return true;
+  },
+  async groupCreate(req) {
+    await sleep(500);
+    if (!req.myName.trim()) throw "Add your name (up to 40 characters)";
+    const groupId = `g${Date.now().toString(36)}`;
+    const g: MockGroup = {
+      vault: { groupId, name: req.name.trim() || "Vault", threshold: req.threshold, total: req.total, creator: true, proposal: null, account: null, names: { [ME]: req.myName.trim() }, created: now() },
+      members: [ME],
+      code: { code: "K7QM-2XPA-9TRD", link: "sessionswallet://join/K7QM2XPA9TRD", expires: now() + 86400 },
+      setup: null,
+      waiting: [{ pubkey: MOM, name: "Mom", at: now() }, { pubkey: DAN, name: "Dan", at: now() }],
+    };
+    groups.set(groupId, g);
+    return groupView(g);
+  },
+  async groupView(groupId) {
+    return groupView(group(groupId));
+  },
+  async groupCode(groupId) {
+    const g = group(groupId);
+    g.code = { code: "M3RT-9QPX-ZK2D", link: "sessionswallet://join/M3RT9QPXZK2D", expires: now() + 86400 };
+    return groupView(g);
+  },
+  async groupRequests(groupId) {
+    await sleep(400);
+    return group(groupId).waiting.slice(0, 1);
+  },
+  async groupApprove(groupId, joiner) {
+    await sleep(400);
+    const g = group(groupId);
+    g.waiting = g.waiting.filter((w) => w.pubkey !== joiner.pubkey);
+    g.members.push(joiner.pubkey);
+    g.vault.names[joiner.pubkey] = joiner.name;
+    return groupView(g);
+  },
+  async groupIgnore(groupId, pubkey) {
+    const g = group(groupId);
+    g.waiting = g.waiting.filter((w) => w.pubkey !== pubkey);
+  },
+  async groupList() {
+    return { vaults: [...groups.values()].map((g) => ({ ...g.vault })), invites: [] };
+  },
+  async groupRespond() {},
+  async groupSetName() {},
+  async groupPropose(groupId, slots) {
+    await sleep(400);
+    const g = group(groupId);
+    if (slots.length !== g.vault.total) throw `Assign all ${g.vault.total} keys`;
+    g.vault.proposal = "p1";
+    g.code = null;
+    g.setup = {
+      proposal: { id: "p1", name: g.vault.name, threshold: g.vault.threshold, slots, network: "bitcoin" },
+      proposer: ME,
+      slots: slots.map((s) => ({ ...s, key: null, fingerprint: null, device: null, confirmed: false })),
+      descriptor: null, hash: null, firstAddress: null, finalized: false, ready: false, problems: [],
+    };
+    return groupView(g);
+  },
+  async groupSubmitKey(groupId, slot, key, device) {
+    await sleep(400);
+    const g = group(groupId);
+    const st = g.setup!;
+    const fp = key.slice(1, 9);
+    if (st.slots.some((x, i) => i !== slot && x.fingerprint === fp)) throw "That key is already in this vault. Each key needs its own device or seed";
+    Object.assign(st.slots[slot], { key, fingerprint: fp, device });
+    // The others add theirs.
+    st.slots.forEach((x, i) => {
+      if (!x.key && x.holder !== ME) Object.assign(x, { key: fakeKey(randFp() + i), fingerprint: randFp(), device: "Coldcard Q" });
+    });
+    if (st.slots.every((x) => x.key)) {
+      st.descriptor = `wsh(sortedmulti(${st.proposal.threshold},…))#mock`;
+      st.hash = "4d2c9a7e" + "0".repeat(56);
+      st.firstAddress = "bc1qgroupvault0address0000000000000000000000000000000000000";
+    }
+    return groupView(g);
+  },
+  async groupFinalize(groupId) {
+    await sleep(400);
+    const st = group(groupId).setup!;
+    st.finalized = true;
+    st.slots.forEach((x) => { if (x.holder !== ME) x.confirmed = true; });
+    return groupView(group(groupId));
+  },
+  async groupConfirm(groupId) {
+    await sleep(500);
+    const g = group(groupId);
+    const st = g.setup!;
+    st.slots.forEach((x) => { x.confirmed = true; });
+    st.ready = true;
+    const a = await this.vaultCreate({ name: g.vault.name, threshold: st.proposal.threshold, keys: st.slots.map((x) => ({ key: x.key!, label: x.label, source: x.holder === ME && x.device === "This phone" ? { type: "phone", account: 0 } : { type: "external" } })) });
+    g.vault.account = a.id;
+    return a;
+  },
+  async groupJoinLookup(code) {
+    await sleep(500);
+    const c = code.trim().replace(/^sessionswallet:\/\/join\//, "").replace(/[-\s]/g, "").toUpperCase();
+    if (!/^[0-9A-HJKMNP-TV-Z]{12}$/.test(c)) throw "That isn't a join code (12 letters and numbers)";
+    return { name: "Family vault", host: "b".repeat(64), hostNpub: "npub1h0ujkgtktmqw4xx7cxv2r6mevhqeekgxg9r5qumw7t4q5dfanx4qkwxe4w" };
+  },
+  async groupJoinSend(_code, name) {
+    await sleep(500);
+    if (!name.trim()) throw "Add your name (up to 40 characters) so they know it's you";
   },
   async nostrIdentity() {
     return { ...nostrId };

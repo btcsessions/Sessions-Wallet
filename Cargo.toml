@@ -16,6 +16,7 @@ members = [
     "apps/wallet/src-tauri/plugins/tauri-plugin-biometric-vault",
     "apps/wallet/src-tauri/plugins/tauri-plugin-alerts",
     "apps/wallet/src-tauri/plugins/tauri-plugin-files",
+    "apps/wallet/src-tauri/plugins/tauri-plugin-marmot",
 ]
 default-members = [
     "crates/sessions-core",

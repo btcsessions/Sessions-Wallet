@@ -7874,12 +7874,14 @@ dependencies = [
  "hkdf",
  "rail-onchain",
  "rand 0.8.8",
+ "rustls",
  "serde",
  "serde_json",
  "sessions-backup",
  "sessions-core",
  "sessions-nwc",
  "sha2",
+ "tokio",
  "zeroize",
 ]
 
@@ -7931,6 +7933,7 @@ dependencies = [
  "serde_json",
  "sessions-backup",
  "sessions-core",
+ "sessions-group",
  "sessions-nwc",
  "tauri",
  "tauri-build",
@@ -7940,6 +7943,7 @@ dependencies = [
  "tauri-plugin-deep-link",
  "tauri-plugin-files",
  "tauri-plugin-jade",
+ "tauri-plugin-marmot",
  "tauri-plugin-opener",
  "tauri-plugin-passkey",
  "tempfile",
@@ -8723,6 +8727,16 @@ name = "tauri-plugin-jade"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
+name = "tauri-plugin-marmot"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
  "tauri",

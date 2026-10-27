@@ -15,8 +15,10 @@ pub const KIND_SPEND: u16 = 4605;
 pub const KIND_SIGNATURE: u16 = 4606;
 pub const KIND_CANCEL: u16 = 4607;
 pub const KIND_BROADCAST: u16 = 4608;
+/// "This is me": a member's name, sent on joining.
+pub const KIND_HELLO: u16 = 4609;
 
-pub const WALLET_KINDS: [u16; 8] = [
+pub const WALLET_KINDS: [u16; 9] = [
     KIND_VAULT_PROPOSAL,
     KIND_KEY,
     KIND_FINALIZE,
@@ -25,6 +27,7 @@ pub const WALLET_KINDS: [u16; 8] = [
     KIND_SIGNATURE,
     KIND_CANCEL,
     KIND_BROADCAST,
+    KIND_HELLO,
 ];
 
 /// Protocol version in every message.
@@ -130,8 +133,15 @@ pub struct Broadcast {
     pub txid: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hello {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalletMsg {
+    Hello(Hello),
     Proposal(VaultProposal),
     Key(KeySubmission),
     Finalize(Finalize),
@@ -168,6 +178,7 @@ fn dec<T: for<'de> Deserialize<'de>>(content: &str) -> Result<T> {
 impl WalletMsg {
     pub fn kind(&self) -> u16 {
         match self {
+            WalletMsg::Hello(_) => KIND_HELLO,
             WalletMsg::Proposal(_) => KIND_VAULT_PROPOSAL,
             WalletMsg::Key(_) => KIND_KEY,
             WalletMsg::Finalize(_) => KIND_FINALIZE,
@@ -182,6 +193,7 @@ impl WalletMsg {
     /// The event content.
     pub fn content(&self) -> String {
         match self {
+            WalletMsg::Hello(b) => enc(b),
             WalletMsg::Proposal(b) => enc(b),
             WalletMsg::Key(b) => enc(b),
             WalletMsg::Finalize(b) => enc(b),
@@ -195,6 +207,7 @@ impl WalletMsg {
 
     pub fn parse(kind: u16, content: &str) -> Result<Self> {
         Ok(match kind {
+            KIND_HELLO => WalletMsg::Hello(dec(content)?),
             KIND_VAULT_PROPOSAL => WalletMsg::Proposal(dec(content)?),
             KIND_KEY => WalletMsg::Key(dec(content)?),
             KIND_FINALIZE => WalletMsg::Finalize(dec(content)?),

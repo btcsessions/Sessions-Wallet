@@ -18,6 +18,7 @@ tauri-build = { version = "2.6", features = [] }
 sessions-core.workspace = true
 sessions-backup.workspace = true
 sessions-nwc.workspace = true
+sessions-group.workspace = true
 rail-onchain.workspace = true
 rail-spark.workspace = true
 rail-liquid.workspace = true
@@ -44,6 +45,7 @@ tauri-plugin-biometric-vault = { path = "plugins/tauri-plugin-biometric-vault" }
 tauri-plugin-alerts = { path = "plugins/tauri-plugin-alerts" }
 # Save or share wallet export files.
 tauri-plugin-files = { path = "plugins/tauri-plugin-files" }
+tauri-plugin-marmot = { path = "plugins/tauri-plugin-marmot" }
 rand = "0.8"
 async-trait.workspace = true
 bitcoin.workspace = true

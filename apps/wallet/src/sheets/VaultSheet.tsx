@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AccountInfo, KeySource, VaultImportPreview, VaultKey } from "../api/types";
+import type { AccountInfo, GroupList, KeySource, VaultImportPreview, VaultKey } from "../api/types";
 import { Icon } from "../components/Icon";
 import { ScanButton, type ScanResult } from "../components/Scanner";
 import { Sheet, useBusy } from "../components/ui";
@@ -32,7 +32,7 @@ export function sourceText(s: KeySource): string {
 }
 
 /** M of N with up and down buttons, and what the choice means. */
-function QuorumPicker({ m, n, onChange }: { m: number; n: number; onChange: (m: number, n: number) => void }) {
+export function QuorumPicker({ m, n, onChange }: { m: number; n: number; onChange: (m: number, n: number) => void }) {
   const [custom, setCustom] = useState(!PRESETS.some((p) => p.m === m && p.n === n));
   return (
     <>
@@ -100,11 +100,61 @@ function QuorumPicker({ m, n, onChange }: { m: number; n: number; onChange: (m: 
   );
 }
 
+/** Group vaults in progress, and invites from people you share a vault with. */
+function GroupVaults() {
+  const { open } = useWallet();
+  const [list, setList] = useState<GroupList | null>(null);
+  const [busy, run] = useBusy();
+  const load = async () => {
+    try {
+      setList(await (await api()).groupList());
+    } catch {
+      /* groups unavailable here */
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+  if (!list || (list.vaults.length === 0 && list.invites.length === 0)) return null;
+  return (
+    <>
+      <p className="group-label">Group vaults</p>
+      <div className="group">
+        {list.invites.map((i) => (
+          <div className="cell" key={i.groupId}>
+            <span className="grow">
+              <b>{i.name}</b>
+              <br />
+              <small className="muted">Invite</small>
+            </span>
+            <button className="text-button" disabled={busy} onClick={() => run(async () => ((await api()).groupRespond(i.groupId, false), await load()))}>
+              Decline
+            </button>
+            <button className="btn small primary" disabled={busy} onClick={() => run(async () => ((await (await api()).groupRespond(i.groupId, true)), open({ name: "group", groupId: i.groupId })))}>
+              Join
+            </button>
+          </div>
+        ))}
+        {list.vaults.map((v) => (
+          <button className="cell" key={v.groupId} onClick={() => open({ name: "group", groupId: v.groupId })}>
+            <span className="grow" style={{ textAlign: "left" }}>
+              {v.name}
+              <br />
+              <small className="muted">{v.account ? "Ready" : v.proposal ? "Adding keys" : v.creator ? "Inviting" : "Waiting for setup"}</small>
+            </span>
+            <Icon name="chevron" size={16} />
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 type Step = "start" | "quorum" | "keys" | "review" | "import" | "importReview" | "done";
 
 /** Create a multisig vault from keys, or import one from another wallet's file or QR. */
 export function VaultSheet() {
-  const { close, notify, refresh, addModule } = useWallet();
+  const { close, open, notify, refresh, addModule } = useWallet();
   const [step, setStep] = useState<Step>("start");
   const [m, setM] = useState(2);
   const [n, setN] = useState(3);
@@ -263,7 +313,22 @@ export function VaultSheet() {
             <strong>Import a vault</strong>
             <span>From Sparrow, Nunchuk, Caravan, BlueWallet and others, by file or QR</span>
           </button>
+          <button className="device-card featured" onClick={() => open({ name: "group" })}>
+            <span className="device-icon-wrap">
+              <Icon name="people" size={36} />
+            </span>
+            <strong>Vault with others</strong>
+            <span>Family or partners: each person adds their own key from their own phone</span>
+          </button>
+          <button className="device-card featured" onClick={() => open({ name: "group-join" })}>
+            <span className="device-icon-wrap">
+              <Icon name="scan" size={36} />
+            </span>
+            <strong>Join a vault</strong>
+            <span>Someone invited you: scan their QR or enter their code</span>
+          </button>
         </div>
+        <GroupVaults />
       </Sheet>
     );
   }

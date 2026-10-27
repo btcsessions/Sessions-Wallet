@@ -53,6 +53,9 @@
         },
         "postInstallScript": "linux/postinst.sh"
       }
+    },
+    "android": {
+      "minSdkVersion": 26
     }
   },
   "plugins": {

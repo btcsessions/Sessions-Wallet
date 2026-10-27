@@ -10,6 +10,8 @@ mod jade;
 mod logcat;
 mod monitor;
 mod multisig_hw;
+mod group;
+mod group_join;
 mod nostr_id;
 mod nwc;
 mod passkey;
@@ -40,6 +42,7 @@ pub fn run() {
         .plugin(tauri_plugin_alerts::init())
         // Save or share wallet export files.
         .plugin(tauri_plugin_files::init())
+        .plugin(tauri_plugin_marmot::init())
         // The QR scanner uses the camera from inside the webview.
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
@@ -235,6 +238,21 @@ pub fn run() {
             vault::proposals,
             vault::proposal_save,
             vault::proposal_delete,
+            group::group_create,
+            group::group_view,
+            group::group_code,
+            group::group_requests,
+            group::group_approve,
+            group::group_ignore,
+            group::group_list,
+            group::group_respond,
+            group::group_set_name,
+            group::group_propose,
+            group::group_submit_key,
+            group::group_finalize,
+            group::group_confirm,
+            group_join::group_join_lookup,
+            group_join::group_join_send,
             nostr_id::nostr_identity,
             nostr_id::nostr_update,
             nwc::nwc_list,

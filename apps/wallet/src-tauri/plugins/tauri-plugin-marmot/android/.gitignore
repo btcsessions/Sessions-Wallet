@@ -1,0 +1,5 @@
+/build
+/.tauri
+# MarmotKit build outputs (scripts/build-marmotkit.sh)
+/src/main/jniLibs/
+/src/main/java/generated/

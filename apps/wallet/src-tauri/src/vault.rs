@@ -227,7 +227,7 @@ fn clean_label(label: &str, i: usize) -> String {
 
 /// Build the vault spec from keys: checks the quorum, works out which key is
 /// this phone's.
-fn build(u: &mut crate::state::Unlocked, v: NewVault) -> Result<AccountSpec> {
+pub(crate) fn build(u: &mut crate::state::Unlocked, v: NewVault) -> Result<AccountSpec> {
     let network = u.config.network;
     let master = u.seed.master_xpriv(network)?;
     let our_fp = master

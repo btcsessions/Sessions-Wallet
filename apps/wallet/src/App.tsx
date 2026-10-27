@@ -17,6 +17,8 @@ import { CoinsSheet } from "./sheets/CoinsSheet";
 import { DiscoverSheet } from "./sheets/DiscoverSheet";
 import { ContactsSheet } from "./sheets/ContactsSheet";
 import { CheckinSheet } from "./components/Checkins";
+import { GroupSheet } from "./sheets/GroupSheet";
+import { GroupJoinSheet } from "./sheets/GroupJoinSheet";
 import { NostrIdSheet } from "./sheets/NostrIdSheet";
 import { NwcSheet } from "./sheets/NwcSheet";
 import { VaultSheet } from "./sheets/VaultSheet";
@@ -57,6 +59,10 @@ function ActiveSheet() {
       return <SettingsSheet />;
     case "nwc":
       return <NwcSheet />;
+    case "group":
+      return <GroupSheet key={sheet.groupId ?? "new"} groupId={sheet.groupId} />;
+    case "group-join":
+      return <GroupJoinSheet code={sheet.code} />;
     case "nostr-id":
       return <NostrIdSheet />;
     case "checkin":

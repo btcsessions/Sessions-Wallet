@@ -660,3 +660,80 @@ export interface NostrIdentity {
   invites: InviteFilter;
   discoverable: boolean;
 }
+
+/** What a join code is for. */
+export interface GroupJoinFound {
+  name: string;
+  host: string;
+  hostNpub: string;
+}
+
+/** A group vault this wallet takes part in. */
+export interface GroupVault {
+  groupId: string;
+  name: string;
+  threshold: number;
+  total: number;
+  creator: boolean;
+  proposal: string | null;
+  account: string | null;
+  names: Record<string, string>;
+  created: number;
+}
+
+export interface GroupSlotState {
+  holder: string;
+  label: string;
+  key: string | null;
+  fingerprint: string | null;
+  device: string | null;
+  confirmed: boolean;
+}
+
+export interface GroupSetupState {
+  proposal: { id: string; name: string; threshold: number; slots: { holder: string; label: string }[]; network: string };
+  proposer: string;
+  slots: GroupSlotState[];
+  descriptor: string | null;
+  hash: string | null;
+  firstAddress: string | null;
+  finalized: boolean;
+  ready: boolean;
+  problems: string[];
+}
+
+export interface GroupMember {
+  pubkey: string;
+  npub: string;
+  name: string;
+  admin: boolean;
+}
+
+export interface GroupCode {
+  /** K7QM-2XPA-9TRD */
+  code: string;
+  /** sessionswallet://join/… for the QR and texting */
+  link: string;
+  expires: number;
+}
+
+export interface GroupView {
+  vault: GroupVault;
+  me: string;
+  members: GroupMember[];
+  code: GroupCode | null;
+  setup: GroupSetupState | null;
+  mySlots: number[];
+  shortCode: string | null;
+}
+
+export interface GroupJoiner {
+  pubkey: string;
+  name: string;
+  at: number;
+}
+
+export interface GroupList {
+  vaults: GroupVault[];
+  invites: { groupId: string; name: string; fromNpub: string | null }[];
+}

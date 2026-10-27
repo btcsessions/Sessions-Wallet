@@ -22,6 +22,8 @@ export type SheetName =
   | { name: "checkin" }
   | { name: "nwc" }
   | { name: "nostr-id" }
+  | { name: "group-join"; code?: string }
+  | { name: "group"; groupId?: string }
   | { name: "vault" }
   | { name: "vault-export"; account: string }
   | { name: "proposal"; id: string };

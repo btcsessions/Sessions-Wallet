@@ -38,6 +38,10 @@ import type {
   AlertsStatus,
   Arrival,
   NostrIdentity,
+  GroupJoinFound,
+  GroupView,
+  GroupJoiner,
+  GroupList,
   InviteFilter,
   NwcConnection,
   NwcNew,
@@ -253,6 +257,26 @@ export interface WalletApi {
   proposalDelete(id: string): Promise<void>;
   /** Save (save-as screen; Downloads on desktop) or share a file. False if the user backed out. */
   fileExport(file: ExportFile, share: boolean): Promise<boolean>;
+  /** Group vaults: make one (the group plus a join code). */
+  groupCreate(req: { name: string; threshold: number; total: number; myName: string }): Promise<GroupView>;
+  groupView(groupId: string): Promise<GroupView>;
+  /** Creator: a fresh join code. */
+  groupCode(groupId: string): Promise<GroupView>;
+  groupRequests(groupId: string): Promise<GroupJoiner[]>;
+  groupApprove(groupId: string, joiner: GroupJoiner): Promise<GroupView>;
+  groupIgnore(groupId: string, pubkey: string): Promise<void>;
+  groupList(): Promise<GroupList>;
+  groupRespond(groupId: string, accept: boolean): Promise<void>;
+  groupSetName(name: string): Promise<void>;
+  groupPropose(groupId: string, slots: { holder: string; label: string }[]): Promise<GroupView>;
+  groupSubmitKey(groupId: string, slot: number, key: string, device: string | null): Promise<GroupView>;
+  groupFinalize(groupId: string): Promise<GroupView>;
+  /** Checked address #0 on my device: adds the vault here and tells the group. */
+  groupConfirm(groupId: string): Promise<AccountInfo>;
+  /** Group vaults: what a join code (or link) is for. */
+  groupJoinLookup(code: string): Promise<GroupJoinFound>;
+  /** Ask to join; the creator approves, then the invite arrives. */
+  groupJoinSend(code: string, name: string): Promise<void>;
   /** The wallet's Nostr identity for group vaults. */
   nostrIdentity(): Promise<NostrIdentity>;
   /** `socialNpub: ""` unlinks. */
