@@ -63,9 +63,12 @@ protoc --version
 
 step "Source"
 SRC="$WORK/sessions-wallet"
-if [[ -f "$DL/sessions-wallet-src.tar.gz" ]]; then
+# Safari may unpack the .gz on download, leaving a plain .tar.
+ARCHIVE="$(ls -t "$DL"/sessions-wallet-src*.tar.gz "$DL"/sessions-wallet-src*.tar 2>/dev/null | head -1 || true)"
+if [[ -n "$ARCHIVE" ]]; then
+  echo "Using $ARCHIVE"
   rm -rf "$SRC.new" && mkdir -p "$SRC.new"
-  tar -xzf "$DL/sessions-wallet-src.tar.gz" -C "$SRC.new" --strip-components 1
+  tar -xf "$ARCHIVE" -C "$SRC.new" --strip-components 1
   # Keep build caches (target/) from an earlier run; replace the code.
   if [[ -d "$SRC/target" ]]; then mv "$SRC/target" "$SRC.new/target"; fi
   rm -rf "$SRC" && mv "$SRC.new" "$SRC"
