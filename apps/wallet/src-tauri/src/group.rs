@@ -716,3 +716,22 @@ pub async fn group_confirm(app: AppHandle, state: State<'_, AppState>, group_id:
         .clone();
     wallet.account(&id).await?.info().await
 }
+
+/// Account ids of the vaults run as group vaults (for their icon).
+#[tauri::command]
+pub async fn group_accounts(state: State<'_, AppState>) -> Result<Vec<String>> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    Ok(u.config
+        .accounts
+        .iter()
+        .filter_map(|a| match a {
+            AccountSpec::Multisig {
+                id,
+                coordination: Coordination::Group { .. },
+                ..
+            } => Some(id.to_string()),
+            _ => None,
+        })
+        .collect())
+}

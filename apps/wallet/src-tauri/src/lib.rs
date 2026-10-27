@@ -255,6 +255,7 @@ pub fn run() {
             group::group_approve,
             group::group_ignore,
             group::group_list,
+            group::group_accounts,
             group::group_respond,
             group::group_set_name,
             group::group_propose,

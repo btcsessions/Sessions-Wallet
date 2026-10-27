@@ -1088,6 +1088,9 @@ export const mockApi: WalletApi = {
     return { vaults: [...groups.values()].map((g) => ({ ...g.vault })), invites: [] };
   },
   async groupRespond() {},
+  async groupAccounts() {
+    return [...groups.values()].flatMap((g) => (g.vault.account ? [g.vault.account] : []));
+  },
   async groupSetName() {},
   async groupPropose(groupId, slots) {
     await sleep(400);

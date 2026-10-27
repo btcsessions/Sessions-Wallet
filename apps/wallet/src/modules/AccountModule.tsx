@@ -49,7 +49,7 @@ export function walletAccounts(accounts: AccountInfo[], a: AccountInfo): Account
 }
 
 export function AccountModule({ module }: ModuleProps) {
-  const { accounts, unit, price, currency, open } = useWallet();
+  const { accounts, unit, price, currency, open, groupAccounts } = useWallet();
   const def = moduleDef(module.id)!;
   const account = resolveAccount(accounts, module.id);
 
@@ -81,7 +81,11 @@ export function AccountModule({ module }: ModuleProps) {
     <>
       {multi && <span className="stack-edge" aria-hidden />}
       <div className="tile-title" style={{ ["--tint" as string]: accountColor(account) }}>
-        {account.custody.type === "hardware" ? <DeviceIcon device={account.custody.device} size={17} /> : <Icon name={def.icon} size={16} />}
+        {account.custody.type === "hardware" ? (
+          <DeviceIcon device={account.custody.device} size={17} />
+        ) : (
+          <Icon name={account.custody.type === "multisig" && groupAccounts.includes(account.id) ? "groupVault" : def.icon} size={16} />
+        )}
         {title}
       </div>
       <div className="balance-line">

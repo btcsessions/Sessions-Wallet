@@ -272,6 +272,8 @@ export interface WalletApi {
   groupApprove(groupId: string, joiner: GroupJoiner): Promise<GroupView>;
   groupIgnore(groupId: string, pubkey: string): Promise<void>;
   groupList(): Promise<GroupList>;
+  /** Account ids of vaults run as group vaults. */
+  groupAccounts(): Promise<string[]>;
   groupRespond(groupId: string, accept: boolean): Promise<void>;
   groupSetName(name: string): Promise<void>;
   groupPropose(groupId: string, slots: { holder: string; label: string }[]): Promise<GroupView>;

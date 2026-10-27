@@ -54,6 +54,8 @@ interface State {
   price: number | null;
   editing: boolean;
   sheet: SheetName | null;
+  /** Vault accounts run with other people (group vaults). */
+  groupAccounts: string[];
   /** Desktop window: a sidebar and pages instead of a phone screen. */
   desktop: boolean;
   /** Desktop: what the main area shows. */
@@ -195,6 +197,7 @@ export const useWallet = create<State>((set, get) => {
     sheet: null,
     desktop: false,
     page: { kind: "home" },
+    groupAccounts: [],
     toast: null,
     syncing: false,
     isMock: false,
@@ -262,15 +265,16 @@ export const useWallet = create<State>((set, get) => {
       const a = await api();
       try {
         const fiats = get().currencies;
-        const [accounts, activity, layout, priceList, unavailable] = await Promise.all([
+        const [accounts, activity, layout, priceList, unavailable, groupAccounts] = await Promise.all([
           a.accounts(),
           a.activity(50),
           a.layout(),
           Promise.all(fiats.map((c) => a.btcPrice(c).catch(() => null))),
           a.unavailableAccounts().catch(() => []),
+          a.groupAccounts().catch(() => [] as string[]),
         ]);
         const prices = Object.fromEntries(fiats.map((c, i) => [c, priceList[i]]));
-        set({ accounts, activity, layout, prices, price: prices[get().currency] ?? null, unavailable });
+        set({ accounts, activity, layout, prices, price: prices[get().currency] ?? null, unavailable, groupAccounts });
       } catch (e) {
         get().fail(e);
       }

@@ -318,7 +318,7 @@ export function VaultSheet() {
             <>
           <button className="device-card featured" onClick={() => open({ name: "group" })}>
             <span className="device-icon-wrap">
-              <Icon name="people" size={36} />
+              <Icon name="groupVault" size={36} />
             </span>
             <strong>Vault with others</strong>
             <span>Family or partners: each person adds their own key from their own phone</span>

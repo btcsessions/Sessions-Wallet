@@ -173,6 +173,7 @@ export const tauriApi: WalletApi = {
   groupApprove: (groupId, joiner) => invoke("group_approve", { groupId, joiner }),
   groupIgnore: (groupId, pubkey) => invoke("group_ignore", { groupId, pubkey }),
   groupList: () => invoke("group_list"),
+  groupAccounts: () => invoke("group_accounts"),
   groupRespond: (groupId, accept) => invoke("group_respond", { groupId, accept }),
   groupSetName: (name) => invoke("group_set_name", { name }),
   groupPropose: (groupId, slots) => invoke("group_propose", { groupId, slots }),

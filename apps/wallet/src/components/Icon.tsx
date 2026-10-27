@@ -5,7 +5,10 @@ const paths: Record<string, string> = {
   down: "M17 7 7 17M16 17H7V8",
   swap: "M4 8h14l-4-4M20 16H6l4 4",
   bolt: "M13 2 4 14h7l-1 8 9-12h-7l1-8Z",
-  vault: "M4 5h16v14H4zM9 12a3 3 0 1 0 6 0 3 3 0 1 0-6 0M12 9V7M12 17v-2M4 9H2M4 15H2",
+  // A safe's combination dial: numbered ticks over the knob.
+  vault: "M2.5 12a9.5 9.5 0 1 0 19 0 9.5 9.5 0 1 0-19 0M9 13.5a3 3 0 1 0 6 0 3 3 0 1 0-6 0M5.40 12.00L3.60 12.00M6.28 8.70L4.73 7.80M8.70 6.28L7.80 4.73M12.00 5.40L12.00 3.60M15.30 6.28L16.20 4.73M17.72 8.70L19.27 7.80M18.60 12.00L20.40 12.00",
+  // A shield with the vault's people inside: a group vault.
+  groupVault: "M12 2.5 20 5.5v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10v-6zM11 9.5a1 1 0 1 0 2 0 1 1 0 1 0-2 0M10 13.5a2 2 0 0 1 4 0M6.8 11a1 1 0 1 0 2 0 1 1 0 1 0-2 0M15.2 11a1 1 0 1 0 2 0 1 1 0 1 0-2 0M5.9 15a1.9 1.9 0 0 1 3.4-1M18.1 15a1.9 1.9 0 0 0-3.4-1",
   key: "M15 7a4 4 0 1 1-3.9 4.9L4 19v2h3v-2h2v-2h2l1.3-1.3A4 4 0 0 1 15 7Zm1 0h.01",
   device: "M8 2h8v20H8zM11 18h2M10 6h4v5h-4z",
   drop: "M12 3s6 6.6 6 11a6 6 0 0 1-12 0c0-4.4 6-11 6-11Z",
