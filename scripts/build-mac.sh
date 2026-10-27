@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Build the Sessions Wallet Mac app (.dmg) on this Mac, from scratch.
+# Build and install the Sessions Wallet Mac app on this Mac, from scratch.
 #
-#   bash ~/Downloads/build-mac.sh
+#   Double-click "Install Sessions Wallet.command" (next to the source
+#   archive and breez_api_key), or: bash build-mac.sh
 #
 # Uses (and installs only into your user account, no sudo):
 #   - Xcode command-line tools (asks macOS to install them if missing)
@@ -12,12 +13,15 @@
 # Output: ~/sessions-wallet-build/Sessions Wallet_<version>_aarch64.dmg
 set -euo pipefail
 
-DL="${DL:-$HOME/Downloads}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Look next to this script first, then in Downloads.
+if ls "$HERE"/sessions-wallet-src*.tar* >/dev/null 2>&1; then DL="${DL:-$HERE}"; else DL="${DL:-$HOME/Downloads}"; fi
 WORK="$HOME/sessions-wallet-build"
 TOOLS="$WORK/tools"
 LOG="$WORK/build.log"
 mkdir -p "$WORK" "$TOOLS"
 exec > >(tee -a "$LOG") 2>&1
+trap 'echo; echo "Build stopped. Send Claude the last lines of $LOG"' ERR
 step() { printf '\n==> %s\n' "$*"; }
 
 [[ "$(uname -m)" == "arm64" ]] || { echo "This builds for Apple Silicon Macs."; exit 1; }
@@ -25,8 +29,9 @@ step() { printf '\n==> %s\n' "$*"; }
 step "Xcode command-line tools"
 if ! xcode-select -p >/dev/null 2>&1; then
   xcode-select --install || true
-  echo "macOS is installing the command-line tools. When that finishes, run this script again."
-  exit 1
+  echo "macOS is asking to install the command-line tools: click Install in that window."
+  echo "Waiting for it to finish (this can take 10+ minutes)..."
+  until xcode-select -p >/dev/null 2>&1 && [[ -x "$(xcode-select -p)/usr/bin/clang" ]]; do sleep 20; done
 fi
 
 step "Rust"
@@ -94,8 +99,16 @@ cd apps/wallet
 npm ci
 npx tauri build --target aarch64-apple-darwin --bundles app,dmg
 
-DMG="$(ls -t "$SRC"/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -1)"
+BUNDLE="$SRC/target/aarch64-apple-darwin/release/bundle"
+DMG="$(ls -t "$BUNDLE"/dmg/*.dmg | head -1)"
 cp "$DMG" "$WORK/"
+APP="$(ls -d "$BUNDLE"/macos/*.app | head -1)"
+step "Installing"
+DEST=/Applications
+[[ -w "$DEST" ]] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
+rm -rf "$DEST/$(basename "$APP")"
+ditto "$APP" "$DEST/$(basename "$APP")"
 step "Done"
-echo "Mac app: $WORK/$(basename "$DMG")"
-open "$WORK"
+echo "Installed: $DEST/$(basename "$APP")"
+echo "(A .dmg copy to share is in $WORK.) You can close this window."
+open "$DEST/$(basename "$APP")"
