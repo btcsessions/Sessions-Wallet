@@ -11,7 +11,8 @@
           "width": 660,
           "height": 400
         }
-      }
+      },
+      "signingIdentity": "-"
     }
   }
 }
