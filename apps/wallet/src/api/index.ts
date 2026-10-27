@@ -233,6 +233,12 @@ export interface WalletApi {
   vaultReadKey(text: string): Promise<VaultKey>;
   /** BitBox02 / Jade over Bluetooth: the device's multisig key (`account`: BIP48 account, usually 0). */
   bitboxMultisigKey(account: number): Promise<string>;
+  /** Stop a BitBox02 request in progress (the screen was closed, or it's stuck). */
+  bitboxCancel(): Promise<void>;
+  /** Stop a Jade request in progress. */
+  jadeCancel(): Promise<void>;
+  /** Recent wallet log lines (no keys or amounts), for support. */
+  diagnosticLog(): Promise<string>;
   jadeMultisigKey(account: number): Promise<string>;
   /** Register the vault on the device if it isn't yet (the user confirms there). True when it registered now. */
   bitboxRegisterMultisig(account: string): Promise<boolean>;

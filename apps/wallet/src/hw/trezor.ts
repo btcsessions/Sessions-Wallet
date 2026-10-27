@@ -155,7 +155,7 @@ const hex8 = (n: number) => (n >>> 0).toString(16).padStart(8, "0");
 async function rootFingerprintOf(tc: Connect, key: PublicKey): Promise<string> {
   if (key.rootFingerprint !== undefined) return hex8(key.rootFingerprint);
   // Older Trezor Suite: a depth-1 key's parent fingerprint is the root's.
-  const top = await tc.getPublicKey({ path: "m/48'" }).catch(() => null);
+  const top = await tc.getPublicKey({ path: "m/48'", coin: "btc", crossChain: true }).catch(() => null);
   if (top?.success && top.payload.depth === 1 && top.payload.fingerprint !== undefined) return hex8(top.payload.fingerprint);
   throw new Error("Trezor Suite didn't return the wallet fingerprint. Update Trezor Suite and try again.");
 }
@@ -167,7 +167,10 @@ async function multisigAccountKey(tc: Connect, account: number, testnet: boolean
       path,
       coin: testnet ? "test" : "btc",
       scriptType: "SPENDWITNESS",
-      ignoreXpubMagic: true,
+      // Not `ignoreXpubMagic`: Connect checks the key against a child key
+      // using the native-SegWit version bytes, and a plain-xpub answer fails
+      // that check (Trezor Suite shows "Failure_UnknownCode"). Connect already
+      // returns `xpub` as a plain xpub/tpub.
     }),
   );
   return { key, path };

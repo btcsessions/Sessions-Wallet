@@ -1363,3 +1363,12 @@ pub async fn alerts_request_unrestricted(app: AppHandle) -> Result<tauri_plugin_
         .request_unrestricted()
         .await)
 }
+
+/// Recent wallet log lines (Android), for support. Contains no keys.
+#[tauri::command]
+pub async fn diagnostic_log() -> Result<String> {
+    #[cfg(target_os = "android")]
+    return Ok(crate::logcat::recent());
+    #[cfg(not(target_os = "android"))]
+    Ok(String::new())
+}

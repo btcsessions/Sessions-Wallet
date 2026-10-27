@@ -17,11 +17,31 @@ extern "C" {
     fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
 }
 
+/// The last lines logged, for "Copy diagnostic log" (no keys or amounts are
+/// ever logged).
+static RECENT: std::sync::Mutex<std::collections::VecDeque<String>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+const RECENT_LINES: usize = 400;
+
+/// The recent log, oldest first, one line each, with seconds since start.
+pub fn recent() -> String {
+    RECENT
+        .lock()
+        .map(|r| r.iter().cloned().collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
+}
+
+fn started() -> std::time::Instant {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
+}
+
 /// android/log.h: ANDROID_LOG_INFO.
 const INFO: c_int = 4;
 
 /// Install once, early. Later calls (and a subscriber already set) are ignored.
 pub fn init() {
+    started();
     let targets = Targets::new()
         .with_default(LevelFilter::WARN)
         .with_target("sessions_wallet_lib", LevelFilter::DEBUG)
@@ -30,7 +50,8 @@ pub fn init() {
         .with_target("breez_sdk_spark", LevelFilter::INFO)
         .with_target("sessions_core", LevelFilter::INFO)
         .with_target("tauri_plugin_bitbox", LevelFilter::DEBUG)
-        .with_target("tauri_plugin_jade", LevelFilter::DEBUG);
+        .with_target("tauri_plugin_jade", LevelFilter::DEBUG)
+        .with_target("tauri_plugin_marmot", LevelFilter::DEBUG);
     let fmt = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .without_time()
@@ -66,6 +87,16 @@ impl Drop for Line {
         }
         if bytes.is_empty() {
             return;
+        }
+        if let Ok(mut r) = RECENT.lock() {
+            if r.len() >= RECENT_LINES {
+                r.pop_front();
+            }
+            r.push_back(format!(
+                "{:>7.1}s {}",
+                started().elapsed().as_secs_f32(),
+                String::from_utf8_lossy(&bytes)
+            ));
         }
         let (Ok(text), Ok(tag)) = (CString::new(bytes), CString::new("SessionsWallet")) else {
             return;

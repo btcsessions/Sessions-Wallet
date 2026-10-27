@@ -1,8 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { JadeEvent } from "../api/types";
+import { DeviceStuck } from "./Stuck";
 
-type State = "scanning" | "reconnecting" | "connecting" | "pairing" | "unlock" | "confirm" | "connected";
+type State = "scanning" | "reconnecting" | "connecting" | "pairing" | "unlock" | "confirm" | "connected" | "stuck";
+
+/** No word from Jade for this long while looking for it: say what to try. */
+const STUCK_AFTER_MS = 25_000;
 
 /** Live progress from Jade over Bluetooth while `active`. */
 export function useJadeProgress(active: boolean): State | null {
@@ -22,11 +26,36 @@ export function useJadeProgress(active: boolean): State | null {
   useEffect(() => {
     if (!active) setState(null);
   }, [active]);
+
+  // Nothing heard, or still scanning, after a while: probably stuck.
+  useEffect(() => {
+    if (!active || (state && state !== "scanning" && state !== "reconnecting")) return;
+    const t = setTimeout(() => setState((s) => (!s || s === "scanning" || s === "reconnecting" ? "stuck" : s)), STUCK_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [active, state]);
+
+  // Leaving the screen mid-request: stop it, so Jade is free next time.
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  useEffect(
+    () => () => {
+      if (activeRef.current) void api().then((a) => a.jadeCancel());
+    },
+    [],
+  );
   return active ? state : null;
 }
 
 export function JadeProgress({ state, signing }: { state: State | null; signing?: boolean }) {
   if (!state) return null;
+  if (state === "stuck") {
+    return (
+      <DeviceStuck
+        text="Still can't reach Jade. Make sure it's on the Bluetooth screen and unlocked, and that Bluetooth and Nearby devices are allowed for Sessions Wallet. Or turn Jade off and on, then try again."
+        onStop={() => void api().then((a) => a.jadeCancel())}
+      />
+    );
+  }
   const text = {
     scanning: "Looking for your Jade. Turn it on, choose Bluetooth, and keep it close.",
     connecting: "Connecting… If asked to pair, check the number matches the one on Jade and confirm on both.",

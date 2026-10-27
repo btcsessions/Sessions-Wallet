@@ -222,6 +222,12 @@ pub struct JadeState {
     foreground: AtomicBool,
     /// The last link dropped on its own: the next connect is a reconnect.
     dropped: AtomicBool,
+    /// Bumped when a conversation is cancelled: one that then fails doesn't
+    /// reconnect and try again.
+    cancels: AtomicU64,
+    /// The open link, reachable without the `conn` lock, so a stuck call can
+    /// be cut off from outside.
+    link: std::sync::Mutex<Option<Arc<rpc::Client>>>,
 }
 
 impl JadeState {
@@ -232,6 +238,18 @@ impl JadeState {
             last_used: std::sync::Mutex::new(Instant::now()),
             foreground: AtomicBool::new(true),
             dropped: AtomicBool::new(false),
+            cancels: AtomicU64::new(0),
+            link: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Stop whatever is talking to Jade: close its link so a waiting call
+    /// fails at once, and don't let it reconnect.
+    async fn cancel(&self) {
+        self.cancels.fetch_add(1, Ordering::SeqCst);
+        let link = self.link.lock().ok().and_then(|mut l| l.take());
+        if let Some(c) = link {
+            c.close().await;
         }
     }
 
@@ -255,6 +273,9 @@ impl JadeState {
 
     /// Close the link (if any). `lost`: it dropped on its own.
     async fn close_link(&self, slot: &mut Option<Conn>, lost: bool) {
+        if let Ok(mut l) = self.link.lock() {
+            *l = None;
+        }
         if let Some(c) = slot.take() {
             c.client.close().await;
         }
@@ -465,7 +486,24 @@ where
     F: Fn(Arc<Session>) -> Fut,
     Fut: Future<Output = std::result::Result<T, Fail>>,
 {
-    let mut slot = jade.conn.lock().await;
+    // One conversation at a time. An earlier one that's stuck (a screen
+    // closed mid-scan, a link Jade stopped answering) is cut off first.
+    let mut slot = match tokio::time::timeout(Duration::from_secs(2), jade.conn.lock()).await {
+        Ok(slot) => slot,
+        Err(_) => {
+            tracing::warn!("jade: an earlier request is still running; stopping it");
+            jade.cancel().await;
+            tokio::time::timeout(Duration::from_secs(20), jade.conn.lock())
+                .await
+                .map_err(|_| {
+                    Error::Invalid(
+                        "Jade is still busy with an earlier request. Turn it off and on again, then try again".into(),
+                    )
+                })?
+        }
+    };
+    let generation = jade.cancels.load(Ordering::SeqCst);
+    let cancelled = || jade.cancels.load(Ordering::SeqCst) != generation;
     jade.touch();
     if slot
         .as_ref()
@@ -493,10 +531,17 @@ where
                 },
             );
             let link = ble::open(app).await?;
+            if cancelled() {
+                return Err(Error::Invalid("Stopped".into()));
+            }
             let id = jade.next_id.fetch_add(1, Ordering::Relaxed);
+            let client = Arc::new(rpc::Client::new(link));
+            if let Ok(mut l) = jade.link.lock() {
+                *l = Some(client.clone());
+            }
             *slot = Some(Conn {
                 id,
-                client: Arc::new(rpc::Client::new(link)),
+                client,
                 session: None,
             });
             tauri::async_runtime::spawn(keepalive(app.clone(), id));
@@ -528,6 +573,9 @@ where
                     Err(Fail::Link(m)) => {
                         tracing::info!("jade: link failed while unlocking ({m})");
                         jade.close_link(&mut slot, true).await;
+                        if cancelled() {
+                            return Err(Error::Invalid("Stopped".into()));
+                        }
                         if !fresh_link && !retried {
                             retried = true;
                             continue;
@@ -552,6 +600,9 @@ where
             Err(Fail::Link(m)) => {
                 tracing::info!("jade: link failed during a call ({m})");
                 jade.close_link(&mut slot, true).await;
+                if cancelled() {
+                    return Err(Error::Invalid("Stopped".into()));
+                }
                 if !fresh_link && !retried {
                     retried = true;
                     continue;
@@ -581,6 +632,13 @@ where
             Err(e) => return Err(friendly(e)),
         }
     }
+}
+
+/// Stop whatever the app is asking Jade (the screen was closed, or it's stuck).
+#[tauri::command]
+pub async fn jade_cancel(jade: State<'_, JadeState>) -> Result<()> {
+    jade.cancel().await;
+    Ok(())
 }
 
 /// The wallet's network, or the build's default before a wallet exists.

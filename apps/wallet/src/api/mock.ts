@@ -929,6 +929,11 @@ export const mockApi: WalletApi = {
     if (!m) throw "That isn't a multisig key. On the device, export the multisig (BIP48) key.";
     return mkKey(text.trim(), "", { type: "external" });
   },
+  async bitboxCancel() {},
+  async jadeCancel() {},
+  async diagnosticLog() {
+    return "  12.0s INFO bitbox: opened BitBox02 over USB, asking for its info";
+  },
   async bitboxMultisigKey(account) {
     await sleep(900);
     return fakeKey("b17b0a02", account);

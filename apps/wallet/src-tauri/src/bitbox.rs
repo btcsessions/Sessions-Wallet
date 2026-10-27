@@ -53,6 +53,9 @@ pub struct BitBoxState {
     pairing_file: PathBuf,
     /// Also serialises device access: one conversation at a time.
     device: Mutex<Option<Arc<Device>>>,
+    /// Bumped when a conversation is cancelled: a request that then fails
+    /// doesn't reconnect and try again.
+    cancels: std::sync::atomic::AtomicU64,
 }
 
 impl BitBoxState {
@@ -60,6 +63,7 @@ impl BitBoxState {
         BitBoxState {
             pairing_file: data_dir.join("bitbox-pairing.json"),
             device: Mutex::new(None),
+            cancels: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -251,8 +255,28 @@ where
     F: Fn(Arc<Device>) -> Fut,
     Fut: Future<Output = std::result::Result<T, Fail>>,
 {
-    let mut slot = bb.device.lock().await;
+    // One conversation at a time. If an earlier one is stuck (a read the
+    // device will never answer, a screen that was closed), closing the USB
+    // connection makes it fail at once and frees the device for this one.
+    let mut slot = match tokio::time::timeout(Duration::from_secs(2), bb.device.lock()).await {
+        Ok(slot) => slot,
+        Err(_) => {
+            tracing::warn!("bitbox: an earlier request is still running; resetting the connection");
+            bb.cancels.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            transport::release(app).await;
+            tokio::time::timeout(Duration::from_secs(15), bb.device.lock())
+                .await
+                .map_err(|_| {
+                    Error::Invalid(
+                        "The BitBox02 is still busy with an earlier request. Unplug it, plug it back in and try again"
+                            .into(),
+                    )
+                })?
+        }
+    };
     let mut retried = false;
+    let generation = bb.cancels.load(std::sync::atomic::Ordering::SeqCst);
+    let cancelled = || bb.cancels.load(std::sync::atomic::Ordering::SeqCst) != generation;
     loop {
         let (device, fresh) = match slot.as_ref() {
             Some(d) => (d.clone(), false),
@@ -279,6 +303,9 @@ where
             Ok(Err(Fail::Device(e))) if is_transport(&e) => {
                 *slot = None;
                 transport::release(app).await;
+                if cancelled() {
+                    return Err(Error::Invalid("Stopped".into()));
+                }
                 if fresh || retried {
                     return Err(friendly(e));
                 }
@@ -314,6 +341,21 @@ async fn network(state: &AppState) -> Network {
 }
 
 // --- commands ---------------------------------------------------------------
+
+/// Stop whatever the app is asking the BitBox02 (the screen was closed):
+/// closes the USB connection so a waiting request fails at once, and drops
+/// the session so the next request starts fresh.
+#[tauri::command]
+pub async fn bitbox_cancel(app: AppHandle, bitbox: State<'_, BitBoxState>) -> Result<()> {
+    bitbox
+        .cancels
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    transport::release(&app).await;
+    if let Ok(mut slot) = bitbox.device.try_lock() {
+        *slot = None;
+    }
+    Ok(())
+}
 
 /// One descriptor per account number, read from the BitBox02:
 /// `wpkh([fp/84h/0h/{n}h]xpub…/<0;1>/*)` (`tr`, `86h` for Taproot).

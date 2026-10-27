@@ -107,8 +107,16 @@ pub struct AppState {
 
 impl AppState {
     /// The unlocked wallet's network.
+    /// The wallet's network. Doesn't wait more than a moment for the wallet:
+    /// a hardware wallet screen shouldn't hang behind a slow sync or open.
     pub async fn network(&self) -> Result<Network> {
-        let g = self.inner.lock().await;
+        let g = match tokio::time::timeout(std::time::Duration::from_secs(3), self.inner.lock()).await {
+            Ok(g) => g,
+            Err(_) => {
+                tracing::warn!("network: wallet busy for 3s, using the default network");
+                return Err(Error::Locked);
+            }
+        };
         Ok(g.as_ref().ok_or(Error::Locked)?.config.network)
     }
 
