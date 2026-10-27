@@ -87,7 +87,7 @@ fn marmot(app: &AppHandle) -> tauri::State<'_, Marmot<Wry>> {
 }
 
 /// Start the group runtime as this wallet (idempotent). Returns our key.
-async fn ready(app: &AppHandle, state: &AppState) -> Result<String> {
+pub(crate) async fn ready(app: &AppHandle, state: &AppState) -> Result<String> {
     let m = marmot(app);
     if !m.available() {
         return Err(Error::Invalid(tauri_plugin_marmot::UNAVAILABLE.into()));
@@ -471,6 +471,12 @@ pub async fn group_respond(app: AppHandle, state: State<'_, AppState>, group_id:
         marmot(&app).decline(&group_id).await.map_err(net)?;
     }
     Ok(())
+}
+
+pub(crate) fn remember_name(state: &AppState, name: &str) -> Result<()> {
+    let mut s = load(state);
+    s.my_name = check_name(name)?;
+    save(state, &s)
 }
 
 /// Remember our name for the vaults we join (sent to the group on joining).

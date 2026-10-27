@@ -252,8 +252,16 @@ pub async fn group_join_lookup(state: State<'_, AppState>, code: String) -> Resu
 
 /// Joiner: ask to join. The creator approves; the invite then arrives.
 #[tauri::command]
-pub async fn group_join_send(state: State<'_, AppState>, code: String, name: String) -> Result<()> {
+pub async fn group_join_send(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    code: String,
+    name: String,
+) -> Result<()> {
     state.check_screen()?;
+    // Be reachable before asking: the creator invites our published key
+    // package, and the invite only arrives while group messaging runs.
+    crate::group::ready(&app, &state).await?;
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 40 {
         return Err(Error::Invalid("Add your name (up to 40 characters) so they know it's you".into()));
@@ -271,6 +279,7 @@ pub async fn group_join_send(state: State<'_, AppState>, code: String, name: Str
         }
     }
     published(Relays::default().publish(&targets, &[event]).await)?;
+    crate::group::remember_name(&state, name)?;
     let mut s = load(&state);
     s.requested.retain(|r| r.host != b.host);
     s.requested.push(Requested {
