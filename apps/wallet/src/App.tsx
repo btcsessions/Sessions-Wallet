@@ -115,7 +115,11 @@ export function App() {
     let stop: (() => void) | undefined;
     const handle = (urls: string[] | null) => {
       const join = urls?.find((u) => u.startsWith("sessionswallet://join/"));
-      if (join) useWallet.getState().open({ name: "group-join", code: join });
+      if (!join) return;
+      const st = useWallet.getState();
+      // Group vaults are an Advanced feature.
+      if (st.layout?.advanced) st.open({ name: "group-join", code: join });
+      else st.notify("error", "Group vaults are in Advanced mode. Turn it on in Settings, then open the link again.");
     };
     void import("@tauri-apps/plugin-deep-link").then(async ({ onOpenUrl, getCurrent }) => {
       handle(await getCurrent().catch(() => null));

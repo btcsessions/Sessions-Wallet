@@ -73,12 +73,14 @@ function Drawing({ id }: { id: string }) {
   const screen = { fill: "currentColor", fillOpacity: 0.18 };
   switch (id) {
     case "trezor-safe-7":
+      // Portrait aluminium body, edge-to-edge touchscreen showing the
+      // Trezor mark (a padlock: shackle over a shield).
       return (
         <>
-          <rect x="6.5" y="1.5" width="11" height="21" rx="3" />
-          <rect x="8.5" y="4" width="7" height="12.5" rx="1" {...screen} />
-          <path d="M10.6 10.2V9.3a1.4 1.4 0 0 1 2.8 0v.9M10 10.2h4v2.6h-4z" strokeWidth="1.2" />
-          <path d="M11 19.5h2" />
+          <rect x="5.5" y="1.5" width="13" height="21" rx="3.2" />
+          <rect x="7" y="3" width="10" height="18" rx="2" {...screen} />
+          <path d="M10.3 10.6V9.4a1.7 1.7 0 0 1 3.4 0v1.2" strokeWidth="1.2" />
+          <path d="M9.6 10.6h4.8v3.1L12 15.2l-2.4-1.5z" strokeWidth="1.2" />
         </>
       );
     case "seedsigner":
@@ -101,11 +103,14 @@ function Drawing({ id }: { id: string }) {
         </>
       );
     case "jade":
+      // Landscape body with the screen in the middle, a jog wheel on the
+      // top edge and a button at each side.
       return (
         <>
-          <rect x="3.5" y="3" width="17" height="18" rx="5" />
-          <rect x="7" y="6" width="10" height="7.5" rx="1" {...screen} />
-          <circle cx="12" cy="17.2" r="1.6" />
+          <rect x="2" y="6" width="20" height="13" rx="3.5" />
+          <rect x="6" y="8.5" width="12" height="8" rx="1" {...screen} />
+          <path d="M15.5 6V4.6h3V6" />
+          <path d="M2 11.2v2.6M22 11.2v2.6" strokeWidth="2.4" />
         </>
       );
     case "bitbox02":

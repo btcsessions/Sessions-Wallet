@@ -162,13 +162,17 @@ export function SettingsSheet() {
         )}
       </div>
 
-      <p className="group-label">Group vaults</p>
-      <div className="group">
-        <button className="cell" onClick={() => open({ name: "nostr-id" })}>
-          <span className="grow">Nostr identity</span>
-          <Icon name="chevron" size={16} />
-        </button>
-      </div>
+      {layout?.advanced && (
+        <>
+          <p className="group-label">Group vaults</p>
+          <div className="group">
+            <button className="cell" onClick={() => open({ name: "nostr-id" })}>
+              <span className="grow">Nostr identity</span>
+              <Icon name="chevron" size={16} />
+            </button>
+          </div>
+        </>
+      )}
 
       <AlertsSetting />
 

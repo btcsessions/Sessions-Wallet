@@ -155,6 +155,7 @@ type Step = "start" | "quorum" | "keys" | "review" | "import" | "importReview" |
 /** Create a multisig vault from keys, or import one from another wallet's file or QR. */
 export function VaultSheet() {
   const { close, open, notify, refresh, addModule } = useWallet();
+  const advanced = useWallet((s) => s.layout?.advanced ?? false);
   const [step, setStep] = useState<Step>("start");
   const [m, setM] = useState(2);
   const [n, setN] = useState(3);
@@ -313,6 +314,8 @@ export function VaultSheet() {
             <strong>Import a vault</strong>
             <span>From Sparrow, Nunchuk, Caravan, BlueWallet and others, by file or QR</span>
           </button>
+          {advanced && (
+            <>
           <button className="device-card featured" onClick={() => open({ name: "group" })}>
             <span className="device-icon-wrap">
               <Icon name="people" size={36} />
@@ -327,8 +330,10 @@ export function VaultSheet() {
             <strong>Join a vault</strong>
             <span>Someone invited you: scan their QR or enter their code</span>
           </button>
+            </>
+          )}
         </div>
-        <GroupVaults />
+        {advanced && <GroupVaults />}
       </Sheet>
     );
   }

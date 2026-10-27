@@ -296,6 +296,11 @@ button {
   pointer-events: auto;
 }
 
+/* A sheet is open over edit mode (adding a module): no wiggle behind it. */
+.editing.sheet-open .tile {
+  animation: none;
+}
+
 .tile.dragging {
   animation: none;
   z-index: 10;

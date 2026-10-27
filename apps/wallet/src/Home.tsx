@@ -95,6 +95,8 @@ function Tile({ module, editing }: { module: InstalledModule; editing: boolean }
 export function Home({ title = "Sessions Wallet" }: { title?: string }) {
   const { layout, editing, setEditing, reorder, open, sync, syncing, isMock, unavailable, accounts, notify } = useWallet();
   const [scanning, setScanning] = useState(false);
+  // Choosing a module to add: the tiles hold still behind the sheet.
+  const sheetOpen = useWallet((s) => s.sheet !== null);
   const sensors = useSensors(
     // Mouse: drag as soon as it moves. Touch: hold briefly, then drag, so a
     // quick swipe always scrolls the page, even in edit mode.
@@ -139,7 +141,7 @@ export function Home({ title = "Sessions Wallet" }: { title?: string }) {
   };
 
   return (
-    <main className={`app ${editing ? "editing" : ""}`}>
+    <main className={`app ${editing ? "editing" : ""} ${sheetOpen ? "sheet-open" : ""}`}>
       {isMock && <p className="mock-banner">Design preview with pretend sats. Real funds only move in the app.</p>}
       <div className="topbar">
         {editing ? (
