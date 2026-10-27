@@ -646,3 +646,17 @@ export interface Proposal {
   to: string;
   note: string | null;
 }
+
+/** Who may send a vault invite without a code or link. */
+export type InviteFilter = "follows" | "mutual" | "codeOnly";
+
+/** The wallet's own Nostr identity for group vaults (from the seed, BIP85). */
+export interface NostrIdentity {
+  npub: string;
+  pubkey: string;
+  index: number;
+  /** The user's social npub, linked so we can read who they follow. */
+  socialNpub: string | null;
+  invites: InviteFilter;
+  discoverable: boolean;
+}

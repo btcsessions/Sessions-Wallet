@@ -42,6 +42,14 @@ let mockBiometric = false;
 const alerts: AlertsStatus = { supported: true, notifications: "prompt", watching: false, unrestricted: false };
 const paymentListeners = new Set<(a: Arrival) => void>();
 let nwc: { c: NwcConnection; uri: string }[] = [];
+let nostrId: import("./types").NostrIdentity = {
+  npub: "npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw038js35mp4dma8qzvjptg",
+  pubkey: "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e",
+  index: 0,
+  socialNpub: null,
+  invites: "follows",
+  discoverable: false,
+};
 
 // ---- Multisig (mock) ----
 const MOCK_XPUB = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8";
@@ -1004,6 +1012,25 @@ export const mockApi: WalletApi = {
       /* preview only */
     }
     return true;
+  },
+  async nostrIdentity() {
+    return { ...nostrId };
+  },
+  async nostrUpdate(update) {
+    await sleep(200);
+    if (update.socialNpub !== undefined) {
+      const v = update.socialNpub.trim();
+      if (v.startsWith("nsec")) throw "That's a secret key (nsec). Never share it: paste your npub instead";
+      if (v && !/^(nostr:)?npub1[02-9ac-hj-np-z]{58}$/.test(v)) throw "That isn't an npub";
+      nostrId.socialNpub = v ? v.replace(/^nostr:/, "") : null;
+      if (!v) nostrId.discoverable = false;
+    }
+    if (update.invites) nostrId.invites = update.invites;
+    if (update.discoverable !== undefined) {
+      if (update.discoverable && !nostrId.socialNpub) throw "Link your npub first";
+      nostrId.discoverable = update.discoverable;
+    }
+    return { ...nostrId };
   },
   async nwcList() {
     return nwc.map((n) => ({ ...n.c }));

@@ -1,0 +1,21 @@
+[package]
+name = "sessions-group"
+description = "Group vaults for Sessions Wallet: join codes, the wallet messages members exchange, and vault setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sessions-core.workspace = true
+sessions-backup.workspace = true
+sessions-nwc.workspace = true
+rail-onchain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bitcoin.workspace = true
+base64 = "0.22"
+hkdf = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+zeroize = "1"

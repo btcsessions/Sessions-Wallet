@@ -177,6 +177,22 @@ impl Relays {
         futures_util::future::join_all(tasks).await
     }
 
+    /// Every event matching `filter` (a NIP-01 filter object), signature-
+    /// checked, from each relay.
+    pub async fn query(&self, urls: &[String], filter: Value) -> PerRelay<Vec<Event>> {
+        let tasks = urls.iter().map(|url| {
+            let filter = filter.clone();
+            async move {
+                let r = self
+                    .fetch_one(url, filter)
+                    .await
+                    .map(|events| events.into_iter().filter(Event::verify).collect::<Vec<_>>());
+                (url.clone(), r)
+            }
+        });
+        futures_util::future::join_all(tasks).await
+    }
+
     async fn fetch_one(&self, url: &str, filter: Value) -> Result<Vec<Event>> {
         let deadline = Instant::now() + self.timeout;
         let mut ws = self.connect(url, deadline).await?;

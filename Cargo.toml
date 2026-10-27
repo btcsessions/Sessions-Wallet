@@ -4,6 +4,7 @@ members = [
     "crates/sessions-core",
     "crates/sessions-backup",
     "crates/sessions-nwc",
+    "crates/sessions-group",
     "crates/rail-onchain",
     "crates/rail-spark",
     "crates/rail-liquid",
@@ -20,6 +21,8 @@ default-members = [
     "crates/sessions-core",
     "crates/sessions-backup",
     "crates/sessions-nwc",
+    "crates/sessions-group",
+    "crates/sessions-group",
     "crates/rail-onchain",
     "crates/rail-spark",
     "crates/rail-liquid",
@@ -37,6 +40,7 @@ rust-version = "1.89"
 sessions-core = { path = "crates/sessions-core" }
 sessions-backup = { path = "crates/sessions-backup" }
 sessions-nwc = { path = "crates/sessions-nwc" }
+sessions-group = { path = "crates/sessions-group" }
 rail-onchain = { path = "crates/rail-onchain" }
 rail-spark = { path = "crates/rail-spark" }
 rail-liquid = { path = "crates/rail-liquid" }

@@ -21,6 +21,7 @@ export type SheetName =
   | { name: "contacts"; add?: string }
   | { name: "checkin" }
   | { name: "nwc" }
+  | { name: "nostr-id" }
   | { name: "vault" }
   | { name: "vault-export"; account: string }
   | { name: "proposal"; id: string };

@@ -223,6 +223,9 @@ pub struct Config {
     /// Nostr Wallet Connect: apps allowed to use Spending (see `nwc`).
     #[serde(default)]
     pub nwc: Vec<crate::nwc::NwcEntry>,
+    /// The wallet's Nostr identity for group vaults (see `nostr_id`).
+    #[serde(default)]
+    pub nostr: crate::nostr_id::NostrSettings,
 }
 
 /// Where the wallet's seed came from.
@@ -306,6 +309,7 @@ impl Config {
             backup_relays: sessions_backup::default_relays(),
             prefs: serde_json::Value::Null,
             nwc: Vec::new(),
+            nostr: Default::default(),
         }
     }
 

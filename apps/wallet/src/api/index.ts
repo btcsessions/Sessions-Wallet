@@ -37,6 +37,8 @@ import type {
   BiometricStatus,
   AlertsStatus,
   Arrival,
+  NostrIdentity,
+  InviteFilter,
   NwcConnection,
   NwcNew,
   VaultKey,
@@ -251,6 +253,10 @@ export interface WalletApi {
   proposalDelete(id: string): Promise<void>;
   /** Save (save-as screen; Downloads on desktop) or share a file. False if the user backed out. */
   fileExport(file: ExportFile, share: boolean): Promise<boolean>;
+  /** The wallet's Nostr identity for group vaults. */
+  nostrIdentity(): Promise<NostrIdentity>;
+  /** `socialNpub: ""` unlinks. */
+  nostrUpdate(update: { socialNpub?: string; invites?: InviteFilter; discoverable?: boolean }): Promise<NostrIdentity>;
   /** Nostr Wallet Connect: apps allowed to use Spending within a budget. */
   nwcList(): Promise<NwcConnection[]>;
   /** Returns the connection link (nostr+walletconnect://…) to give the app. */

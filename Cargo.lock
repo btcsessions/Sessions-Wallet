@@ -7866,6 +7866,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sessions-group"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bitcoin",
+ "hkdf",
+ "rail-onchain",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sessions-backup",
+ "sessions-core",
+ "sessions-nwc",
+ "sha2",
+ "zeroize",
+]
+
+[[package]]
 name = "sessions-nwc"
 version = "0.1.0"
 dependencies = [

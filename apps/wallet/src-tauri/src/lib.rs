@@ -10,6 +10,7 @@ mod jade;
 mod logcat;
 mod monitor;
 mod multisig_hw;
+mod nostr_id;
 mod nwc;
 mod passkey;
 mod state;
@@ -234,6 +235,8 @@ pub fn run() {
             vault::proposals,
             vault::proposal_save,
             vault::proposal_delete,
+            nostr_id::nostr_identity,
+            nostr_id::nostr_update,
             nwc::nwc_list,
             nwc::nwc_create,
             nwc::nwc_update,
