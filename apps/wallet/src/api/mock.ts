@@ -3,7 +3,7 @@
 
 import type { WalletApi } from "./index";
 import { BackupTestError, BiometricError } from "./types";
-import type { AlertsStatus, Arrival, BiometricStatus, NwcConnection } from "./types";
+import type { AlertsStatus, Arrival, BiometricStatus, KeySource, NwcConnection, Proposal, VaultKey } from "./types";
 import type { AccountInfo, BackupStatus, BackupTest, BitboxEvent, ClaimResult, Deposit, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -42,6 +42,20 @@ let mockBiometric = false;
 const alerts: AlertsStatus = { supported: true, notifications: "prompt", watching: false, unrestricted: false };
 const paymentListeners = new Set<(a: Arrival) => void>();
 let nwc: { c: NwcConnection; uri: string }[] = [];
+
+// ---- Multisig (mock) ----
+const MOCK_XPUB = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8";
+function fakeKey(fp: string, account = 0): string {
+  return `[${fp}/48h/0h/${account}h/2h]${MOCK_XPUB}`;
+}
+function mkKey(key: string, label: string, source: KeySource): VaultKey {
+  const fp = key.slice(1, 9);
+  return { fingerprint: fp, path: "m/48'/0'/0'/2'", xpub: key.split("]")[1], key, label, source, ours: source.type === "phone" };
+}
+const vaults = new Map<string, { keys: VaultKey[]; threshold: number }>();
+let proposalsMock: Proposal[] = [];
+const randFp = () => Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, "0");
+
 let lastReceive: { account: string; method: Method; amountSat: number | null } | null = null;
 
 /** Design preview / tests: pretend a payment to the last Receive request just arrived. */
@@ -869,6 +883,127 @@ export const mockApi: WalletApi = {
     d.claimFeeSat = null;
     d.error = null;
     return refundTxid;
+  },
+  async vaultPhoneKey() {
+    return mkKey(fakeKey("73c5da0a", vaults.size), "This phone", { type: "phone", account: vaults.size });
+  },
+  async vaultReadKey(text) {
+    await sleep(200);
+    const m = text.trim().match(/^\[([0-9a-fA-F]{8})\/48h?'?\/[01]h?'?\/\d+h?'?\/2h?'?\](\w+)/);
+    if (!m) throw "That isn't a multisig key. On the device, export the multisig (BIP48) key.";
+    return mkKey(text.trim(), "", { type: "external" });
+  },
+  async bitboxMultisigKey(account) {
+    await sleep(900);
+    return fakeKey("b17b0a02", account);
+  },
+  async jadeMultisigKey(account) {
+    await sleep(900);
+    return fakeKey("9ade1234", account);
+  },
+  async bitboxRegisterMultisig() {
+    await sleep(800);
+    return true;
+  },
+  async jadeRegisterMultisig() {
+    await sleep(800);
+    return true;
+  },
+  async bitboxShowMultisigAddress() {
+    await sleep(600);
+    return "bc1qmockvaultaddress0000000000000000000000000000000000000000";
+  },
+  async jadeShowMultisigAddress() {
+    await sleep(600);
+    return "bc1qmockvaultaddress0000000000000000000000000000000000000000";
+  },
+  async vaultCreate(v) {
+    await sleep(500);
+    if (v.keys.length < 2) throw "A multisig wallet needs at least 2 keys";
+    const fps = new Set(v.keys.map((k) => k.key.slice(1, 9)));
+    if (fps.size !== v.keys.length) throw "Two keys come from the same seed. Each key needs its own device or seed, or one loss could cost you two keys";
+    const id = `vault-${accounts.length + 1}`;
+    const ours = v.keys.filter((k) => k.source.type === "phone").length;
+    const a: AccountInfo = {
+      balance: { confirmed: 1_250_000, pendingIn: 0, pendingOut: 0 }, id, name: v.name.trim() || "Vault", rail: "onchain",
+      custody: { type: "multisig", threshold: v.threshold, total: v.keys.length, localSigners: ours },
+      receives: ["bitcoinAddress"], pays: ["bitcoinAddress"],
+    };
+    accounts.push(a);
+    vaults.set(id, { threshold: v.threshold, keys: v.keys.map((k, i) => mkKey(k.key, k.label || `Key ${i + 1}`, k.source)) });
+    return a;
+  },
+  async vaultImportPreview(text) {
+    await sleep(300);
+    if (!/multi|Policy:|BSMS|extendedPublicKeys/i.test(text)) throw "That file isn't a multisig wallet";
+    const keys = [mkKey(fakeKey(randFp()), "Key 1", { type: "external" }), mkKey(fakeKey(randFp()), "Key 2", { type: "external" }), mkKey(fakeKey(randFp()), "Key 3", { type: "external" })];
+    return { name: "Imported vault", threshold: 2, total: 3, script: "Native SegWit (P2WSH)", keys, notes: ["None of these keys is this phone's: you'll sign with your hardware wallets or other cosigners."], descriptor: "wsh(sortedmulti(2,…))" };
+  },
+  async vaultImport(v) {
+    return this.vaultCreate({ name: v.name, threshold: 2, keys: v.keys.map((k) => ({ key: fakeKey(k.fingerprint), label: k.label, source: k.source })) });
+  },
+  async vaultDetails(account) {
+    const v = vaults.get(account) ?? { threshold: 2, keys: [mkKey(fakeKey("73c5da0a"), "This phone", { type: "phone", account: 0 }), mkKey(fakeKey("b17b0a02"), "BitBox02", { type: "device", device: "BitBox02" }), mkKey(fakeKey("5eed5157"), "SeedSigner", { type: "device", device: "SeedSigner" })] };
+    const a = find(account);
+    return { name: a.name, threshold: v.threshold, total: v.keys.length, script: "Native SegWit (P2WSH)", keys: v.keys, coordination: { type: "solo" as const }, descriptor: `wsh(sortedmulti(${v.threshold},${v.keys.map((k) => k.key + "/<0;1>/*").join(",")}))#mockcsum`, firstAddress: "bc1qmockvaultaddress0000000000000000000000000000000000000000" };
+  },
+  async vaultSetKeyLabel(account, fingerprint, label) {
+    const v = vaults.get(account);
+    const k = v?.keys.find((x) => x.fingerprint === fingerprint);
+    if (k) k.label = label.trim();
+  },
+  async vaultExport(account, format) {
+    const d = await this.vaultDetails(account);
+    const name = d.name.replace(/[^A-Za-z0-9]+/g, "-");
+    switch (format) {
+      case "coldcard":
+        return { filename: `${name}.txt`, mime: "text/plain", content: `# Sessions Wallet multisig setup file\nName: ${d.name}\nPolicy: ${d.threshold} of ${d.total}\nDerivation: m/48'/0'/0'/2'\nFormat: P2WSH\n\n${d.keys.map((k) => `${k.fingerprint.toUpperCase()}: ${k.xpub}`).join("\n")}\n` };
+      case "bsms":
+        return { filename: `${name}.bsms`, mime: "text/plain", content: `BSMS 1.0\n${d.descriptor}\n/0/*,/1/*\n${d.firstAddress}\n` };
+      case "caravan":
+        return { filename: `${name}.json`, mime: "application/json", content: JSON.stringify({ name: d.name, addressType: "P2WSH", network: "mainnet", quorum: { requiredSigners: d.threshold, totalSigners: d.total } }, null, 2) };
+      case "specter":
+        return { filename: `${name}-specter.json`, mime: "application/json", content: JSON.stringify({ label: d.name, blockheight: 0, descriptor: d.descriptor }) };
+      default:
+        return { filename: `${name}-descriptor.txt`, mime: "text/plain", content: d.descriptor + "\n" };
+    }
+  },
+  async vaultSignatures(account, psbt) {
+    const v = vaults.get(account);
+    const n = (psbt.match(/\+sig/g) ?? []).length;
+    const keys = (v?.keys ?? []).map((k, i) => ({ fingerprint: k.fingerprint, label: k.label, source: k.source, signed: k.ours || i < n }));
+    const signed = keys.filter((k) => k.signed).length;
+    const needed = v?.threshold ?? 2;
+    return { keys, signed, needed, ready: signed >= needed, destinations: [{ address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", amountSat: 50_000 }] };
+  },
+  async vaultCombine(psbt) {
+    await sleep(200);
+    return psbt + "+sig";
+  },
+  async proposals(account) {
+    return proposalsMock.filter((p) => !account || p.account === account);
+  },
+  async proposalSave(p) {
+    const saved = { ...p, id: p.id || `p${Date.now()}`, createdAt: p.createdAt || now(), updatedAt: now() };
+    proposalsMock = [saved, ...proposalsMock.filter((x) => x.id !== saved.id)];
+    return saved;
+  },
+  async proposalDelete(id) {
+    proposalsMock = proposalsMock.filter((p) => p.id !== id);
+  },
+  async fileExport(file) {
+    await sleep(200);
+    try {
+      const url = URL.createObjectURL(new Blob([file.content], { type: file.mime }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* preview only */
+    }
+    return true;
   },
   async nwcList() {
     return nwc.map((n) => ({ ...n.c }));

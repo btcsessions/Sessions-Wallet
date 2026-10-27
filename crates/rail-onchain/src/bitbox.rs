@@ -13,11 +13,13 @@
 
 use std::str::FromStr;
 
-use bdk_wallet::bitcoin::bip32::{ChildNumber, Fingerprint, Xpub};
+use bdk_wallet::bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint, Xpub};
 use bdk_wallet::bitcoin::{NetworkKind, Psbt};
 use bdk_wallet::miniscript::descriptor::{Descriptor, DescriptorPublicKey};
 use bdk_wallet::miniscript::ForEachKey;
 use sessions_core::{Error, Network, Result};
+
+use crate::multisig::{bip48_path, Cosigner, MultisigConfig};
 
 const HARDENED: u32 = 0x8000_0000;
 
@@ -32,6 +34,9 @@ pub struct Device {
     pub use_right_one: &'static str,
     /// Whether SegWit v0 inputs need their full previous transactions.
     pub needs_prev_txs: bool,
+    /// Whether it refuses a PSBT with an input it holds no key for (the
+    /// BitBox02 does; Jade signs the inputs it can and skips the rest).
+    pub needs_every_input: bool,
 }
 
 pub const BITBOX02: Device = Device {
@@ -39,6 +44,7 @@ pub const BITBOX02: Device = Device {
     subject: "The BitBox02",
     use_right_one: "Plug in the BitBox02 you added it with",
     needs_prev_txs: true,
+    needs_every_input: true,
 };
 
 pub const JADE: Device = Device {
@@ -46,6 +52,7 @@ pub const JADE: Device = Device {
     subject: "Jade",
     use_right_one: "Connect the Jade you added it with",
     needs_prev_txs: false,
+    needs_every_input: false,
 };
 
 /// Single-sig address types the wallet adds from a BitBox02.
@@ -260,6 +267,356 @@ pub fn fully_signed(psbt: &Psbt) -> bool {
         .all(|i| !i.partial_sigs.is_empty() || i.tap_key_sig.is_some())
 }
 
+// --- multisig ---------------------------------------------------------------
+
+/// Longest multisig account name a BitBox02 takes.
+pub const BITBOX02_NAME_MAX: usize = 30;
+/// Longest multisig registration name Jade takes (its storage keys are 15
+/// characters).
+pub const JADE_NAME_MAX: usize = 15;
+
+/// `m/48'/coin'/account'/2'` (BIP48 P2WSH) as the numbers devices take.
+pub fn multisig_account_keypath(network: Network, account: u32) -> Result<Vec<u32>> {
+    if account >= HARDENED {
+        return Err(Error::Invalid("That account number is too large".into()));
+    }
+    Ok(vec![
+        48 | HARDENED,
+        coin_type(network) | HARDENED,
+        account | HARDENED,
+        2 | HARDENED,
+    ])
+}
+
+/// The device's multisig key, `[fingerprint/48h/0h/{account}h/2h]xpub`, from
+/// its root fingerprint (hex) and the plain xpub/tpub it returned for
+/// [`multisig_account_keypath`].
+pub fn multisig_key_on(
+    device: &Device,
+    network: Network,
+    fingerprint: &str,
+    account: u32,
+    xpub: &str,
+) -> Result<String> {
+    let subject = device.subject;
+    let fp = Fingerprint::from_str(fingerprint.trim())
+        .map_err(|_| Error::Invalid(format!("{subject} returned an unreadable fingerprint")))?;
+    let key = Xpub::from_str(xpub.trim())
+        .map_err(|_| Error::Invalid(format!("{subject} returned an unreadable public key")))?;
+    let want = if network == Network::Bitcoin {
+        NetworkKind::Main
+    } else {
+        NetworkKind::Test
+    };
+    if key.network != want {
+        return Err(Error::Network(format!(
+            "{} returned a key for a different network",
+            subject.replacen("The ", "the ", 1)
+        )));
+    }
+    if key.depth != 4 || key.child_number != (ChildNumber::Hardened { index: 2 }) {
+        return Err(Error::Invalid(format!(
+            "{subject} returned a key for a different account"
+        )));
+    }
+    let cosigner = Cosigner {
+        fingerprint: fp.to_string(),
+        path: bip48_path(network, account),
+        xpub: key.to_string(),
+        label: None,
+    };
+    Ok(cosigner.key_expression())
+}
+
+/// One of a vault's keys that a device may hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultKey {
+    /// Position in the vault's key list (descriptor order).
+    pub index: usize,
+    /// Keypath from the root, e.g. `m/48'/0'/0'/2'`.
+    pub keypath: Vec<u32>,
+    pub xpub: Xpub,
+}
+
+/// "This BitBox02 isn't one of this vault's keys".
+pub fn not_a_vault_key(device: &Device) -> Error {
+    Error::Invalid(format!(
+        "This {} isn't one of this vault's keys",
+        device.name
+    ))
+}
+
+/// The vault's keys carrying the device's root fingerprint (usually one).
+/// The device's xpub at the keypath still needs checking against the key.
+pub fn vault_keys(
+    device: &Device,
+    config: &MultisigConfig,
+    fingerprint: Fingerprint,
+) -> Result<Vec<VaultKey>> {
+    let fp = fingerprint.to_string();
+    let mut out = Vec::new();
+    for (index, c) in config.cosigners.iter().enumerate() {
+        if !c.fingerprint.eq_ignore_ascii_case(&fp) {
+            continue;
+        }
+        let path = DerivationPath::from_str(&c.path).map_err(|e| Error::Crypto(e.to_string()))?;
+        let xpub = Xpub::from_str(&c.xpub).map_err(|e| Error::Crypto(e.to_string()))?;
+        out.push(VaultKey {
+            index,
+            keypath: path.into_iter().map(|c| u32::from(*c)).collect(),
+            xpub,
+        });
+    }
+    if out.is_empty() {
+        return Err(not_a_vault_key(device));
+    }
+    Ok(out)
+}
+
+/// Whether two xpubs are the same key (ignoring network and origin metadata).
+pub fn same_key(a: &Xpub, b: &Xpub) -> bool {
+    a.public_key == b.public_key && a.chain_code == b.chain_code
+}
+
+/// Checks a vault (multisig) PSBT before the device is asked to sign: the
+/// device holds a key for its inputs (every input, for a device that needs
+/// that), the inputs carry their scripts, and SegWit inputs carry their
+/// previous transactions where the device needs them.
+pub fn check_multisig_psbt(kind: &Device, psbt: &Psbt, device: Fingerprint) -> Result<()> {
+    let missing = || {
+        Error::Invalid(format!(
+            "This transaction is missing details {} needs to check it. \
+             Refresh the vault and try again",
+            kind.subject.replacen("The ", "the ", 1)
+        ))
+    };
+    if psbt.inputs.is_empty() {
+        return Err(Error::Invalid("There's nothing to sign".into()));
+    }
+    let mut ours_somewhere = false;
+    for (i, input) in psbt.inputs.iter().enumerate() {
+        let utxo = psbt.spend_utxo(i).map_err(|_| missing())?;
+        let ours = input.bip32_derivation.values().any(|(fp, _)| *fp == device);
+        if !ours {
+            if kind.needs_every_input {
+                return Err(not_a_vault_key(kind));
+            }
+            continue;
+        }
+        ours_somewhere = true;
+        let spk = &utxo.script_pubkey;
+        let script_ok = if spk.is_p2wsh() {
+            input.witness_script.is_some()
+        } else if spk.is_p2sh() {
+            input.redeem_script.is_some()
+                && (!input.redeem_script.as_ref().is_some_and(|s| s.is_p2wsh())
+                    || input.witness_script.is_some())
+        } else {
+            return Err(Error::Unsupported(format!(
+                "sign this kind of coin from a vault on a {}",
+                kind.name
+            )));
+        };
+        if !script_ok {
+            return Err(missing());
+        }
+        let segwit = spk.is_p2wsh() || input.witness_script.is_some();
+        if (kind.needs_prev_txs || !segwit) && input.non_witness_utxo.is_none() {
+            return Err(missing());
+        }
+    }
+    if !ours_somewhere {
+        return Err(not_a_vault_key(kind));
+    }
+    Ok(())
+}
+
+/// Whether the device (root fingerprint `device`) signed every input it holds
+/// a key for, and there was at least one. Other cosigners' inputs may still
+/// need signatures: a vault PSBT is complete only once enough keys signed.
+pub fn signed_own_inputs(psbt: &Psbt, device: Fingerprint) -> bool {
+    let mut any = false;
+    for input in &psbt.inputs {
+        let mut ours = input
+            .bip32_derivation
+            .iter()
+            .filter(|(_, (fp, _))| *fp == device)
+            .map(|(pk, _)| bdk_wallet::bitcoin::PublicKey::new(*pk))
+            .peekable();
+        if ours.peek().is_none() {
+            continue;
+        }
+        any = true;
+        if !ours.any(|pk| input.partial_sigs.contains_key(&pk)) {
+            return false;
+        }
+    }
+    any
+}
+
+/// The vault's name as a BitBox02 takes it: printable ASCII, single spaces,
+/// at most [`BITBOX02_NAME_MAX`] characters.
+pub fn bitbox02_vault_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        let c = if c.is_whitespace() { ' ' } else { c };
+        if !(c.is_ascii_graphic() || c == ' ')
+            || (c == ' ' && (out.is_empty() || out.ends_with(' ')))
+        {
+            continue;
+        }
+        if out.len() == BITBOX02_NAME_MAX {
+            break;
+        }
+        out.push(c);
+    }
+    let out = out.trim_end().to_string();
+    if out.is_empty() {
+        "Sessions vault".into()
+    } else {
+        out
+    }
+}
+
+/// The vault's name as Jade takes it (printable ASCII without spaces, at
+/// most [`JADE_NAME_MAX`] characters), made different from the `taken` names
+/// of other registrations on the device. Jade overwrites a registration that
+/// has the same name, so a clash gets a `-2`, `-3`… suffix instead.
+pub fn jade_vault_name(name: &str, taken: &[String]) -> String {
+    let mut base = String::new();
+    for c in name.chars() {
+        let c = if c.is_whitespace() { '_' } else { c };
+        if !c.is_ascii_graphic() || (c == '_' && (base.is_empty() || base.ends_with('_'))) {
+            continue;
+        }
+        base.push(c);
+    }
+    let base = base.trim_end_matches('_');
+    let base = if base.is_empty() { "Vault" } else { base };
+    let clip = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+    let first = clip(base, JADE_NAME_MAX);
+    if !taken.contains(&first) {
+        return first;
+    }
+    for n in 2..1000 {
+        let suffix = format!("-{n}");
+        let candidate = format!("{}{suffix}", clip(base, JADE_NAME_MAX - suffix.len()));
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+    }
+    first
+}
+
+/// A 2-of-3 vault of three test seeds, and a PSBT spending from it.
+#[cfg(test)]
+pub(crate) mod vault_fixture {
+    use std::str::FromStr;
+
+    use bdk_wallet::bitcoin::bip32::Xpriv;
+    use bdk_wallet::bitcoin::{
+        absolute, transaction, Address, Amount, OutPoint, Psbt, ScriptBuf, Sequence, Transaction,
+        TxIn, TxOut, Witness,
+    };
+    use bdk_wallet::miniscript::descriptor::{Descriptor, DescriptorPublicKey};
+    use bdk_wallet::miniscript::psbt::PsbtExt;
+    use sessions_core::keystore::Seed;
+    use sessions_core::Network;
+
+    use crate::descriptors::{self, DescriptorPair};
+    use crate::multisig::MultisigConfig;
+
+    pub const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    pub const LEGAL: &str =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    pub const LETTER: &str =
+        "letter advice cage absurd amount doctor acoustic avoid letter advice cage above";
+    /// Somewhere else to pay (BIP84 receive 0 of "abandon … about").
+    pub const PAY_TO: &str = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+
+    pub fn master(phrase: &str) -> Xpriv {
+        Seed::from_phrase(phrase)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap()
+    }
+
+    /// `wsh(sortedmulti(2, …))` of the three seeds' BIP48 account 0 keys.
+    pub fn vault() -> (MultisigConfig, DescriptorPair) {
+        let keys: Vec<String> = [ABANDON, LEGAL, LETTER]
+            .iter()
+            .map(|p| descriptors::multisig_cosigner_key(&master(p), Network::Bitcoin, 0).unwrap())
+            .collect();
+        let pair = descriptors::multisig(2, &keys).unwrap();
+        let config = MultisigConfig::from_descriptor(&pair.external, Network::Bitcoin).unwrap();
+        (config, pair)
+    }
+
+    fn at(
+        descriptor: &str,
+        index: u32,
+    ) -> Descriptor<bdk_wallet::miniscript::DefiniteDescriptorKey> {
+        Descriptor::<DescriptorPublicKey>::from_str(descriptor)
+            .unwrap()
+            .at_derivation_index(index)
+            .unwrap()
+    }
+
+    /// Spends receive address 0 (100 000 sats): 60 000 to [`PAY_TO`], the
+    /// rest less fee to change address 3.
+    pub fn psbt(pair: &DescriptorPair) -> Psbt {
+        let input = at(&pair.external, 0);
+        let change = at(&pair.internal, 3);
+        let prev = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::from_str(
+                    "3131313131313131313131313131313131313131313131313131313131313131:0",
+                )
+                .unwrap(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: input.script_pubkey(),
+            }],
+        };
+        let pay_to = Address::from_str(PAY_TO).unwrap().assume_checked();
+        let tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: prev.compute_txid(),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::default(),
+            }],
+            output: vec![
+                TxOut {
+                    value: Amount::from_sat(60_000),
+                    script_pubkey: pay_to.script_pubkey(),
+                },
+                TxOut {
+                    value: Amount::from_sat(39_000),
+                    script_pubkey: change.script_pubkey(),
+                },
+            ],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+        psbt.inputs[0].witness_utxo = Some(prev.output[0].clone());
+        psbt.inputs[0].non_witness_utxo = Some(prev);
+        psbt.update_input_with_descriptor(0, &input).unwrap();
+        psbt.update_output_with_descriptor(1, &change).unwrap();
+        psbt
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,5 +785,145 @@ mod tests {
             "wsh(sortedmulti(1,[73c5da0a/48h/0h/0h/2h]{BIP84_XPUB}/0/*,[73c5da0a/48h/0h/0h/2h]{BIP84_XPUB}/1/*))"
         );
         assert!(receive_path(&multi, 0).is_err());
+    }
+
+    // --- multisig -----------------------------------------------------------
+
+    use super::vault_fixture as fx;
+
+    #[test]
+    fn multisig_keys_match_the_vault_form() {
+        assert_eq!(
+            multisig_account_keypath(Network::Bitcoin, 0).unwrap(),
+            vec![48 | HARDENED, HARDENED, HARDENED, 2 | HARDENED]
+        );
+        assert_eq!(
+            multisig_account_keypath(Network::Testnet, 3).unwrap(),
+            vec![48 | HARDENED, 1 | HARDENED, 3 | HARDENED, 2 | HARDENED]
+        );
+        assert!(multisig_account_keypath(Network::Bitcoin, HARDENED).is_err());
+
+        let xpub = xpub_at("m/48'/0'/0'/2'");
+        let key = multisig_key_on(&BITBOX02, Network::Bitcoin, "73C5DA0A", 0, &xpub).unwrap();
+        assert_eq!(key, format!("[73c5da0a/48h/0h/0h/2h]{xpub}"));
+        // The same key the seed itself would give as a cosigner.
+        let own = descriptors::multisig_cosigner_key(&fx::master(fx::ABANDON), Network::Bitcoin, 0)
+            .unwrap();
+        assert_eq!(
+            crate::multisig::Cosigner::parse(&key, Network::Bitcoin).unwrap(),
+            crate::multisig::Cosigner::parse(&own, Network::Bitcoin).unwrap()
+        );
+        // A single-sig account key, or one for another network, is refused.
+        assert!(multisig_key_on(&JADE, Network::Bitcoin, "73c5da0a", 0, BIP84_XPUB).is_err());
+        let e = multisig_key_on(&JADE, Network::Testnet, "73c5da0a", 0, &xpub).unwrap_err();
+        assert!(e
+            .to_string()
+            .contains("Jade returned a key for a different network"));
+    }
+
+    #[test]
+    fn finds_the_device_among_the_vault_keys() {
+        let (config, _) = fx::vault();
+        let fp = Fingerprint::from_str("73c5da0a").unwrap();
+        let keys = vault_keys(&BITBOX02, &config, fp).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(
+            keys[0].keypath,
+            vec![48 | HARDENED, HARDENED, HARDENED, 2 | HARDENED]
+        );
+        assert_eq!(config.cosigners[keys[0].index].fingerprint, "73c5da0a");
+        assert!(same_key(
+            &keys[0].xpub,
+            &Xpub::from_str(&xpub_at("m/48'/0'/0'/2'")).unwrap()
+        ));
+        let e = vault_keys(&BITBOX02, &config, Fingerprint::from([1, 2, 3, 4])).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "This BitBox02 isn't one of this vault's keys"
+        );
+    }
+
+    #[test]
+    fn vault_psbts_are_checked_per_device() {
+        let (_, pair) = fx::vault();
+        let psbt = fx::psbt(&pair);
+        let ours = Fingerprint::from_str("73c5da0a").unwrap();
+        check_multisig_psbt(&BITBOX02, &psbt, ours).unwrap();
+        check_multisig_psbt(&JADE, &psbt, ours).unwrap();
+        let stranger = Fingerprint::from([1, 2, 3, 4]);
+        let e = check_multisig_psbt(&JADE, &psbt, stranger).unwrap_err();
+        assert_eq!(e.to_string(), "This Jade isn't one of this vault's keys");
+
+        // The BitBox02 checks amounts against the previous transactions.
+        let mut stripped = psbt.clone();
+        stripped.inputs[0].non_witness_utxo = None;
+        assert!(check_multisig_psbt(&BITBOX02, &stripped, ours).is_err());
+        check_multisig_psbt(&JADE, &stripped, ours).unwrap();
+        // Without the witness script nobody can sign.
+        let mut no_script = psbt.clone();
+        no_script.inputs[0].witness_script = None;
+        assert!(check_multisig_psbt(&JADE, &no_script, ours).is_err());
+
+        // Signed: only once our key's signature is there.
+        assert!(!signed_own_inputs(&psbt, ours));
+        let mut signed = psbt.clone();
+        let (pk, _) = signed.inputs[0]
+            .bip32_derivation
+            .iter()
+            .find(|(_, (fp, _))| *fp == ours)
+            .map(|(pk, s)| (*pk, s.clone()))
+            .unwrap();
+        let secp = bdk_wallet::bitcoin::secp256k1::Secp256k1::new();
+        let sk = bdk_wallet::bitcoin::secp256k1::SecretKey::from_slice(&[3; 32]).unwrap();
+        let sig = bdk_wallet::bitcoin::ecdsa::Signature::sighash_all(secp.sign_ecdsa(
+            &bdk_wallet::bitcoin::secp256k1::Message::from_digest([4; 32]),
+            &sk,
+        ));
+        signed.inputs[0]
+            .partial_sigs
+            .insert(bdk_wallet::bitcoin::PublicKey::new(pk), sig);
+        assert!(signed_own_inputs(&signed, ours));
+        // Our signature isn't another cosigner's, and a stranger signed nothing.
+        let other = psbt.inputs[0]
+            .bip32_derivation
+            .values()
+            .map(|(fp, _)| *fp)
+            .find(|fp| *fp != ours)
+            .unwrap();
+        assert!(!signed_own_inputs(&signed, other));
+        assert!(!signed_own_inputs(&signed, stranger));
+    }
+
+    #[test]
+    fn vault_names_fit_each_device() {
+        assert_eq!(bitbox02_vault_name("Family vault"), "Family vault");
+        assert_eq!(
+            bitbox02_vault_name("  Ben's   cold\tstorage — 2026 multisig savings "),
+            "Ben's cold storage 2026 multis"
+        );
+        assert_eq!(bitbox02_vault_name("Ünïcödé"), "ncd");
+        assert_eq!(bitbox02_vault_name("✨✨"), "Sessions vault");
+        assert!(bitbox02_vault_name(&"x".repeat(50)).len() == BITBOX02_NAME_MAX);
+
+        assert_eq!(jade_vault_name("Family vault", &[]), "Family_vault");
+        assert_eq!(
+            jade_vault_name("Ben's cold storage", &[]),
+            "Ben's_cold_stor"
+        );
+        assert_eq!(jade_vault_name("   ", &[]), "Vault");
+        let taken = vec!["Family_vault".to_string(), "Family_vault-2".to_string()];
+        assert_eq!(jade_vault_name("Family vault", &taken), "Family_vault-3");
+        let long = vec!["Ben's_cold_stor".to_string()];
+        assert_eq!(
+            jade_vault_name("Ben's cold storage", &long),
+            "Ben's_cold_st-2"
+        );
+        for name in [
+            jade_vault_name("Ben's cold storage", &long),
+            jade_vault_name("a b\nc", &[]),
+        ] {
+            assert!(name.len() <= JADE_NAME_MAX);
+            assert!(name.chars().all(|c| c.is_ascii_graphic()));
+        }
     }
 }

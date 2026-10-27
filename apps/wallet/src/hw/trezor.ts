@@ -22,9 +22,19 @@ const CALLBACK = "sessionswallet://trezor";
 type Failure = { success: false; payload?: { error?: string; code?: string }; error?: unknown };
 type Result<T> = { success: true; payload: T } | Failure;
 
+type PublicKey = {
+  xpub: string;
+  descriptor?: string;
+  rootFingerprint?: number;
+  /** Parent fingerprint of this key (the root's, for a depth-1 key). */
+  fingerprint?: number;
+  depth?: number;
+  serializedPath: string;
+};
+
 interface Connect {
-  getPublicKey(p: Record<string, unknown>): Promise<Result<{ xpub: string; descriptor?: string; rootFingerprint?: number; serializedPath: string }>>;
-  signTransaction(p: Record<string, unknown>): Promise<Result<{ serializedTx: string }>>;
+  getPublicKey(p: Record<string, unknown>): Promise<Result<PublicKey>>;
+  signTransaction(p: Record<string, unknown>): Promise<Result<{ serializedTx: string; signatures?: (string | null | undefined)[] }>>;
   getAddress(p: Record<string, unknown>): Promise<Result<{ address: string }>>;
 }
 
@@ -129,4 +139,96 @@ export async function trezorSign(psbt: string): Promise<string> {
   const tc = await connect();
   const signed = unwrap(await tc.signTransaction(params));
   return a.trezorMerge(psbt, signed.serializedTx);
+}
+
+// --- multisig vaults ---------------------------------------------------------
+//
+// Vault keys are BIP48 native SegWit (m/48'/coin'/account'/2'). Signing and
+// showing addresses name the whole quorum; sorted (sortedmulti) vaults need
+// Trezor firmware 2.8.7+ (Trezor One 1.13.0+). The Rust side builds the
+// Connect parameters for this Trezor's root fingerprint and checks what comes
+// back.
+
+const hex8 = (n: number) => (n >>> 0).toString(16).padStart(8, "0");
+
+/** The root fingerprint, from a key Trezor Suite returned (or by asking for m/48'). */
+async function rootFingerprintOf(tc: Connect, key: PublicKey): Promise<string> {
+  if (key.rootFingerprint !== undefined) return hex8(key.rootFingerprint);
+  // Older Trezor Suite: a depth-1 key's parent fingerprint is the root's.
+  const top = await tc.getPublicKey({ path: "m/48'" }).catch(() => null);
+  if (top?.success && top.payload.depth === 1 && top.payload.fingerprint !== undefined) return hex8(top.payload.fingerprint);
+  throw new Error("Trezor Suite didn't return the wallet fingerprint. Update Trezor Suite and try again.");
+}
+
+async function multisigAccountKey(tc: Connect, account: number, testnet: boolean): Promise<{ key: PublicKey; path: string }> {
+  const path = `m/48'/${testnet ? 1 : 0}'/${account}'/2'`;
+  const key = unwrap(
+    await tc.getPublicKey({
+      path,
+      coin: testnet ? "test" : "btc",
+      scriptType: "SPENDWITNESS",
+      ignoreXpubMagic: true,
+    }),
+  );
+  return { key, path };
+}
+
+/**
+ * Root fingerprint (8 hex characters) of the Trezor in use, for the vault
+ * requests. It's the same on every network, so this asks for a mainnet key.
+ */
+export async function trezorRootFingerprint(): Promise<string> {
+  const tc = await connect();
+  const { key } = await multisigAccountKey(tc, 0, false);
+  return rootFingerprintOf(tc, key);
+}
+
+/** This Trezor's key for a multisig vault: `[fingerprint/48h/0h/{account}h/2h]xpub…` (plain xpub/tpub). */
+export async function trezorMultisigKey(account = 0, testnet = false): Promise<string> {
+  const tc = await connect();
+  const { key, path } = await multisigAccountKey(tc, account, testnet);
+  if (!/^[xt]pub/.test(key.xpub)) throw new Error("Trezor Suite returned the key in an unexpected format. Update Trezor Suite and try again.");
+  const fp = await rootFingerprintOf(tc, key);
+  return `[${fp}/${path.slice(2).replace(/'/g, "h")}]${key.xpub}`;
+}
+
+/** The vault commands on the Rust side (registered in lib.rs; see src-tauri/src/multisig_hw.rs). */
+async function vaultCommand<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(cmd, args);
+}
+
+/**
+ * Sign a PSBT spending from multisig vault `account` on the Trezor. Returns
+ * the PSBT with the Trezor's signatures added, not finalized: other
+ * cosigners may still need to sign. `fingerprint` (the Trezor's root
+ * fingerprint, if known) saves asking Trezor Suite for it.
+ */
+export async function trezorMultisigSign(account: string, psbt: string, fingerprint?: string): Promise<string> {
+  const fp = fingerprint ?? (await trezorRootFingerprint());
+  const params = await vaultCommand<Record<string, unknown>>("trezor_multisig_sign_request", { account, psbt, fingerprint: fp });
+  const tc = await connect();
+  const signed = unwrap(await tc.signTransaction(params));
+  // One per input; Connect leaves holes where the device didn't sign.
+  const count = Array.isArray(params.inputs) ? params.inputs.length : (signed.signatures?.length ?? 0);
+  const signatures = Array.from({ length: count }, (_, i) => signed.signatures?.[i] || null);
+  return vaultCommand<string>("trezor_multisig_merge", { psbt, signatures, signedTx: signed.serializedTx });
+}
+
+/**
+ * Show receive address `index` of multisig vault `account` on the Trezor,
+ * after the wallet worked out which address it must be. Returns the address
+ * once the Trezor showed it.
+ */
+export async function trezorShowMultisigAddress(account: string, index: number, fingerprint?: string): Promise<string> {
+  const fp = fingerprint ?? (await trezorRootFingerprint());
+  const { params, address } = await vaultCommand<{ params: Record<string, unknown>; address: string }>(
+    "trezor_multisig_address_request",
+    { account, index, fingerprint: fp },
+  );
+  const tc = await connect();
+  // Passing `address` makes Connect check it as well.
+  const shown = unwrap(await tc.getAddress({ ...params, address }));
+  if (shown.address !== address) throw new Error("The Trezor showed a different address than this wallet. Don't use it");
+  return shown.address;
 }

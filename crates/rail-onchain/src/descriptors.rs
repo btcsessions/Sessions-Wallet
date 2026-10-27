@@ -196,6 +196,10 @@ fn origin_key(s: &str, original: &str) -> Result<(String, Script)> {
 }
 
 /// Replace SLIP-132 keys (`zpub`, `ypub`, `vpub`…) with plain `xpub`/`tpub`.
+pub fn normalize_slip132(s: &str) -> Result<String> {
+    normalize_keys(s)
+}
+
 fn normalize_keys(s: &str) -> Result<String> {
     use bdk_wallet::bitcoin::base58;
     const SLIP132: [(&str, [u8; 4]); 8] = [
@@ -280,7 +284,7 @@ pub fn validate(pair: &DescriptorPair) -> Result<()> {
     Ok(())
 }
 
-fn check_network(pair: &DescriptorPair, network: Network) -> Result<()> {
+pub fn check_network(pair: &DescriptorPair, network: Network) -> Result<()> {
     let want = if network == Network::Bitcoin {
         NetworkKind::Main
     } else {

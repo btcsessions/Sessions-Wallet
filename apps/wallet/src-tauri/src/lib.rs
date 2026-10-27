@@ -9,9 +9,11 @@ mod jade;
 #[cfg(target_os = "android")]
 mod logcat;
 mod monitor;
+mod multisig_hw;
 mod nwc;
 mod passkey;
 mod state;
+mod vault;
 
 use std::sync::Arc;
 
@@ -35,6 +37,8 @@ pub fn run() {
         .plugin(tauri_plugin_biometric_vault::init())
         // Payment notifications, and watching with the app closed.
         .plugin(tauri_plugin_alerts::init())
+        // Save or share wallet export files.
+        .plugin(tauri_plugin_files::init())
         // The QR scanner uses the camera from inside the webview.
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
@@ -207,6 +211,29 @@ pub fn run() {
             biometric::enable_biometric,
             biometric::disable_biometric,
             biometric::unlock_biometric,
+            bitbox::bitbox_multisig_key,
+            bitbox::bitbox_register_multisig,
+            bitbox::bitbox_show_multisig_address,
+            jade::jade_multisig_key,
+            jade::jade_register_multisig,
+            jade::jade_show_multisig_address,
+            multisig_hw::trezor_multisig_sign_request,
+            multisig_hw::trezor_multisig_merge,
+            multisig_hw::trezor_multisig_address_request,
+            vault::file_export,
+            vault::vault_phone_key,
+            vault::vault_read_key,
+            vault::vault_create,
+            vault::vault_import_preview,
+            vault::vault_import,
+            vault::vault_details,
+            vault::vault_set_key_label,
+            vault::vault_export,
+            vault::vault_signatures,
+            vault::vault_combine,
+            vault::proposals,
+            vault::proposal_save,
+            vault::proposal_delete,
             nwc::nwc_list,
             nwc::nwc_create,
             nwc::nwc_update,

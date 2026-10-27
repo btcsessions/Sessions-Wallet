@@ -44,16 +44,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bitcoin::bip32::{Fingerprint, Xpub};
+use bitcoin::bip32::{DerivationPath, Fingerprint, Xpub};
 use bitcoin::Psbt;
 use rail_onchain::bitbox::{self as helpers, ScriptKind, JADE};
 use rail_onchain::descriptors;
+use rail_onchain::multisig::{MultisigConfig, Policy, ScriptType};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sessions_core::{AccountId, Error, Network, Result};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
+use crate::bitbox::{find_vault, vault};
 use crate::config::AccountSpec;
 use crate::state::{AppState, NETWORK};
 use rpc::Fail;
@@ -671,15 +673,44 @@ pub async fn jade_descriptors(
 
 /// Sign an unsigned PSBT (base64) on Jade over Bluetooth. Returns the PSBT
 /// with Jade's signatures, ready for `resume`.
+///
+/// With `account` set to a multisig vault, the vault is registered on Jade
+/// first if needed, and the PSBT comes back with Jade's signatures only:
+/// other cosigners may still need to sign.
 #[tauri::command]
 pub async fn jade_sign(
     app: AppHandle,
     state: State<'_, AppState>,
     jade: State<'_, JadeState>,
     psbt: String,
+    account: Option<AccountId>,
 ) -> Result<String> {
     let unsigned = Psbt::from_str(psbt.trim())
         .map_err(|_| Error::Invalid("That isn't a transaction Jade can sign".into()))?;
+    if let Some(id) = &account {
+        if let Some(vault) = find_vault(&state, id).await? {
+            let network = vault.network;
+            let vault = Arc::new(vault);
+            let ui = app.clone();
+            return with_jade(&app, &jade, network, |s| {
+                let (vault, ui, psbt) = (vault.clone(), ui.clone(), unsigned.clone());
+                async move {
+                    let signed = sign_vault_psbt(
+                        &s.client,
+                        network,
+                        s.fingerprint,
+                        &vault.name,
+                        &vault.config,
+                        psbt,
+                        || status(&ui, "confirm"),
+                    )
+                    .await?;
+                    Ok(signed.to_string())
+                }
+            })
+            .await;
+        }
+    }
     let network = network(&state).await;
     let ui = app.clone();
     with_jade(&app, &jade, network, |s| {
@@ -768,6 +799,278 @@ pub async fn jade_show_address(
                     &path.keypath,
                     USER_WAIT,
                 )
+                .await?;
+            if shown != expected {
+                return Err(Error::Invalid(
+                    "Jade showed a different address than this wallet. Don't use it".into(),
+                )
+                .into());
+            }
+            Ok(shown)
+        }
+    })
+    .await
+}
+
+// --- multisig vaults --------------------------------------------------------
+//
+// Jade signs any input it holds a key for, but it only recognises a vault's
+// change, and shows its addresses, once the vault is registered (the person
+// confirms the quorum and keys on Jade). Registrations are named (at most 15
+// characters, no spaces) and Jade keeps up to 16. Jade overwrites a
+// registration with the same name, so a name another wallet already uses
+// gets a suffix. Seeing whether the vault is already registered needs
+// firmware 1.0.23+ (`get_registered_multisig`); on older firmware a summary
+// match under the vault's own name counts.
+
+/// Jade's name for a vault's script type.
+fn jade_variant(script: ScriptType) -> &'static str {
+    match script {
+        ScriptType::P2wsh => "wsh(multi(k))",
+        ScriptType::P2shP2wsh => "sh(wsh(multi(k)))",
+        ScriptType::P2sh => "sh(multi(k))",
+    }
+}
+
+/// The vault as Jade registers it.
+fn jade_multisig(config: &MultisigConfig) -> Result<rpc::Multisig> {
+    let Policy::Multi { threshold, sorted } = config.policy;
+    let signers = config
+        .cosigners
+        .iter()
+        .map(|c| {
+            let fp =
+                Fingerprint::from_str(&c.fingerprint).map_err(|e| Error::Crypto(e.to_string()))?;
+            let derivation = DerivationPath::from_str(&c.path)
+                .map_err(|e| Error::Crypto(e.to_string()))?
+                .into_iter()
+                .map(|n| u32::from(*n))
+                .collect();
+            Ok(rpc::Signer {
+                fingerprint: fp.to_bytes(),
+                derivation,
+                xpub: c.xpub.clone(),
+                path: Vec::new(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rpc::Multisig {
+        variant: jade_variant(config.script).into(),
+        sorted,
+        threshold: threshold.into(),
+        signers,
+    })
+}
+
+/// Whether two registrations are the same wallet: same script, quorum and
+/// keys (in any order when the keys are sorted).
+fn same_multisig(a: &rpc::Multisig, b: &rpc::Multisig) -> bool {
+    let keys = |m: &rpc::Multisig| {
+        let mut keys: Vec<(String, [u8; 4], Vec<u32>)> = m
+            .signers
+            .iter()
+            .map(|s| {
+                let key = Xpub::from_str(&s.xpub)
+                    .map(|x| format!("{}{}", x.public_key, x.chain_code))
+                    .unwrap_or_else(|_| s.xpub.clone());
+                (key, s.fingerprint, s.path.clone())
+            })
+            .collect();
+        if m.sorted {
+            keys.sort();
+        }
+        keys
+    };
+    a.variant == b.variant
+        && a.sorted == b.sorted
+        && a.threshold == b.threshold
+        && keys(a) == keys(b)
+}
+
+/// Make sure Jade holds one of the vault's keys and knows the vault,
+/// registering it if needed (`confirming` runs first: the person confirms on
+/// Jade). Returns the registration's name and whether it was registered now.
+async fn ensure_multisig(
+    client: &rpc::Client,
+    network: Network,
+    fingerprint: Fingerprint,
+    vault_name: &str,
+    config: &MultisigConfig,
+    confirming: impl Fn(),
+) -> std::result::Result<(String, bool), Fail> {
+    let net = rpc::network_name(network);
+    // Jade's key, not just its fingerprint.
+    let mut ours = false;
+    for key in helpers::vault_keys(&JADE, config, fingerprint)? {
+        let xpub = client.get_xpub(net, &key.keypath, CALL_WAIT).await?;
+        if Xpub::from_str(&xpub).is_ok_and(|x| helpers::same_key(&x, &key.xpub)) {
+            ours = true;
+            break;
+        }
+    }
+    if !ours {
+        return Err(helpers::not_a_vault_key(&JADE).into());
+    }
+    let wanted = jade_multisig(config)?;
+    let own_name = helpers::jade_vault_name(vault_name, &[]);
+    let existing = client.registered_multisigs(CALL_WAIT).await?;
+    for (name, summary) in &existing {
+        if summary.variant != wanted.variant
+            || summary.sorted != wanted.sorted
+            || summary.threshold != wanted.threshold
+            || summary.num_signers as usize != wanted.signers.len()
+        {
+            continue;
+        }
+        match client.registered_multisig(name, CALL_WAIT).await {
+            Ok(m) if same_multisig(&m, &wanted) => return Ok((name.clone(), false)),
+            Ok(_) => {}
+            // Older firmware (or a registration it made): can't see the keys.
+            Err(Fail::Rpc { .. } | Fail::App(_)) if *name == own_name => {
+                return Ok((name.clone(), false))
+            }
+            Err(Fail::Rpc { .. } | Fail::App(_)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let taken: Vec<String> = existing.into_iter().map(|(n, _)| n).collect();
+    let name = helpers::jade_vault_name(vault_name, &taken);
+    confirming();
+    client
+        .register_multisig(net, &name, &wanted, USER_WAIT)
+        .await?;
+    Ok((name, true))
+}
+
+/// Sign a vault PSBT on Jade, registering the vault first if needed.
+/// Returns the PSBT with Jade's signatures added (not finalized).
+async fn sign_vault_psbt(
+    client: &rpc::Client,
+    network: Network,
+    fingerprint: Fingerprint,
+    vault_name: &str,
+    config: &MultisigConfig,
+    mut psbt: Psbt,
+    confirming: impl Fn(),
+) -> std::result::Result<Psbt, Fail> {
+    helpers::check_multisig_psbt(&JADE, &psbt, fingerprint)?;
+    ensure_multisig(
+        client,
+        network,
+        fingerprint,
+        vault_name,
+        config,
+        &confirming,
+    )
+    .await?;
+    confirming();
+    let signed = client
+        .sign_psbt(rpc::network_name(network), psbt.serialize(), USER_WAIT)
+        .await?;
+    let signed = Psbt::deserialize(&signed)
+        .map_err(|_| Error::Invalid("Jade sent back an unreadable transaction".into()))?;
+    merge_signatures(&mut psbt, &signed)?;
+    if !helpers::signed_own_inputs(&psbt, fingerprint) {
+        return Err(Error::Invalid("Jade didn't sign this vault's inputs".into()).into());
+    }
+    Ok(psbt)
+}
+
+/// Jade's key for a multisig vault (BIP48 native SegWit):
+/// `[fingerprint/48h/0h/{account}h/2h]xpub…`.
+#[tauri::command]
+pub async fn jade_multisig_key(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    jade: State<'_, JadeState>,
+    account: u32,
+) -> Result<String> {
+    let network = network(&state).await;
+    let path = Arc::new(helpers::multisig_account_keypath(network, account)?);
+    with_jade(&app, &jade, network, |s| {
+        let path = path.clone();
+        async move {
+            let xpub = s
+                .client
+                .get_xpub(rpc::network_name(network), &path, CALL_WAIT)
+                .await?;
+            Ok(helpers::multisig_key_on(
+                &JADE,
+                network,
+                &s.fingerprint.to_string(),
+                account,
+                &xpub,
+            )?)
+        }
+    })
+    .await
+}
+
+/// Register multisig vault `account` on Jade, unless it already is. Returns
+/// whether it was registered now (the person confirmed on Jade).
+#[tauri::command]
+pub async fn jade_register_multisig(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    jade: State<'_, JadeState>,
+    account: AccountId,
+) -> Result<bool> {
+    let vault = Arc::new(vault(&state, &account).await?);
+    let network = vault.network;
+    let ui = app.clone();
+    with_jade(&app, &jade, network, |s| {
+        let (vault, ui) = (vault.clone(), ui.clone());
+        async move {
+            let (_, registered) = ensure_multisig(
+                &s.client,
+                network,
+                s.fingerprint,
+                &vault.name,
+                &vault.config,
+                || status(&ui, "confirm"),
+            )
+            .await?;
+            Ok(registered)
+        }
+    })
+    .await
+}
+
+/// Show receive address `index` of multisig vault `account` on Jade
+/// (registering the vault first if needed), after checking it matches the
+/// address this wallet derives. Returns the address.
+#[tauri::command]
+pub async fn jade_show_multisig_address(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    jade: State<'_, JadeState>,
+    account: AccountId,
+    index: u32,
+) -> Result<String> {
+    if index >= HARDENED {
+        return Err(Error::Invalid("That address number is too large".into()));
+    }
+    let vault = Arc::new(vault(&state, &account).await?);
+    let network = vault.network;
+    let expected = descriptors::address_at(&vault.descriptors, network, index)?;
+    let ui = app.clone();
+    with_jade(&app, &jade, network, |s| {
+        let (vault, ui, expected) = (vault.clone(), ui.clone(), expected.clone());
+        async move {
+            let (name, _) = ensure_multisig(
+                &s.client,
+                network,
+                s.fingerprint,
+                &vault.name,
+                &vault.config,
+                || status(&ui, "confirm"),
+            )
+            .await?;
+            status(&ui, "confirm");
+            let paths = vec![vec![0, index]; vault.config.cosigners.len()];
+            let shown = s
+                .client
+                .multisig_receive_address(rpc::network_name(network), &name, &paths, USER_WAIT)
                 .await?;
             if shown != expected {
                 return Err(Error::Invalid(
@@ -1023,6 +1326,335 @@ mod tests {
         let mut untouched = ours.clone();
         assert!(merge_signatures(&mut untouched, &other).is_err());
         assert!(!helpers::fully_signed(&untouched));
+    }
+
+    // --- multisig ---------------------------------------------------------
+
+    const LEGAL: &str =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    const LETTER: &str =
+        "letter advice cage absurd amount doctor acoustic avoid letter advice cage above";
+
+    fn master(phrase: &str) -> bitcoin::bip32::Xpriv {
+        sessions_core::keystore::Seed::from_phrase(phrase)
+            .unwrap()
+            .master_xpriv(Network::Bitcoin)
+            .unwrap()
+    }
+
+    /// A 2-of-3 `wsh(sortedmulti)` vault of three test seeds.
+    fn test_vault() -> MultisigConfig {
+        let keys: Vec<String> = [ABANDON, LEGAL, LETTER]
+            .iter()
+            .map(|p| descriptors::multisig_cosigner_key(&master(p), Network::Bitcoin, 0).unwrap())
+            .collect();
+        let pair = descriptors::multisig(2, &keys).unwrap();
+        MultisigConfig::from_descriptor(&pair.external, Network::Bitcoin).unwrap()
+    }
+
+    fn field<'a>(v: &'a Cbor, key: &str) -> &'a Cbor {
+        v.as_map()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k.as_text() == Some(key))
+            .map(|(_, v)| v)
+            .unwrap_or_else(|| panic!("no {key}"))
+    }
+
+    /// Jade with the "abandon … about" seed, its multisig registrations in
+    /// `registry`; `sign_psbt` adds a signature for its key in input 0
+    /// (unless `signs` is false).
+    fn vault_jade(registry: Arc<std::sync::Mutex<Vec<(String, Cbor)>>>, signs: bool) -> FakeJade {
+        use bitcoin::bip32::{ChildNumber, DerivationPath};
+        let master = master(ABANDON);
+        FakeJade::new(move |req| {
+            let json = serde_json::to_value(req).unwrap();
+            match method(req) {
+                "get_xpub" => {
+                    let path: DerivationPath = json["params"]["path"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|n| ChildNumber::from(n.as_u64().unwrap() as u32))
+                        .collect();
+                    let secp = bitcoin::secp256k1::Secp256k1::new();
+                    let xpub = Xpub::from_priv(&secp, &master.derive_priv(&secp, &path).unwrap());
+                    vec![reply(req, Cbor::Text(xpub.to_string()))]
+                }
+                "get_registered_multisigs" => {
+                    let entries = registry
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|(name, d)| {
+                            let summary = vec![
+                                (Cbor::Text("variant".into()), field(d, "variant").clone()),
+                                (Cbor::Text("sorted".into()), field(d, "sorted").clone()),
+                                (
+                                    Cbor::Text("threshold".into()),
+                                    field(d, "threshold").clone(),
+                                ),
+                                (
+                                    Cbor::Text("num_signers".into()),
+                                    Cbor::Integer(
+                                        (field(d, "signers").as_array().unwrap().len() as u64)
+                                            .into(),
+                                    ),
+                                ),
+                            ];
+                            (Cbor::Text(name.clone()), Cbor::Map(summary))
+                        })
+                        .collect();
+                    vec![reply(req, Cbor::Map(entries))]
+                }
+                "get_registered_multisig" => {
+                    let name = json["params"]["multisig_name"].as_str().unwrap().to_owned();
+                    let d = registry
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, d)| d.clone())
+                        .unwrap();
+                    vec![reply(
+                        req,
+                        Cbor::Map(vec![
+                            (Cbor::Text("multisig_name".into()), Cbor::Text(name)),
+                            (Cbor::Text("descriptor".into()), d),
+                        ]),
+                    )]
+                }
+                "register_multisig" => {
+                    assert_eq!(json["params"]["network"], "mainnet");
+                    let name = json["params"]["multisig_name"].as_str().unwrap().to_owned();
+                    assert!(name.len() <= 15 && !name.contains(' '));
+                    let d = field(field(req, "params"), "descriptor").clone();
+                    let mut registry = registry.lock().unwrap();
+                    registry.retain(|(n, _)| *n != name);
+                    registry.push((name, d));
+                    vec![reply(req, Cbor::Bool(true))]
+                }
+                "sign_psbt" => {
+                    let bytes = field(field(req, "params"), "psbt").as_bytes().unwrap();
+                    let mut psbt = Psbt::deserialize(bytes).unwrap();
+                    if signs {
+                        let fp = master.fingerprint(&bitcoin::secp256k1::Secp256k1::new());
+                        let pk = psbt.inputs[0]
+                            .bip32_derivation
+                            .iter()
+                            .find(|(_, (f, _))| *f == fp)
+                            .map(|(pk, _)| *pk)
+                            .unwrap();
+                        let secp = bitcoin::secp256k1::Secp256k1::new();
+                        let sk = bitcoin::secp256k1::SecretKey::from_slice(&[5; 32]).unwrap();
+                        let sig =
+                            bitcoin::ecdsa::Signature::sighash_all(secp.sign_ecdsa(
+                                &bitcoin::secp256k1::Message::from_digest([6; 32]),
+                                &sk,
+                            ));
+                        psbt.inputs[0]
+                            .partial_sigs
+                            .insert(bitcoin::PublicKey::new(pk), sig);
+                    }
+                    vec![reply(req, Cbor::Bytes(psbt.serialize()))]
+                }
+                m => panic!("unexpected {m}"),
+            }
+        })
+    }
+
+    /// A PSBT spending the vault's receive address 0, keys and script filled in.
+    fn vault_psbt(config: &MultisigConfig) -> Psbt {
+        use bitcoin::bip32::{ChildNumber, DerivationPath};
+        use bitcoin::blockdata::opcodes::all::OP_CHECKMULTISIG;
+        use bitcoin::blockdata::script::Builder;
+        use bitcoin::{absolute, transaction, Amount, ScriptBuf, Transaction, TxIn, TxOut};
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let mut keys: Vec<_> = config
+            .cosigners
+            .iter()
+            .map(|c| {
+                let xpub = Xpub::from_str(&c.xpub).unwrap();
+                let tail = [ChildNumber::from(0), ChildNumber::from(0)];
+                let pk = xpub.derive_pub(&secp, &tail).unwrap().public_key;
+                let path = DerivationPath::from_str(&c.path).unwrap().extend(tail);
+                (pk, (Fingerprint::from_str(&c.fingerprint).unwrap(), path))
+            })
+            .collect();
+        keys.sort_by_key(|(pk, _)| pk.serialize());
+        let mut script = Builder::new().push_int(2);
+        for (pk, _) in &keys {
+            script = script.push_key(&bitcoin::PublicKey::new(*pk));
+        }
+        let script = script
+            .push_int(keys.len() as i64)
+            .push_opcode(OP_CHECKMULTISIG)
+            .into_script();
+        let tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn::default()],
+            output: vec![TxOut {
+                value: Amount::from_sat(90_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+        psbt.inputs[0].witness_utxo = Some(TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: ScriptBuf::new_p2wsh(&script.wscript_hash()),
+        });
+        psbt.inputs[0].witness_script = Some(script);
+        psbt.inputs[0].bip32_derivation = keys.into_iter().collect();
+        psbt
+    }
+
+    #[tokio::test]
+    async fn vaults_are_registered_on_jade_once() {
+        let config = test_vault();
+        let fp = Fingerprint::from_str("73c5da0a").unwrap();
+        let registry = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let client = rpc::Client::new(Box::new(vault_jade(registry.clone(), true)));
+        let confirms = AtomicUsize::new(0);
+        let confirm = || {
+            confirms.fetch_add(1, Ordering::SeqCst);
+        };
+
+        let (name, registered) = ensure_multisig(
+            &client,
+            Network::Bitcoin,
+            fp,
+            "Family vault",
+            &config,
+            confirm,
+        )
+        .await
+        .unwrap();
+        assert_eq!((name.as_str(), registered), ("Family_vault", true));
+        assert_eq!(confirms.load(Ordering::SeqCst), 1);
+        {
+            let registry = registry.lock().unwrap();
+            assert_eq!(registry.len(), 1);
+            let d = &registry[0].1;
+            assert_eq!(field(d, "variant").as_text(), Some("wsh(multi(k))"));
+            assert_eq!(field(d, "sorted"), &Cbor::Bool(true));
+            assert_eq!(field(d, "threshold"), &Cbor::Integer(2.into()));
+            let signers = field(d, "signers").as_array().unwrap();
+            assert_eq!(signers.len(), 3);
+            for (s, c) in signers.iter().zip(&config.cosigners) {
+                assert_eq!(field(s, "xpub").as_text(), Some(c.xpub.as_str()));
+                assert_eq!(
+                    field(s, "fingerprint").as_bytes().unwrap().as_slice(),
+                    Fingerprint::from_str(&c.fingerprint).unwrap().as_bytes()
+                );
+                assert_eq!(field(s, "derivation").as_array().unwrap().len(), 4);
+                assert!(field(s, "path").as_array().unwrap().is_empty());
+            }
+        }
+
+        // Already there: nothing to confirm.
+        let (name, registered) = ensure_multisig(
+            &client,
+            Network::Bitcoin,
+            fp,
+            "Family vault",
+            &config,
+            confirm,
+        )
+        .await
+        .unwrap();
+        assert_eq!((name.as_str(), registered), ("Family_vault", false));
+        assert_eq!(confirms.load(Ordering::SeqCst), 1);
+
+        // Another vault with the same name doesn't overwrite this one.
+        let mut other = config.clone();
+        other.policy = Policy::Multi {
+            threshold: 1,
+            sorted: true,
+        };
+        let (name, registered) = ensure_multisig(
+            &client,
+            Network::Bitcoin,
+            fp,
+            "Family vault",
+            &other,
+            confirm,
+        )
+        .await
+        .unwrap();
+        assert_eq!((name.as_str(), registered), ("Family_vault-2", true));
+        assert_eq!(registry.lock().unwrap().len(), 2);
+
+        // A Jade that isn't one of the keys is turned away before anything else.
+        let e = ensure_multisig(
+            &client,
+            Network::Bitcoin,
+            Fingerprint::from([1, 2, 3, 4]),
+            "Family vault",
+            &config,
+            confirm,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            friendly(e).to_string(),
+            "This Jade isn't one of this vault's keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn jade_signs_its_part_of_a_vault_psbt() {
+        let config = test_vault();
+        let fp = Fingerprint::from_str("73c5da0a").unwrap();
+        let registry = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let client = rpc::Client::new(Box::new(vault_jade(registry.clone(), true)));
+        let psbt = vault_psbt(&config);
+        let signed = sign_vault_psbt(&client, Network::Bitcoin, fp, "Vault", &config, psbt, || {})
+            .await
+            .unwrap();
+        // Registered on the way, signed by Jade's key only: not final yet.
+        assert_eq!(registry.lock().unwrap().len(), 1);
+        assert_eq!(signed.inputs[0].partial_sigs.len(), 1);
+        assert!(helpers::signed_own_inputs(&signed, fp));
+
+        // A Jade that comes back without its signature fails plainly.
+        let lazy = rpc::Client::new(Box::new(vault_jade(registry, false)));
+        let e = sign_vault_psbt(
+            &lazy,
+            Network::Bitcoin,
+            fp,
+            "Vault",
+            &config,
+            vault_psbt(&config),
+            || {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            friendly(e).to_string(),
+            "Jade didn't sign this vault's inputs"
+        );
+    }
+
+    #[test]
+    fn registrations_compare_by_keys() {
+        let config = test_vault();
+        let a = jade_multisig(&config).unwrap();
+        assert_eq!(a.variant, "wsh(multi(k))");
+        let mut b = a.clone();
+        b.signers.reverse();
+        assert!(same_multisig(&a, &b), "sorted keys: order doesn't matter");
+        b.sorted = false;
+        let mut c = b.clone();
+        assert!(!same_multisig(&a, &b));
+        c.signers.reverse();
+        let mut a2 = a.clone();
+        a2.sorted = false;
+        assert!(same_multisig(&a2, &c));
+        assert!(!same_multisig(&a2, &b), "unsorted keys: order matters");
+        let mut d = a.clone();
+        d.threshold = 3;
+        assert!(!same_multisig(&a, &d));
     }
 
     #[test]

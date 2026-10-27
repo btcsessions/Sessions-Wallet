@@ -20,7 +20,10 @@ export type SheetName =
   | { name: "discover"; found: import("../api/types").FoundAccount[] }
   | { name: "contacts"; add?: string }
   | { name: "checkin" }
-  | { name: "nwc" };
+  | { name: "nwc" }
+  | { name: "vault" }
+  | { name: "vault-export"; account: string }
+  | { name: "proposal"; id: string };
 
 interface Toast {
   kind: "ok" | "error";

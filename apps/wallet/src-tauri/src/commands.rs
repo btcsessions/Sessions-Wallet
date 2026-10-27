@@ -201,7 +201,9 @@ pub async fn add_account(state: State<'_, AppState>, spec: NewAccount) -> Result
                     threshold,
                     total: keys.len() as u8,
                     descriptors,
-                    local_account,
+                    local_account: Some(local_account),
+                    keys: vec![],
+                    coordination: crate::config::Coordination::Solo,
                 }
             }
             "hardware" | "watchOnly" => {

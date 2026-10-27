@@ -39,6 +39,15 @@ import type {
   Arrival,
   NwcConnection,
   NwcNew,
+  VaultKey,
+  NewVault,
+  VaultImportPreview,
+  VaultImport,
+  VaultDetails,
+  VaultExportFormat,
+  ExportFile,
+  VaultSignatures,
+  Proposal,
 } from "./types";
 
 /**
@@ -156,7 +165,8 @@ export interface WalletApi {
   /** BitBox02 over USB: one descriptor per account number, `wpkh([fp/84h/0h/{n}h]xpub…/<0;1>/*)` (`tr`/86h for Taproot). Unlocks and pairs first if needed. */
   bitboxDescriptors(script: "wpkh" | "tr", accounts: number[]): Promise<string[]>;
   /** Sign an unsigned PSBT (base64) on a BitBox02 over USB; returns the signed PSBT for `resume`. */
-  bitboxSign(psbt: string): Promise<string>;
+  /** `account`: a multisig vault (registers it on the device first if needed; partial signing is fine). */
+  bitboxSign(psbt: string, account?: string): Promise<string>;
   /** Show receive address `index` of a BitBox02 account on the device (checked against ours); returns it. */
   bitboxShowAddress(account: string, index: number): Promise<string>;
   /** BitBox02 progress (status, pairing code, paired). Returns an unsubscribe. */
@@ -164,7 +174,7 @@ export interface WalletApi {
   /** Jade over Bluetooth: one descriptor per account number, `wpkh([fp/84h/0h/{n}h]xpub…/<0;1>/*)` (`tr`/86h for Taproot, firmware 1.0.34+). Connects and unlocks first if needed. */
   jadeDescriptors(script: "wpkh" | "tr", accounts: number[]): Promise<string[]>;
   /** Sign an unsigned PSBT (base64) on Jade over Bluetooth; returns the signed PSBT for `resume`. */
-  jadeSign(psbt: string): Promise<string>;
+  jadeSign(psbt: string, account?: string): Promise<string>;
   /** Show receive address `index` of a hardware account on Jade over Bluetooth (checked against ours); returns it. */
   jadeShowAddress(account: string, index: number): Promise<string>;
   /** Jade Bluetooth progress (scanning, connecting, unlock, confirm, connected). Returns an unsubscribe. */
@@ -211,6 +221,36 @@ export interface WalletApi {
   refundDeposit(account: string, txid: string, vout: number, address: string, feeRateSatVb: number): Promise<string>;
   /** Called when an account changes (payment in or out). Returns an unsubscribe. */
   onChange(cb: () => void): Promise<() => void>;
+  /** Multisig: this phone's key for a new vault (next unused BIP48 account). */
+  vaultPhoneKey(): Promise<VaultKey>;
+  /** A cosigner key from a scanned / pasted / opened export (`[fp/48h/0h/0h/2h]xpub`, a device's multisig file). */
+  vaultReadKey(text: string): Promise<VaultKey>;
+  /** BitBox02 / Jade over Bluetooth: the device's multisig key (`account`: BIP48 account, usually 0). */
+  bitboxMultisigKey(account: number): Promise<string>;
+  jadeMultisigKey(account: number): Promise<string>;
+  /** Register the vault on the device if it isn't yet (the user confirms there). True when it registered now. */
+  bitboxRegisterMultisig(account: string): Promise<boolean>;
+  jadeRegisterMultisig(account: string): Promise<boolean>;
+  /** Show vault receive address `index` on the device (checked against ours). */
+  bitboxShowMultisigAddress(account: string, index: number): Promise<string>;
+  jadeShowMultisigAddress(account: string, index: number): Promise<string>;
+  vaultCreate(vault: NewVault): Promise<AccountInfo>;
+  /** Read a multisig wallet file or QR (descriptor, Coldcard text, BSMS, Caravan / Specter JSON) for review. */
+  vaultImportPreview(text: string): Promise<VaultImportPreview>;
+  vaultImport(vault: VaultImport): Promise<AccountInfo>;
+  vaultDetails(account: string): Promise<VaultDetails>;
+  vaultSetKeyLabel(account: string, fingerprint: string, label: string): Promise<void>;
+  vaultExport(account: string, format: VaultExportFormat): Promise<ExportFile>;
+  /** Which keys have signed this PSBT. */
+  vaultSignatures(account: string, psbt: string): Promise<VaultSignatures>;
+  /** Add another signer's signatures (a PSBT of the same transaction) to `psbt`. */
+  vaultCombine(psbt: string, other: string): Promise<string>;
+  proposals(account?: string): Promise<Proposal[]>;
+  /** Save or update (by id; empty id = new). */
+  proposalSave(p: Proposal): Promise<Proposal>;
+  proposalDelete(id: string): Promise<void>;
+  /** Save (save-as screen; Downloads on desktop) or share a file. False if the user backed out. */
+  fileExport(file: ExportFile, share: boolean): Promise<boolean>;
   /** Nostr Wallet Connect: apps allowed to use Spending within a budget. */
   nwcList(): Promise<NwcConnection[]>;
   /** Returns the connection link (nostr+walletconnect://…) to give the app. */

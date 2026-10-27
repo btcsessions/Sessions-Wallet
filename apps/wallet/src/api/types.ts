@@ -553,3 +553,94 @@ export class BiometricError extends Error {
 export function isBiometricError(e: unknown, code?: BiometricErrorCode): e is BiometricError {
   return e instanceof BiometricError && (code === undefined || e.code === code);
 }
+
+// ---- Multisig vaults ----------------------------------------------------
+
+/** Where a vault key lives. */
+export type KeySource = { type: "phone"; account: number } | { type: "device"; device: string } | { type: "external" };
+
+/** A vault key (or one just read, before it's in a vault). */
+export interface VaultKey {
+  fingerprint: string;
+  /** `m/48'/0'/0'/2'` style. */
+  path: string;
+  xpub: string;
+  /** `[fp/48h/0h/0h/2h]xpub`. */
+  key: string;
+  label: string;
+  source: KeySource;
+  /** This phone can sign with it. */
+  ours: boolean;
+}
+
+export interface NewVault {
+  name: string;
+  threshold: number;
+  keys: { key: string; label: string; source: KeySource }[];
+}
+
+export interface VaultImportPreview {
+  name: string;
+  threshold: number;
+  total: number;
+  script: string;
+  keys: VaultKey[];
+  notes: string[];
+  /** Pass back to `vaultImport` as is. */
+  descriptor: string;
+}
+
+export interface VaultImport {
+  name: string;
+  descriptor: string;
+  keys: { fingerprint: string; label: string; source: KeySource }[];
+}
+
+export interface VaultDetails {
+  name: string;
+  threshold: number;
+  total: number;
+  script: string;
+  keys: VaultKey[];
+  /** Solo today; group wallets later. */
+  coordination: { type: "solo" } | { type: "group"; group_id: string };
+  descriptor: string;
+  firstAddress: string;
+}
+
+/**
+ * Wallet file formats: `descriptor` (Sparrow, Nunchuk, BlueWallet, Specter, Bitcoin Core), `coldcard` (the
+ * Name/Policy/Derivation text file: Keystone, Passport, Jade, BlueWallet, Nunchuk, Sparrow), `bsms` (BIP-129:
+ * Nunchuk, Sparrow), `caravan` (Caravan JSON), `specter` (Specter JSON backup).
+ */
+export type VaultExportFormat = "descriptor" | "coldcard" | "bsms" | "caravan" | "specter";
+
+export interface ExportFile {
+  filename: string;
+  mime: string;
+  content: string;
+}
+
+export interface VaultSignatures {
+  keys: { fingerprint: string; label: string; source: KeySource; signed: boolean }[];
+  signed: number;
+  needed: number;
+  ready: boolean;
+  /** Where the money goes (not the vault's change). */
+  destinations: { address: string; amountSat: number }[];
+}
+
+/** A vault spend waiting for signatures (finish it later; shared with a group's members later on). */
+export interface Proposal {
+  id: string;
+  account: string;
+  createdAt: number;
+  updatedAt: number;
+  psbt: string;
+  execution: Execution;
+  fee: FeePriority;
+  amountSat: number;
+  feeSat: number;
+  to: string;
+  note: string | null;
+}

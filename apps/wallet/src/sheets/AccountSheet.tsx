@@ -13,6 +13,7 @@ import { accountColor, accountKind, amountParts, errorText, formatFiat, held } f
 import { PendingClock } from "../components/PendingClock";
 import { SpendingDeposits } from "../components/SpendingDeposits";
 import { SweepSetting } from "../components/Sweep";
+import { VaultPanel } from "./VaultPanel";
 import { useWallet } from "../state/store";
 
 export function AccountSheet({ id }: { id: string }) {
@@ -133,11 +134,7 @@ export function AccountSheet({ id }: { id: string }) {
           Held by the mint at {a.custody.url}. Keep amounts small and transfer larger ones to Spending or a vault.
         </p>
       )}
-      {a.custody.type === "multisig" && (
-        <p className="notice">
-          Spending needs {a.custody.threshold} of {a.custody.total} keys. This device holds {a.custody.localSigners}.
-        </p>
-      )}
+      {a.custody.type === "multisig" && <VaultPanel account={a.id} />}
 
       {advanced && a.rail === "onchain" && (
         <button className="btn block" style={{ marginBottom: 12 }} onClick={() => open({ name: "coins", account: a.id })}>

@@ -12,6 +12,7 @@ import { JadeQrUnlock } from "../hw/JadeUnlock";
 import { BitboxProgress, useBitboxProgress } from "../hw/BitboxProgress";
 import { JadeModeSwitch, JadeProgress, useJadeProgress, type JadeMode } from "../hw/JadeProgress";
 import { useWallet } from "../state/store";
+import { VaultSign } from "./VaultSign";
 
 /** A signed PSBT from whatever the device showed: UR, base64 or hex. */
 async function signedFrom(r: ScanResult): Promise<string> {
@@ -39,6 +40,7 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
   const quoteAccount = accounts.find((a) => a.id === quote?.account);
   const isBitbox = quoteAccount?.custody.type === "hardware" && deviceFor(quoteAccount.custody.device).connect === "bitbox";
   const ns = quote?.needsSignature;
+  if (quote && ns && quoteAccount?.custody.type === "multisig") return <VaultSign account={quote.account} paused={paused} fee={fee} onDone={onDone} />;
   if (!quote || !ns) return null;
 
   const account = accounts.find((a) => a.id === quote.account);

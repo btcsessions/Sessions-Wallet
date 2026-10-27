@@ -18,6 +18,9 @@ import { DiscoverSheet } from "./sheets/DiscoverSheet";
 import { ContactsSheet } from "./sheets/ContactsSheet";
 import { CheckinSheet } from "./components/Checkins";
 import { NwcSheet } from "./sheets/NwcSheet";
+import { VaultSheet } from "./sheets/VaultSheet";
+import { VaultExportSheet } from "./sheets/VaultPanel";
+import { ProposalSheet } from "./sheets/VaultSign";
 import { useWallet } from "./state/store";
 
 function ActiveSheet() {
@@ -34,7 +37,13 @@ function ActiveSheet() {
     case "gallery":
       return <GallerySheet />;
     case "add-account":
-      return sheet.kind === "hardware" ? <AddHardwareSheet /> : <AddAccountSheet key={sheet.kind} kind={sheet.kind} />;
+      return sheet.kind === "hardware" ? <AddHardwareSheet /> : sheet.kind === "multisig" ? <VaultSheet /> : <AddAccountSheet key={sheet.kind} kind={sheet.kind} />;
+    case "vault":
+      return <VaultSheet />;
+    case "vault-export":
+      return <VaultExportSheet account={sheet.account} />;
+    case "proposal":
+      return <ProposalSheet key={sheet.id} id={sheet.id} />;
     case "discover":
       return <DiscoverSheet found={sheet.found} />;
     case "coins":
