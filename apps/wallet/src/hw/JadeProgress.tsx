@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { JadeEvent } from "../api/types";
 import { DeviceStuck } from "./Stuck";
+import { jadeLiveHint, jadeLiveLabel } from "./devices";
 
 type State = "scanning" | "reconnecting" | "connecting" | "pairing" | "unlock" | "confirm" | "connected" | "stuck";
 
@@ -57,7 +58,7 @@ export function JadeProgress({ state, signing }: { state: State | null; signing?
     );
   }
   const text = {
-    scanning: "Looking for your Jade. Turn it on, choose Bluetooth, and keep it close.",
+    scanning: `Looking for your Jade. ${jadeLiveHint()} Keep it close.`,
     connecting: "Connecting… If asked to pair, check the number matches the one on Jade and confirm on both.",
     reconnecting: "Reconnecting to your Jade… keep it on and close by.",
     pairing: "Pair Jade with this phone: check the number on Jade matches the one on your phone, then confirm on both.",
@@ -81,7 +82,7 @@ export function JadeModeSwitch({ value, onChange }: { value: JadeMode; onChange:
     <div className="segmented" role="radiogroup" aria-label="Connect Jade by" style={{ marginBottom: 14 }}>
       {(
         [
-          ["ble", "Bluetooth"],
+          ["ble", jadeLiveLabel()],
           ["qr", "QR code"],
         ] as const
       ).map(([m, label]) => (

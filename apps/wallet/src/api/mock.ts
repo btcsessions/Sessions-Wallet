@@ -333,6 +333,9 @@ function find(id: string) {
   return a;
 }
 
+let linkStarted = 0;
+let mockDevices: import("./types").LinkedDevice[] = [{ id: "me", name: "Android phone", kind: "phone", seenAt: Math.floor(Date.now() / 1000), thisDevice: true }];
+
 export const mockApi: WalletApi = {
   isMock: true,
   async status() {
@@ -1090,6 +1093,37 @@ export const mockApi: WalletApi = {
   async groupRespond() {},
   async groupAccounts() {
     return [...groups.values()].flatMap((g) => (g.vault.account ? [g.vault.account] : []));
+  },
+  async linkOffer() {
+    linkStarted = Date.now();
+    return { qr: "sessionswallet://link/" + "ab".repeat(32) + "/" + "cd".repeat(16), expiresAt: Math.floor(Date.now() / 1000) + 900 };
+  },
+  async linkPoll() {
+    const t = Date.now() - linkStarted;
+    if (t < 4000) return { state: "waiting" as const };
+    if (t < 9000) return { state: "code" as const, code: "482 913", from: "Android phone" };
+    return { state: "ready" as const, from: "Android phone" };
+  },
+  async linkFinish(passcode) {
+    await this.restoreWallet(DEMO_PHRASE, passcode);
+  },
+  async linkCancel() {},
+  async linkScan(qr) {
+    await sleep(700);
+    if (!qr.startsWith("sessionswallet://link/")) throw "That isn't a Sessions Wallet link code";
+    return { code: "482 913" };
+  },
+  async linkSend(passcode) {
+    await sleep(900);
+    if (passcode.length < 6) throw "Wrong passcode";
+    mockDevices = [...mockDevices.filter((d) => d.id !== "mac1"), { id: "mac1", name: "Mac", kind: "desktop", seenAt: Math.floor(Date.now() / 1000), thisDevice: false }];
+  },
+  async syncStatus() {
+    return { devices: mockDevices, lastSyncAt: Math.floor(Date.now() / 1000) - 60 };
+  },
+  async syncNow() {
+    await sleep(800);
+    return { devices: mockDevices, lastSyncAt: Math.floor(Date.now() / 1000) };
   },
   async groupDelete(groupId) {
     await sleep(300);

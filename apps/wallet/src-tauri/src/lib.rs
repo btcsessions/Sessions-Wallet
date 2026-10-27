@@ -6,6 +6,7 @@ mod bitbox;
 mod commands;
 mod config;
 mod jade;
+mod link;
 #[cfg(target_os = "android")]
 mod logcat;
 mod monitor;
@@ -257,6 +258,14 @@ pub fn run() {
             group::group_list,
             group::group_accounts,
             group::group_delete,
+            commands::sync_status,
+            commands::sync_now,
+            link::link_offer,
+            link::link_poll,
+            link::link_finish,
+            link::link_cancel,
+            link::link_scan,
+            link::link_send,
             group::group_respond,
             group::group_set_name,
             group::group_propose,

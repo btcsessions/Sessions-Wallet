@@ -1,4 +1,8 @@
 import type {
+  LinkOffer,
+  LinkStatus,
+  SyncStatus,
+  SyncDirection,
   AccountInfo,
   BitboxEvent,
   JadeEvent,
@@ -276,6 +280,21 @@ export interface WalletApi {
   groupAccounts(): Promise<string[]>;
   /** Abandon a group vault that isn't set up yet. */
   groupDelete(groupId: string): Promise<void>;
+
+  // Linked devices.
+  /** New device (no wallet yet): the QR to scan from the wallet device. */
+  linkOffer(): Promise<LinkOffer>;
+  /** New device: has the wallet device scanned it / sent the wallet yet? */
+  linkPoll(): Promise<LinkStatus>;
+  /** New device: create the wallet that arrived, with this device's passcode. Call `restoreState` next. */
+  linkFinish(passcode: string): Promise<void>;
+  linkCancel(): Promise<void>;
+  /** Wallet device: read the new device's QR; returns the check code both screens show. */
+  linkScan(qr: string): Promise<{ code: string }>;
+  /** Wallet device: codes match: send the wallet (checks the passcode). */
+  linkSend(passcode: string): Promise<void>;
+  syncStatus(): Promise<SyncStatus>;
+  syncNow(direction: SyncDirection): Promise<SyncStatus>;
   groupRespond(groupId: string, accept: boolean): Promise<void>;
   groupSetName(name: string): Promise<void>;
   groupPropose(groupId: string, slots: { holder: string; label: string }[]): Promise<GroupView>;

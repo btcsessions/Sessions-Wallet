@@ -15,6 +15,7 @@
 //! finalize, a finalize must match the submitted keys).
 
 pub mod join;
+pub mod link;
 pub mod msg;
 pub mod setup;
 

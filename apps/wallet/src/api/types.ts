@@ -737,3 +737,33 @@ export interface GroupList {
   vaults: GroupVault[];
   invites: { groupId: string; name: string; fromNpub: string | null }[];
 }
+
+/** Linking a new device: the QR it shows. */
+export interface LinkOffer {
+  qr: string;
+  expiresAt: number;
+}
+
+/** New device, while linking. */
+export type LinkStatus =
+  | { state: "waiting" }
+  | { state: "code"; code: string; from: string }
+  | { state: "ready"; from: string }
+  | { state: "expired" };
+
+/** A phone or computer linked to this wallet. */
+export interface LinkedDevice {
+  id: string;
+  name: string;
+  kind: "phone" | "desktop" | string;
+  seenAt: number | null;
+  thisDevice: boolean;
+}
+
+export interface SyncStatus {
+  devices: LinkedDevice[];
+  lastSyncAt: number | null;
+}
+
+/** `both`: merge; `sendMine`: this device's setup replaces the others'; `takeTheirs`: the reverse. */
+export type SyncDirection = "both" | "sendMine" | "takeTheirs";

@@ -101,6 +101,15 @@ struct Saved {
     /// Restored wallet that hasn't found (or ruled out) its old backup yet.
     #[serde(default)]
     restore_pending: bool,
+    /// This device, among the wallet's linked devices.
+    #[serde(default)]
+    device_id: Option<String>,
+    /// The last "use this device's setup" applied (or sent) here.
+    #[serde(default)]
+    replace_token: Option<String>,
+    /// When this device last pulled the other devices' changes (Unix secs).
+    #[serde(default)]
+    last_sync_at: Option<u64>,
 }
 
 type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
@@ -115,6 +124,10 @@ struct Inner {
     force_upload: bool,
     last_check_ms: u64,
     last_emitted: Option<BackupStatus>,
+    /// When the relays were last checked for other devices' changes.
+    last_pull_ms: Option<u64>,
+    /// A "use this device's setup" waiting to go out with the next upload.
+    send_token: Option<String>,
 }
 
 pub struct Backup {
@@ -156,6 +169,8 @@ impl Backup {
                 force_upload: false,
                 last_check_ms: 0,
                 last_emitted: None,
+                last_pull_ms: None,
+                send_token: None,
             }),
             wake: tokio::sync::Notify::new(),
             emit: OnceLock::new(),
@@ -263,9 +278,11 @@ impl Backup {
         self.update_saved(|s| {
             *s = Saved {
                 restore_pending: restored,
+                device_id: s.device_id.clone(),
                 ..Saved::default()
             }
         });
+        let _ = std::fs::remove_file(self.base_path());
         let mut i = self.lock();
         i.sched = Scheduler::new(Policy::default());
         i.force_upload = false;
@@ -367,6 +384,7 @@ impl Backup {
             return;
         }
         let (urls, _) = self.urls();
+        let sent = data.clone();
         let result = self.publish(keys, version, created_at, data, &urls).await;
         // Keep the envelope alive on the relays; its fate doesn't decide anything.
         if let Some(env) = envelope {
@@ -383,6 +401,7 @@ impl Backup {
                     s.hash = Some(hash);
                     s.last_created_at = created_at;
                 });
+                self.set_base(&sent);
                 self.lock().sched.succeeded(now, true);
             }
             Err(e) => {
@@ -474,12 +493,14 @@ pub async fn gather(state: &AppState) -> Result<Value> {
         }
     }
     let envelope = state.backup.lock().saved.envelope.clone();
-    Ok(serde_json::json!({
+    let mut data = serde_json::json!({
         "format": 1,
         "config": cfg,
         "labels": labels,
         "envelope": envelope,
-    }))
+    });
+    add_sync_fields(state, &config, &mut data);
+    Ok(data)
 }
 
 /// One pass of the loop: restore first if a restored wallet hasn't yet,
@@ -491,6 +512,11 @@ async fn tick(state: &AppState) {
         (i.saved.restore_pending, i.keys.clone())
     };
     let Some(keys) = keys else { return };
+    if !pending_restore && b.pull_due() {
+        if let Err(e) = pull(state, &keys, false).await {
+            tracing::debug!("sync: {e}");
+        }
+    }
     let now = b.now_ms();
     {
         let mut i = b.lock();
@@ -525,6 +551,8 @@ async fn tick(state: &AppState) {
         b.changed();
         return;
     }
+    // Take in the other devices' changes first, so this upload can't undo them.
+    let _ = pull(state, &keys, false).await;
     match gather(state).await {
         Ok(data) => b.upload(&keys, data).await,
         Err(e) => {
@@ -542,9 +570,10 @@ pub async fn run(state: &AppState) {
         let wait = {
             let i = b.lock();
             let now = b.now_ms();
+            let pull = b.pull_every(&i);
             match (i.keys.is_some(), i.sched.next_due()) {
-                (true, Some(due)) => Duration::from_millis(due.saturating_sub(now)),
-                (true, None) => CHECK_EVERY,
+                (true, Some(due)) => Duration::from_millis(due.saturating_sub(now)).min(pull),
+                (true, None) => CHECK_EVERY.min(pull),
                 // Locked: wait for unlock to wake us.
                 (false, _) => Duration::from_secs(3600),
             }
@@ -782,6 +811,14 @@ pub(crate) async fn apply(state: &AppState, snap: &Snapshot) -> Result<(u32, u32
     if restored.backup_relays.is_empty() {
         restored.backup_relays = sessions_backup::default_relays();
     }
+    // Each kind of device (phone, computer) keeps its own home screen.
+    if let Some(layout) = snap
+        .data
+        .pointer(&format!("/layouts/{DEVICE_KIND}"))
+        .and_then(|l| serde_json::from_value(l.clone()).ok())
+    {
+        restored.layout = layout;
+    }
 
     let ids: BTreeSet<String> = restored.accounts.iter().map(|a| a.id().0.clone()).collect();
     let mut labels = 0u32;
@@ -807,8 +844,10 @@ pub(crate) async fn apply(state: &AppState, snap: &Snapshot) -> Result<(u32, u32
         .get("envelope")
         .and_then(|e| serde_json::from_value::<Event>(e.clone()).ok())
         .filter(Event::verify);
+    state.backup.set_base(&snap.data);
     state.backup.update_saved(|s| {
         s.version = snap.version;
+        s.last_sync_at = Some(now_secs());
         s.last_created_at = s.last_created_at.max(snap.created_at);
         s.last_backup_at = Some(snap.created_at);
         s.hash = None;
@@ -823,6 +862,327 @@ pub(crate) async fn apply(state: &AppState, snap: &Snapshot) -> Result<(u32, u32
     drop(guard);
     state.unlock_with(seed).await?;
     Ok((accounts, labels))
+}
+
+
+// --- sync between linked devices ---------------------------------------------
+//
+// Every device on the same seed reads and writes the same backup, so the
+// backup is also how linked devices stay in step. Before each upload, and
+// every [`PULL_LINKED`] while more than one device is linked, a device
+// fetches the newest snapshot; if another device wrote it, the two are
+// merged item by item against the last snapshot this device saw (the
+// "base", see `sessions_backup::merge`) and the result applied here, then
+// uploaded if this device added anything.
+//
+// "Use this device's setup" stamps the upload with a new `replaceToken`;
+// other devices replace their setup with it once instead of merging.
+// Each kind of device keeps its own home-screen layout (`layouts`).
+
+/// "phone" or "desktop": which home-screen layout this device uses.
+pub const DEVICE_KIND: &str = if cfg!(any(target_os = "android", target_os = "ios")) {
+    "phone"
+} else {
+    "desktop"
+};
+/// How often to look for the other devices' changes, once linked.
+const PULL_LINKED: Duration = Duration::from_secs(2 * 60);
+/// … and when this is the only device (picks up a new link).
+const PULL_ALONE: Duration = Duration::from_secs(15 * 60);
+/// Devices not seen for this long drop off the list.
+const DEVICE_STALE_SECS: u64 = 90 * 24 * 3600;
+
+impl Backup {
+    fn base_path(&self) -> PathBuf {
+        self.path.with_file_name("sync-base.json")
+    }
+
+    /// The last snapshot this device uploaded or took in.
+    fn base(&self) -> Option<Value> {
+        std::fs::read(self.base_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+    }
+
+    fn set_base(&self, data: &Value) {
+        if let Ok(bytes) = serde_json::to_vec(data) {
+            let _ = write_atomic(&self.base_path(), &bytes);
+        }
+    }
+
+    fn device_id(&self) -> String {
+        if let Some(id) = self.lock().saved.device_id.clone() {
+            return id;
+        }
+        let id = random_hex(8);
+        self.update_saved(|s| s.device_id = Some(id.clone()));
+        id
+    }
+
+    fn linked(&self) -> bool {
+        self.base()
+            .and_then(|b| b.get("devices").and_then(Value::as_object).map(|d| d.len()))
+            .is_some_and(|n| n > 1)
+    }
+
+    fn pull_every(&self, i: &Inner) -> Duration {
+        if i.keys.is_none() || i.saved.restore_pending {
+            return Duration::from_secs(3600);
+        }
+        if self.linked() {
+            PULL_LINKED
+        } else {
+            PULL_ALONE
+        }
+    }
+
+    fn pull_due(&self) -> bool {
+        let now = self.now_ms();
+        let i = self.lock();
+        let every = self.pull_every(&i).as_millis() as u64;
+        i.last_pull_ms.is_none_or(|t| now.saturating_sub(t) >= every)
+    }
+}
+
+fn random_hex(n: usize) -> String {
+    let mut b = vec![0u8; n];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut b);
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Layouts per kind of device, the linked-device list, and the replace
+/// token, added to what [`gather`] collects.
+fn add_sync_fields(state: &AppState, config: &Config, data: &mut Value) {
+    let b = &state.backup;
+    let base = b.base();
+    let from_base = |k: &str| {
+        base.as_ref()
+            .and_then(|v| v.get(k))
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut layouts = from_base("layouts");
+    layouts.insert(
+        DEVICE_KIND.into(),
+        serde_json::to_value(&config.layout).unwrap_or(Value::Null),
+    );
+    let mut devices = from_base("devices");
+    let today = now_secs() / 86_400 * 86_400;
+    devices.insert(
+        b.device_id(),
+        serde_json::json!({ "name": crate::link::device_name(), "kind": DEVICE_KIND, "seenAt": today }),
+    );
+    devices.retain(|_, d| d["seenAt"].as_u64().is_some_and(|t| today.saturating_sub(t) < DEVICE_STALE_SECS));
+    let token = b.lock().send_token.clone().or_else(|| {
+        base.as_ref()
+            .and_then(|v| v.get("replaceToken"))
+            .and_then(Value::as_str)
+            .map(String::from)
+    });
+    if let Some(o) = data.as_object_mut() {
+        o.insert("layouts".into(), Value::Object(layouts));
+        o.insert("devices".into(), Value::Object(devices));
+        if let Some(t) = token {
+            o.insert("replaceToken".into(), Value::String(t));
+        }
+    }
+}
+
+/// Take in another device's changes, if there are any. `take_theirs`:
+/// replace this device's setup with theirs instead of merging. Returns
+/// whether anything here changed.
+async fn pull(state: &AppState, keys: &StateKeys, take_theirs: bool) -> Result<bool> {
+    let b = &state.backup;
+    if !b.online {
+        return Ok(false);
+    }
+    b.lock().last_pull_ms = Some(b.now_ms());
+    let _one = b.restoring.lock().await;
+    let (urls, _) = b.urls();
+    let answers = b
+        .relays
+        .fetch(&urls, &keys.nostr.public_hex(), KIND_APP_DATA)
+        .await;
+    if answers.iter().all(|(_, r)| r.is_err()) {
+        return Err(Error::Invalid("Couldn't reach the backup servers".into()));
+    }
+    let events: Vec<Event> = answers
+        .into_iter()
+        .filter_map(|(_, r)| r.ok())
+        .flatten()
+        .collect();
+    let Some(remote) = snapshot::decode(keys, &events) else {
+        return Ok(false);
+    };
+    let (local_version, applied) = {
+        let i = b.lock();
+        (i.saved.version, i.saved.replace_token.clone())
+    };
+    if remote.version <= local_version && !take_theirs {
+        b.update_saved(|s| s.last_sync_at = Some(now_secs()));
+        return Ok(false);
+    }
+    let local = gather(state).await?;
+    let token = remote
+        .data
+        .get("replaceToken")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let replace = take_theirs || (token.is_some() && token != applied);
+    let mut merged = if replace {
+        remote.data.clone()
+    } else {
+        sessions_backup::merge::merge(b.base().as_ref(), &local, &remote.data)
+    };
+    if let Some(o) = merged.as_object_mut() {
+        // This device's own home screen stays as it is.
+        if let Some(mine) = local.pointer(&format!("/layouts/{DEVICE_KIND}")) {
+            if let Some(l) = o.get_mut("layouts").and_then(Value::as_object_mut) {
+                l.insert(DEVICE_KIND.into(), mine.clone());
+            }
+        }
+        // A backup that had to leave labels out doesn't delete ours.
+        if o.remove("labelsOmitted").is_some() {
+            if let Some(l) = local.get("labels") {
+                o.insert("labels".into(), l.clone());
+            }
+        }
+    }
+    let changed = merged != local;
+    if changed {
+        apply(
+            state,
+            &Snapshot {
+                version: remote.version,
+                created_at: remote.created_at,
+                data: merged.clone(),
+            },
+        )
+        .await?;
+    }
+    // What's on the relays now is the common ground.
+    b.set_base(&remote.data);
+    let now_local = gather(state).await?;
+    let in_step = now_local == remote.data;
+    b.update_saved(|s| {
+        s.version = s.version.max(remote.version);
+        s.last_sync_at = Some(now_secs());
+        if replace {
+            s.replace_token = token.clone();
+        }
+        // Nothing of ours to add: don't upload the same thing back.
+        if in_step {
+            s.hash = Some(snapshot::content_hash(&now_local));
+        }
+    });
+    if !in_step {
+        b.touch();
+    }
+    if changed {
+        if let Some(emit) = b.emit.get() {
+            emit("backup://restored", serde_json::json!({ "found": true, "accounts": 0, "labels": 0 }));
+        }
+    }
+    b.changed();
+    Ok(changed)
+}
+
+/// A device linked to this wallet.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedDevice {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub seen_at: Option<u64>,
+    pub this_device: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    pub devices: Vec<LinkedDevice>,
+    pub last_sync_at: Option<u64>,
+}
+
+pub fn sync_status(state: &AppState) -> SyncStatus {
+    let b = &state.backup;
+    let me = b.device_id();
+    let mut devices: Vec<LinkedDevice> = b
+        .base()
+        .and_then(|v| v.get("devices").and_then(Value::as_object).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, d)| LinkedDevice {
+            this_device: id == me,
+            name: d["name"].as_str().unwrap_or("Device").to_string(),
+            kind: d["kind"].as_str().unwrap_or("").to_string(),
+            seen_at: d["seenAt"].as_u64(),
+            id,
+        })
+        .collect();
+    if !devices.iter().any(|d| d.this_device) {
+        devices.push(LinkedDevice {
+            id: me,
+            name: crate::link::device_name().into(),
+            kind: DEVICE_KIND.into(),
+            seen_at: Some(now_secs()),
+            this_device: true,
+        });
+    }
+    devices.sort_by_key(|d| (!d.this_device, d.name.clone()));
+    SyncStatus {
+        devices,
+        last_sync_at: b.lock().saved.last_sync_at,
+    }
+}
+
+/// Which way a resync goes.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncDirection {
+    /// Merge both ways (the normal sync, now).
+    Both,
+    /// This device's setup replaces the others'.
+    SendMine,
+    /// The newest setup from another device replaces this one's.
+    TakeTheirs,
+}
+
+/// Sync now: on opening the app, or "Resync" in Settings.
+pub async fn sync_now(state: &AppState, direction: SyncDirection) -> Result<SyncStatus> {
+    let b = &state.backup;
+    if !b.online {
+        return Err(Error::Unsupported("sync while offline".into()));
+    }
+    let keys = b.lock().keys.clone().ok_or(Error::Locked)?;
+    if b.lock().saved.restore_pending {
+        let _ = restore(state).await;
+    }
+    match direction {
+        SyncDirection::Both => {
+            pull(state, &keys, false).await?;
+            if b.lock().sched.pending() {
+                backup_now(state).await?;
+            }
+        }
+        SyncDirection::TakeTheirs => {
+            pull(state, &keys, true).await?;
+        }
+        SyncDirection::SendMine => {
+            let token = random_hex(8);
+            {
+                let mut i = b.lock();
+                i.send_token = Some(token.clone());
+            }
+            b.update_saved(|s| s.replace_token = Some(token));
+            let r = backup_now(state).await;
+            b.lock().send_token = None;
+            r?;
+        }
+    }
+    Ok(sync_status(state))
 }
 
 #[cfg(test)]

@@ -192,7 +192,8 @@ mod policy {
         fn give_up_messages_are_plain() {
             let msg = |f: Failure| give_up_error(&f).to_string();
             assert!(msg(f(Kind::Auth, 5, true)).contains("Forget Jade"));
-            assert!(msg(f(Kind::Connect, 133, true)).starts_with("Turn on Jade"));
+            let gone = msg(f(Kind::Connect, 133, true));
+            assert!(gone.starts_with("Turn on Jade") || gone.starts_with("Plug Jade in"));
             let fresh = Failure {
                 fresh_bond: true,
                 ..f(Kind::Dropped, 19, true)

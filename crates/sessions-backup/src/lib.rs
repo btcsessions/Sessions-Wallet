@@ -14,6 +14,7 @@
 pub mod crypto;
 pub mod envelope;
 pub mod keys;
+pub mod merge;
 pub mod nostr;
 pub mod relay;
 pub mod schedule;

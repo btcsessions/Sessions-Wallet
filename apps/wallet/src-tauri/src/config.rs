@@ -313,8 +313,11 @@ impl Config {
         }
     }
 
+    /// A new account id. The random tail keeps ids unique when two linked
+    /// devices add accounts at the same time.
     pub fn fresh_id(&mut self, prefix: &str) -> AccountId {
-        let id = AccountId(format!("{prefix}-{}", self.next_id));
+        let tail: u16 = rand::random();
+        let id = AccountId(format!("{prefix}-{}-{tail:04x}", self.next_id));
         self.next_id += 1;
         id
     }

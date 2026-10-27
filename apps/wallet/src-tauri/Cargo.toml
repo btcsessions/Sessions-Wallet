@@ -63,6 +63,8 @@ bitbox-api = { version = "0.13", features = ["usb"] }
 hidapi = "2.3"
 # Jade over Bluetooth LE on desktop. Android goes through tauri-plugin-jade.
 btleplug = "0.13"
+# Jade over a USB cable on desktop.
+serialport = "4.6"
 uuid = "1"
 
 [target.'cfg(target_os = "android")'.dependencies]

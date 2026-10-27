@@ -8,8 +8,10 @@ export interface DeviceDef {
   /** Stored on the account as its device name. */
   name: string;
   connect: Connect;
-  /** How it connects, for the device picker. */
+  /** How it connects, for the device picker (phone). */
   via: string;
+  /** How it connects on a computer, when that differs. */
+  viaDesktop?: string;
   /** One-line how-to for exporting the wallet by QR. */
   exportHint: string;
 }
@@ -35,6 +37,7 @@ export const DEVICES: DeviceDef[] = [
     name: "Jade",
     connect: "jade",
     via: "Bluetooth or QR code",
+    viaDesktop: "USB cable, Bluetooth or QR code",
     exportHint: "On Jade: unlock, then Options › Wallet › Export Xpub. Scan the QR.",
   },
   {
@@ -42,6 +45,7 @@ export const DEVICES: DeviceDef[] = [
     name: "Passport Prime",
     connect: "qr",
     via: "Air-gapped, by QR code",
+    viaDesktop: "Air-gapped, by QR code (webcam)",
     exportHint: "On Prime: open Bitcoin Wallet, tap your account, then Connect Wallet › Sparrow › Single-sig. Scan the animated QR.",
   },
   {
@@ -49,6 +53,7 @@ export const DEVICES: DeviceDef[] = [
     name: "SeedSigner",
     connect: "qr",
     via: "Air-gapped, by QR code",
+    viaDesktop: "Air-gapped, by QR code (webcam)",
     exportHint: "On SeedSigner: load your seed, then Export Xpub › Single Sig › Native SegWit › Sparrow. Scan the animated QR.",
   },
 ];
@@ -61,6 +66,18 @@ const GENERIC: DeviceDef = {
   via: "By QR code",
   exportHint: "",
 };
+
+const onPhone = () => /android|iphone|ipad/i.test(navigator.userAgent);
+
+/** How this device connects here (phone or computer). */
+export function viaFor(d: DeviceDef): string {
+  return !onPhone() && d.viaDesktop ? d.viaDesktop : d.via;
+}
+
+/** Jade, live: Bluetooth on a phone; USB cable or Bluetooth on a computer. */
+export const jadeLiveLabel = () => (onPhone() ? "Bluetooth" : "USB / Bluetooth");
+export const jadeLiveHint = () =>
+  onPhone() ? "Turn on Jade and choose Bluetooth." : "Plug Jade in with a USB cable, or turn it on and choose Bluetooth.";
 
 /** The device definition for a stored device name (older accounts used short names). */
 export function deviceFor(name: string | undefined): DeviceDef {

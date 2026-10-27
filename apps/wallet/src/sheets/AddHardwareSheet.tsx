@@ -4,7 +4,7 @@ import type { DescriptorPreview, FoundAccount } from "../api/types";
 import { Icon } from "../components/Icon";
 import { ScanButton, type ScanResult } from "../components/Scanner";
 import { SelectRow, Sheet, useBusy } from "../components/ui";
-import { DEVICES, DeviceIcon, type DeviceDef } from "../hw/devices";
+import { DEVICES, DeviceIcon, jadeLiveHint, viaFor, type DeviceDef } from "../hw/devices";
 import { isMobile, trezorDescriptor, trezorDescriptors, type TrezorScript } from "../hw/trezor";
 import { errorText, formatSats } from "../format";
 import { JadeQrUnlock } from "../hw/JadeUnlock";
@@ -224,7 +224,7 @@ export function AddHardwareSheet() {
             >
               <DeviceIcon device={d.name} size={40} />
               <strong>{d.name}</strong>
-              <span>{d.via}</span>
+              <span>{viaFor(d)}</span>
             </button>
           ))}
         </div>
@@ -349,7 +349,7 @@ export function AddHardwareSheet() {
           {device.connect === "jade" && jadeMode === "ble" ? (
             <>
               <p className="notice">
-                Turn on Jade and choose Bluetooth. {isMobile() ? "Allow Bluetooth access when asked." : ""} You'll enter your PIN on Jade; the app checks it with Jade's PIN server
+                {jadeLiveHint()} {isMobile() ? "Allow Bluetooth access when asked." : ""} You'll enter your PIN on Jade; the app checks it with Jade's PIN server
                 automatically.
               </p>
               {pickers}

@@ -98,7 +98,7 @@ pub async fn wallet_key(state: &AppState) -> Result<NostrKey> {
     NostrKey::from_secret_bytes(&sk.secret_bytes())
 }
 
-fn published(results: Vec<(String, Result<()>)>) -> Result<()> {
+pub(crate) fn published(results: Vec<(String, Result<()>)>) -> Result<()> {
     if results.iter().any(|(_, r)| r.is_ok()) {
         return Ok(());
     }

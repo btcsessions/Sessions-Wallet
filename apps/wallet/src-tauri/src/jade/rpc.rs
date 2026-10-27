@@ -61,6 +61,10 @@ pub trait Link: Send + Sync {
     fn is_up(&self) -> bool {
         true
     }
+    /// How Jade names this connection in `get_version_info` ("BLE", "SERIAL").
+    fn interface(&self) -> &'static str {
+        "BLE"
+    }
     async fn close(&self);
 }
 
@@ -174,9 +178,9 @@ pub struct VersionInfo {
 }
 
 impl VersionInfo {
-    /// Already unlocked for this (Bluetooth) connection: no PIN needed.
-    pub fn ready_over_ble(&self) -> bool {
-        matches!(self.state.as_str(), "READY" | "TEMP") && self.interface == "BLE"
+    /// Already unlocked for this connection (`"BLE"`, `"SERIAL"`): no PIN needed.
+    pub fn ready_on(&self, interface: &str) -> bool {
+        matches!(self.state.as_str(), "READY" | "TEMP") && self.interface == interface
     }
 }
 
@@ -315,6 +319,10 @@ impl Client {
     /// False once the link is known to have dropped.
     pub fn is_up(&self) -> bool {
         self.link.is_up()
+    }
+
+    pub fn interface(&self) -> &'static str {
+        self.link.interface()
     }
 
     /// Jade answers `ping` at once, even mid-request, without touching the
@@ -811,7 +819,7 @@ pub(crate) mod tests {
         let info = client.version_info(W).await.unwrap();
         assert_eq!(info.version, (1, 0, 41));
         assert_eq!(info.state, "LOCKED");
-        assert!(!info.ready_over_ble());
+        assert!(!info.ready_on("BLE"));
     }
 
     #[tokio::test]

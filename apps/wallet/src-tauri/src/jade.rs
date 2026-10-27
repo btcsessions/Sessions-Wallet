@@ -1,4 +1,5 @@
-//! Blockstream Jade: PIN-server relay, QR unlock, and Jade over Bluetooth.
+//! Blockstream Jade: PIN-server relay, QR unlock, and Jade over Bluetooth
+//! or (desktop) a USB cable.
 //!
 //! When Jade unlocks with a PIN it asks the host to forward an encrypted
 //! blob to its PIN server (blind oracle) and hand the reply back. The server
@@ -37,6 +38,19 @@
 
 mod ble;
 mod rpc;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod usb;
+
+/// A plugged-in Jade (desktop) wins over Bluetooth.
+async fn open_link(app: &AppHandle) -> Result<Box<dyn rpc::Link>> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Some(port) = usb::find() {
+        tracing::info!("jade: using USB ({port})");
+        status(app, "connecting");
+        return usb::open(&port).await;
+    }
+    ble::open(app).await
+}
 
 use std::future::Future;
 use std::str::FromStr;
@@ -343,8 +357,12 @@ fn status(app: &AppHandle, state: &'static str) {
 
 fn not_found() -> Error {
     Error::Invalid(
-        "Turn on Jade and keep it close (choose Bluetooth on Jade if it asks how to connect), then try again"
-            .into(),
+        if cfg!(any(target_os = "android", target_os = "ios")) {
+            "Turn on Jade and keep it close (choose Bluetooth on Jade if it asks how to connect), then try again"
+        } else {
+            "Plug Jade in with a USB cable, or turn it on and keep it close for Bluetooth, then try again"
+        }
+        .into(),
     )
 }
 
@@ -457,7 +475,7 @@ where
         )
         .into());
     }
-    if !info.ready_over_ble() {
+    if !info.ready_on(client.interface()) {
         asking_pin();
     }
     let net = rpc::network_name(network);
@@ -530,7 +548,7 @@ where
                     "scanning"
                 },
             );
-            let link = ble::open(app).await?;
+            let link = open_link(app).await?;
             if cancelled() {
                 return Err(Error::Invalid("Stopped".into()));
             }

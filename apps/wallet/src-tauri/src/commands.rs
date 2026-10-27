@@ -1299,6 +1299,19 @@ pub async fn set_phrase_backed_up(state: State<'_, AppState>, done: bool) -> Res
     Ok(state.backup.status())
 }
 
+/// The devices linked to this wallet, and when this one last synced.
+#[tauri::command]
+pub async fn sync_status(state: State<'_, AppState>) -> Result<backup::SyncStatus> {
+    Ok(backup::sync_status(&state))
+}
+
+/// Sync with the other linked devices now (`both`), or replace one side's
+/// setup with the other's (`sendMine`, `takeTheirs`).
+#[tauri::command]
+pub async fn sync_now(state: State<'_, AppState>, direction: backup::SyncDirection) -> Result<backup::SyncStatus> {
+    backup::sync_now(&state, direction).await
+}
+
 /// Look for this wallet's state backup and apply it (call right after
 /// `restore_wallet`). Never fails; the result says what happened.
 #[tauri::command]

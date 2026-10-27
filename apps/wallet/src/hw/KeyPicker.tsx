@@ -6,7 +6,7 @@ import { ScanButton, type ScanResult } from "../components/Scanner";
 import { Sheet, useBusy } from "../components/ui";
 import { errorText } from "../format";
 import { BitboxProgress, useBitboxProgress } from "./BitboxProgress";
-import { DEVICES, DeviceIcon, type DeviceDef } from "./devices";
+import { DEVICES, DeviceIcon, jadeLiveHint, viaFor, type DeviceDef } from "./devices";
 import { JadeModeSwitch, JadeProgress, useJadeProgress, type JadeMode } from "./JadeProgress";
 import { isMobile } from "./trezor";
 
@@ -142,7 +142,7 @@ export function KeyPicker({
             <button key={d.id} className="device-card featured" onClick={() => setSource({ kind: "device", def: d })}>
               <DeviceIcon device={d.name} size={40} />
               <strong>{d.name}</strong>
-              <span>{d.via}</span>
+              <span>{viaFor(d)}</span>
             </button>
           ))}
           <button className="device-card featured" onClick={() => setSource({ kind: "other" })}>
@@ -217,7 +217,7 @@ export function KeyPicker({
             {d.connect === "bitbox"
               ? `Plug in your BitBox02${isMobile() ? " and allow access when asked" : ""}. You'll unlock it with your password on the device.`
               : d.connect === "jade"
-                ? "Turn on Jade and choose Bluetooth. Enter your PIN on Jade if asked."
+                ? `${jadeLiveHint()} Enter your PIN on Jade if asked.`
                 : isMobile()
                   ? "This opens Trezor Suite. Unlock your Trezor and approve sharing the key, and you'll come back here."
                   : "Open Trezor Suite on this computer and unlock your Trezor."}{" "}
