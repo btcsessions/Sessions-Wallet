@@ -69,6 +69,7 @@ pub struct Status {
     pub unrestricted: bool,
 }
 
+#[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
 impl Status {
     fn unsupported() -> Self {
         Status {
@@ -118,7 +119,29 @@ impl<R: Runtime> Alerts<R> {
     }
 }
 
-#[cfg(not(target_os = "android"))]
+/// Desktop: system notifications, and "watching" keeps the app running in
+/// the menu bar / system tray when its window is closed.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl<R: Runtime> Alerts<R> {
+    pub async fn status(&self) -> Status {
+        Status {
+            supported: true,
+            // macOS asks the first time a notification is shown; Linux and
+            // Windows don't ask.
+            notifications: Permission::Granted,
+            watching: desktop::watching(),
+            unrestricted: true,
+        }
+    }
+    pub async fn request_notifications(&self) -> Status {
+        self.status().await
+    }
+    pub async fn request_unrestricted(&self) -> Status {
+        self.status().await
+    }
+}
+
+#[cfg(target_os = "ios")]
 impl<R: Runtime> Alerts<R> {
     pub async fn status(&self) -> Status {
         Status::unsupported()
@@ -128,6 +151,48 @@ impl<R: Runtime> Alerts<R> {
     }
     pub async fn request_unrestricted(&self) -> Status {
         Status::unsupported()
+    }
+}
+
+/// Desktop state the app's window code reads: whether to keep running when
+/// the window closes, and whether the window has focus (then the app shows
+/// its own in-window alert instead of a system notification).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod desktop {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static WATCHING: AtomicBool = AtomicBool::new(false);
+    static FOCUSED: AtomicBool = AtomicBool::new(true);
+
+    pub fn watching() -> bool {
+        WATCHING.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn set_watching(on: bool) {
+        WATCHING.store(on, Ordering::SeqCst);
+    }
+
+    /// Call from the window's focus events.
+    pub fn set_focused(on: bool) {
+        FOCUSED.store(on, Ordering::SeqCst);
+    }
+
+    pub fn focused() -> bool {
+        FOCUSED.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn show(title: &str, body: &str) -> bool {
+        let mut n = notify_rust::Notification::new();
+        n.summary(title).body(body).appname("Sessions Wallet");
+        #[cfg(target_os = "linux")]
+        n.icon("io.btcsessions.wallet");
+        match n.show() {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("alerts: notification failed: {e}");
+                false
+            }
+        }
     }
 }
 
@@ -156,7 +221,14 @@ pub fn post(notice: &Notice<'_>) -> bool {
             }
         }
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        if desktop::focused() {
+            return false;
+        }
+        desktop::show(notice.title, notice.body)
+    }
+    #[cfg(target_os = "ios")]
     {
         let _ = notice;
         false
@@ -170,6 +242,8 @@ pub fn start_watch() {
     if let Err(e) = android::call_void("startWatch") {
         eprintln!("alerts: start watch failed: {e}");
     }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    desktop::set_watching(true);
 }
 
 /// Stop the watch service (no-op if stopped).
@@ -178,6 +252,8 @@ pub fn stop_watch() {
     if let Err(e) = android::call_void("stopWatch") {
         eprintln!("alerts: stop watch failed: {e}");
     }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    desktop::set_watching(false);
 }
 
 /// The app's screen is showing right now.
@@ -188,6 +264,9 @@ pub fn in_foreground() -> bool {
     }
     #[cfg(not(target_os = "android"))]
     {
+        #[cfg(not(target_os = "ios"))]
+        return desktop::focused();
+        #[cfg(target_os = "ios")]
         true
     }
 }

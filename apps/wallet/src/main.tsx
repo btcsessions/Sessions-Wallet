@@ -9,6 +9,9 @@ import { App } from "./App";
 import { useWallet } from "./state/store";
 import { applyTheme } from "./theme";
 
+// macOS draws its window buttons over the top-left corner (overlay title bar).
+if (/Mac/.test(navigator.platform) && !/iPhone|iPad/.test(navigator.userAgent)) document.documentElement.classList.add("mac");
+
 // Last-resort error display: if anything throws before or outside React,
 // show it instead of leaving a blank screen.
 function showFatal(message: string) {

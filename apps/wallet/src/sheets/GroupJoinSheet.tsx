@@ -52,6 +52,12 @@ export function GroupJoinSheet({ code: initial }: { code?: string }) {
     </p>
   );
 
+  // Opened from a join link: look it up straight away.
+  useEffect(() => {
+    if (initial) lookup(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Once they let us in, the group shows up: open it.
   useEffect(() => {
     if (!sent || !found) return;

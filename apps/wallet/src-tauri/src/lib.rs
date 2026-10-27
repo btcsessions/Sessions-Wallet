@@ -10,6 +10,8 @@ mod jade;
 mod logcat;
 mod monitor;
 mod multisig_hw;
+#[cfg(desktop)]
+mod desktop;
 mod group;
 mod group_join;
 mod nostr_id;
@@ -48,7 +50,13 @@ pub fn run() {
             tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
             _ => tauri::webview::PermissionResponse::Default,
         })
+        .on_window_event(|_window, _event| {
+            #[cfg(desktop)]
+            desktop::on_window_event(_window, _event);
+        })
         .setup(|app| {
+            #[cfg(desktop)]
+            desktop::setup(app)?;
             #[cfg(target_os = "linux")]
             if let Some(w) = app.get_webview_window("main") {
                 // WebKitGTK ships with getUserMedia switched off.
@@ -264,6 +272,10 @@ pub fn run() {
             commands::alerts_request_notifications,
             commands::alerts_request_unrestricted,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Sessions Wallet");
+        .build(tauri::generate_context!())
+        .expect("error while building Sessions Wallet")
+        .run(|_app, _event| {
+            #[cfg(desktop)]
+            desktop::on_run_event(_app, &_event);
+        });
 }

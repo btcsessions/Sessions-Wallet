@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { api } from "./api";
+import { DesktopShell, useDesktopLayout } from "./Desktop";
 import { Home } from "./Home";
 import { Lock, Onboarding } from "./Onboarding";
 import { Toast } from "./components/ui";
@@ -101,10 +102,27 @@ function Splash() {
 
 export function App() {
   const { status, boot } = useWallet();
+  const desktop = useWallet((s) => s.desktop);
+  useDesktopLayout();
 
   useEffect(() => {
     void boot();
   }, [boot]);
+
+  // Join links (sessionswallet://join/CODE) from a text message or a browser.
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let stop: (() => void) | undefined;
+    const handle = (urls: string[] | null) => {
+      const join = urls?.find((u) => u.startsWith("sessionswallet://join/"));
+      if (join) useWallet.getState().open({ name: "group-join", code: join });
+    };
+    void import("@tauri-apps/plugin-deep-link").then(async ({ onOpenUrl, getCurrent }) => {
+      handle(await getCurrent().catch(() => null));
+      stop = await onOpenUrl(handle);
+    });
+    return () => stop?.();
+  }, []);
 
   // Auto-lock after five minutes in the background.
   useEffect(() => {
@@ -123,12 +141,14 @@ export function App() {
 
   return (
     <>
+      {/* macOS: the title bar is overlaid; this strip moves the window. */}
+      {!desktop && <div className="window-drag" data-tauri-drag-region />}
       {status === "loading" && <Splash />}
       {status === "empty" && <Onboarding />}
       {status === "locked" && <Lock />}
       {status === "unlocked" && (
         <>
-          <Home />
+          {desktop ? <DesktopShell /> : <Home />}
           <ActiveSheet />
         </>
       )}

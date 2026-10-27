@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Run by hand from the Actions tab (e.g. to get a Mac build).
+  workflow_dispatch:
 
 env:
   # Keeps target/ small enough for hosted runners.
@@ -45,6 +47,47 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+  macos:
+    # Apple Silicon .dmg with group messaging. Signed and notarised when the
+    # APPLE_* secrets are set; otherwise unsigned (right-click › Open the
+    # first time).
+    if: github.event_name != 'pull_request'
+    needs: [rust, ui]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            native/marmot-bridge
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Group messaging library (MarmotKit)
+        run: scripts/build-marmot-bridge.sh --target aarch64-apple-darwin
+      - name: Build the app
+        working-directory: apps/wallet
+        env:
+          BREEZ_API_KEY: ${{ secrets.BREEZ_API_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm ci && npx tauri build --target aarch64-apple-darwin --bundles app,dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sessions-wallet-macos-arm64
+          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
   desktop:
     # Unsigned builds for testing. Signing/notarisation comes later.
     if: github.event_name == 'push'
@@ -52,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-24.04]
+        os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +111,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+      - if: runner.os == 'Linux'
+        name: Group messaging library (MarmotKit)
+        run: scripts/build-marmot-bridge.sh
       - working-directory: apps/wallet
         run: npm ci && npm run tauri build
         env:
@@ -99,6 +145,10 @@ jobs:
           java-version: 21
       - uses: android-actions/setup-android@v3
       - run: sdkmanager --install "ndk;28.2.13676358" "platforms;android-37.0" "build-tools;36.0.0"
+      - name: Group messaging library (MarmotKit for Android)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: scripts/build-marmotkit.sh
       - uses: actions/setup-node@v4
         with:
           node-version: 22

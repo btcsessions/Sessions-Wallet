@@ -92,7 +92,7 @@ function Tile({ module, editing }: { module: InstalledModule; editing: boolean }
   );
 }
 
-export function Home() {
+export function Home({ title = "Sessions Wallet" }: { title?: string }) {
   const { layout, editing, setEditing, reorder, open, sync, syncing, isMock, unavailable, accounts, notify } = useWallet();
   const [scanning, setScanning] = useState(false);
   const sensors = useSensors(
@@ -169,7 +169,7 @@ export function Home() {
           </button>
         </div>
       </div>
-      <h1 className="large-title">Sessions Wallet</h1>
+      <h1 className="large-title">{title}</h1>
       {unavailable.map((u) => (
         <p className="notice" key={u.id} role="status">
           <strong>{accounts.find((a) => a.id === u.id)?.name ?? (u.id === "spending" ? "Spending" : u.id)} is unavailable.</strong> {u.reason}, then lock and unlock to try again.
@@ -197,7 +197,7 @@ export function Home() {
 
       {!editing && layout.modules.length <= 3 && (
         <p className="subtitle" style={{ margin: "22px 0 0", textAlign: "center" }}>
-          Want more? Tap Edit to add savings, a vault, hardware wallets, ecash and more.
+          Want more? {useWallet.getState().desktop ? "Click" : "Tap"} Edit to add savings, a vault, hardware wallets, ecash and more.
         </p>
       )}
       {scanning && (

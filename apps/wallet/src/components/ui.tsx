@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import QRCode from "qrcode";
 import { Icon } from "./Icon";
 import { api } from "../api";
@@ -6,6 +6,9 @@ import type { FeePriority, FeeRates } from "../api/types";
 import { Dropdown } from "./Dropdown";
 import { useWallet } from "../state/store";
 import { formatFiat, formatSats } from "../format";
+
+/** Inside a desktop page: sheets render in place, not as a dialog. */
+export const InlineSheet = createContext<null | { onClose: () => void }>(null);
 
 export function Sheet({
   title,
@@ -21,10 +24,12 @@ export function Sheet({
   onClose?: () => void;
 }) {
   const close = useWallet((s) => s.close);
-  const dismiss = onClose ?? close;
+  const inline = useContext(InlineSheet);
+  const dismiss = onClose ?? inline?.onClose ?? close;
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (inline) return;
     const prev = document.activeElement as HTMLElement | null;
     ref.current?.focus();
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && dismiss();
@@ -34,6 +39,19 @@ export function Sheet({
       prev?.focus?.();
     };
   }, [dismiss]);
+
+  if (inline) {
+    return (
+      <section className="page" aria-label={title}>
+        <header className="page-header">
+          <div className="left">{left}</div>
+          <h1>{title}</h1>
+          <div className="right">{right}</div>
+        </header>
+        <div className="page-body">{children}</div>
+      </section>
+    );
+  }
 
   return (
     <>

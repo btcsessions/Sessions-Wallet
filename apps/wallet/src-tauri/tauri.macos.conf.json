@@ -1,0 +1,17 @@
+{
+  "bundle": {
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "macos/Entitlements.plist",
+      "frameworks": [
+        "frameworks/libmarmot_bridge.dylib"
+      ],
+      "dmg": {
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        }
+      }
+    }
+  }
+}

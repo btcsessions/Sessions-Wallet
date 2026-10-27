@@ -1,0 +1,40 @@
+# The desktop group-messaging library: MarmotKit (the Marmot Development Kit)
+# behind a tiny JSON C ABI, built as its own dynamic library.
+#
+# It is NOT part of the wallet's Cargo workspace: MarmotKit links SQLCipher,
+# which can't share a binary with the SQLite the Lightning SDK links. The
+# wallet loads this library at run time (tauri-plugin-marmot, desktop).
+#
+# Build: scripts/build-marmot-bridge.sh
+[package]
+name = "marmot-bridge"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+marmot-uniffi = { git = "https://github.com/marmot-protocol/mdk.git", rev = "20ded88b166b685a23754a168f7d1514fb96b9ce" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zeroize = { version = "1", features = ["serde"] }
+
+[workspace]
+
+# MDK's own patches (see its Cargo.toml): keep them in lockstep with the rev.
+[patch.crates-io]
+hax-lib-macros = { git = "https://github.com/cryspen/hax.git", rev = "8f9cb576e58f6cc7e9ed249a7d4439b0f7ed0da7" }
+libsqlite3-sys = { git = "https://github.com/rusqlite/rusqlite.git", rev = "5ae7fdf83085c595fd54f977b3a56ccacabaf16b" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# Dependencies are huge: no debug info keeps a dev build to a few GB.
+[profile.dev]
+debug = false

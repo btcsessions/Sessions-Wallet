@@ -54,6 +54,10 @@ interface State {
   price: number | null;
   editing: boolean;
   sheet: SheetName | null;
+  /** Desktop window: a sidebar and pages instead of a phone screen. */
+  desktop: boolean;
+  /** Desktop: what the main area shows. */
+  page: { kind: "home" } | { kind: "account"; id: string };
   toast: Toast | null;
   syncing: boolean;
   isMock: boolean;
@@ -75,6 +79,8 @@ interface State {
   setEditing(v: boolean): void;
   open(s: SheetName): void;
   close(): void;
+  setDesktop(on: boolean): void;
+  showPage(page: State["page"]): void;
   notify(kind: Toast["kind"], text: string): void;
   fail(e: unknown): void;
 
@@ -187,6 +193,8 @@ export const useWallet = create<State>((set, get) => {
     price: null,
     editing: false,
     sheet: null,
+    desktop: false,
+    page: { kind: "home" },
     toast: null,
     syncing: false,
     isMock: false,
@@ -343,8 +351,24 @@ export const useWallet = create<State>((set, get) => {
       set({ editing });
     },
     open(sheet) {
+      // On the desktop an account is a page beside the sidebar, not a sheet.
+      if (get().desktop && sheet.name === "account") {
+        set({ page: { kind: "account", id: sheet.id }, sheet: null, editing: false });
+        return;
+      }
       // The module gallery belongs to edit mode; everything else leaves it.
       set({ sheet, editing: sheet.name === "gallery" || sheet.name === "add-account" ? get().editing : false });
+    },
+    setDesktop(desktop) {
+      if (desktop === get().desktop) return;
+      const { sheet, page } = get();
+      // Carry an open account across: phone sheet ⇄ desktop page.
+      if (desktop && sheet?.name === "account") set({ desktop, page: { kind: "account", id: sheet.id }, sheet: null });
+      else if (!desktop && page.kind === "account") set({ desktop, page: { kind: "home" }, sheet: sheet ?? { name: "account", id: page.id } });
+      else set({ desktop });
+    },
+    showPage(page) {
+      set({ page, editing: false });
     },
     close() {
       set({ sheet: null });
