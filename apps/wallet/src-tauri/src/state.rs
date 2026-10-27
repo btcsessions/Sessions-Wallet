@@ -403,6 +403,7 @@ impl AppState {
                 threshold,
                 total,
                 descriptors,
+                local_account,
                 ..
             } => onchain(
                 id,
@@ -411,9 +412,9 @@ impl AppState {
                 Custody::Multisig {
                     threshold: *threshold,
                     total: *total,
-                    local_signers: 1,
+                    local_signers: u8::from(local_account.is_some()),
                 },
-                Some(*master),
+                local_account.map(|_| *master),
                 false,
             ),
             AccountSpec::Hardware {

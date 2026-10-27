@@ -13,6 +13,7 @@ pub mod bitbox;
 mod bump;
 pub mod chain;
 pub mod descriptors;
+pub mod multisig;
 pub mod discovery;
 pub mod electrum;
 pub mod electrum_chain;

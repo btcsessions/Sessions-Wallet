@@ -12,6 +12,7 @@ mod monitor;
 mod nwc;
 mod passkey;
 mod state;
+mod vault;
 
 use std::sync::Arc;
 
@@ -35,6 +36,8 @@ pub fn run() {
         .plugin(tauri_plugin_biometric_vault::init())
         // Payment notifications, and watching with the app closed.
         .plugin(tauri_plugin_alerts::init())
+        // Save or share wallet export files.
+        .plugin(tauri_plugin_files::init())
         // The QR scanner uses the camera from inside the webview.
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
@@ -207,6 +210,20 @@ pub fn run() {
             biometric::enable_biometric,
             biometric::disable_biometric,
             biometric::unlock_biometric,
+            vault::file_export,
+            vault::vault_phone_key,
+            vault::vault_read_key,
+            vault::vault_create,
+            vault::vault_import_preview,
+            vault::vault_import,
+            vault::vault_details,
+            vault::vault_set_key_label,
+            vault::vault_export,
+            vault::vault_signatures,
+            vault::vault_combine,
+            vault::proposals,
+            vault::proposal_save,
+            vault::proposal_delete,
             nwc::nwc_list,
             nwc::nwc_create,
             nwc::nwc_update,

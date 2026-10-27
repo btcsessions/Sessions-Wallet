@@ -7920,6 +7920,7 @@ dependencies = [
  "tauri-plugin-biometric-vault",
  "tauri-plugin-bitbox",
  "tauri-plugin-deep-link",
+ "tauri-plugin-files",
  "tauri-plugin-jade",
  "tauri-plugin-opener",
  "tauri-plugin-passkey",
@@ -8687,6 +8688,16 @@ dependencies = [
  "url",
  "windows-registry",
  "windows-result",
+]
+
+[[package]]
+name = "tauri-plugin-files"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

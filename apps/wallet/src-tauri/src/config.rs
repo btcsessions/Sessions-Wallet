@@ -22,14 +22,24 @@ pub enum AccountSpec {
     },
     /// Spark / Lightning, seeded from a BIP85 child.
     Spending { id: AccountId, name: String },
+    /// A multisig vault. `name` is the vault's label; each key has its own.
     Multisig {
         id: AccountId,
         name: String,
         threshold: u8,
         total: u8,
         descriptors: DescriptorPair,
-        /// BIP48 account index of this device's key.
-        local_account: u32,
+        /// BIP48 account index of this phone's key, when one of the keys is
+        /// the phone's own (older vaults always had one).
+        local_account: Option<u32>,
+        /// The keys, with labels and where each lives. Empty on vaults made
+        /// before keys were labelled (read from the descriptor then).
+        #[serde(default)]
+        keys: Vec<VaultKey>,
+        /// Who coordinates spending. Just this wallet today; group wallets
+        /// (members on other phones, a shared chat) come later.
+        #[serde(default)]
+        coordination: Coordination,
     },
     Hardware {
         id: AccountId,
@@ -47,6 +57,59 @@ pub enum AccountSpec {
         id: AccountId,
         name: String,
         mint_url: String,
+    },
+}
+
+/// One key of a multisig vault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultKey {
+    /// Master fingerprint, 8 lowercase hex.
+    pub fingerprint: String,
+    /// `m/48'/0'/0'/2'` style.
+    pub path: String,
+    pub xpub: String,
+    /// What the user calls it ("Kitchen BitBox", "Mum's Jade").
+    pub label: String,
+    pub source: KeySource,
+    /// A group member who holds it (group wallets, later). `None`: you.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<KeyHolder>,
+}
+
+/// Where a vault key lives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum KeySource {
+    /// This phone's own key, from its recovery phrase (BIP48 `account`).
+    Phone { account: u32 },
+    /// A hardware wallet (`device` is its name, e.g. "BitBox02").
+    Device { device: String },
+    /// Someone else's or somewhere else: added from a file, QR or text.
+    External,
+}
+
+/// A group member holding a key (group wallets, later): their Nostr key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyHolder {
+    pub npub: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// How a vault's spending is coordinated.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum Coordination {
+    /// Every key is yours: proposals stay on this phone.
+    #[default]
+    Solo,
+    /// Shared with other people (later: a WhiteNoise / Marmot group on
+    /// Nostr carries proposals, signatures and chat between members).
+    Group {
+        /// The group's id on the messaging layer.
+        group_id: String,
     },
 }
 
@@ -274,6 +337,13 @@ impl Config {
                     return dup();
                 }
             }
+            AccountSpec::Multisig { descriptors: new, .. } => {
+                if self.accounts.iter().any(|a| {
+                    matches!(a, AccountSpec::Multisig { descriptors: d, .. } if descriptors::same_account(d, new))
+                }) {
+                    return Err(Error::Invalid("That vault is already in the wallet".into()));
+                }
+            }
             AccountSpec::Hardware { .. } | AccountSpec::WatchOnly { .. } => {
                 let new = watched(spec).expect("watched kind");
                 if self
@@ -391,7 +461,9 @@ mod tests {
             threshold: 2,
             total: 3,
             descriptors: pair("73c5da0a/84h/0h/0h"),
-            local_account: 0,
+            local_account: Some(0),
+            keys: vec![],
+            coordination: Coordination::Solo,
         };
         let sp = AccountSpec::Spending {
             id: "spending".into(),

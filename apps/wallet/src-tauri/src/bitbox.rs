@@ -18,15 +18,17 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bitbox_api::btc::{make_script_config_simple, PsbtError};
+use bitbox_api::btc::{make_script_config_multisig, make_script_config_simple, PsbtError};
 use bitbox_api::error::{BitBoxError, Error as DeviceError};
-use bitbox_api::pb::{self, btc_script_config::SimpleType};
+use bitbox_api::pb::{self, btc_script_config::multisig::ScriptType as MultisigType};
+use bitbox_api::pb::{btc_script_config::SimpleType, BtcScriptConfigWithKeypath};
 use bitbox_api::runtime::TokioRuntime;
 use bitbox_api::{ConfigError, Keypath, NoiseConfig, NoiseConfigData, PairedBitBox};
-use bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint};
+use bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint, Xpub};
 use bitcoin::Psbt;
-use rail_onchain::bitbox::{self as helpers, ScriptKind};
+use rail_onchain::bitbox::{self as helpers, ScriptKind, BITBOX02};
 use rail_onchain::descriptors;
+use rail_onchain::multisig::{MultisigConfig, Policy, ScriptType};
 use serde::Serialize;
 use sessions_core::{AccountId, Error, Network, Result};
 use tauri::{AppHandle, Emitter, State};
@@ -365,15 +367,25 @@ pub async fn bitbox_descriptors(
 
 /// Sign an unsigned PSBT (base64) on the BitBox02. Returns the PSBT with the
 /// device's signatures, ready for `resume`.
+///
+/// With `account` set to a multisig vault, the vault is registered on the
+/// device first if needed, and the PSBT comes back with this device's
+/// signatures only: other cosigners may still need to sign.
 #[tauri::command]
 pub async fn bitbox_sign(
     app: AppHandle,
     state: State<'_, AppState>,
     bitbox: State<'_, BitBoxState>,
     psbt: String,
+    account: Option<AccountId>,
 ) -> Result<String> {
     let unsigned = Psbt::from_str(psbt.trim())
         .map_err(|_| Error::Invalid("That isn't a transaction the BitBox02 can sign".into()))?;
+    if let Some(id) = &account {
+        if let Some(vault) = find_vault(&state, id).await? {
+            return sign_vault(&app, &bitbox, unsigned, vault).await;
+        }
+    }
     let network = network(&state).await;
     let ui = app.clone();
     with_device(&app, &bitbox, |d| {
@@ -454,6 +466,368 @@ pub async fn bitbox_show_address(
             status(&ui, "confirm");
             let shown = d
                 .btc_address(coin(network), &device_keypath, &script_config, true)
+                .await?;
+            if shown != expected {
+                return Err(Error::Invalid(
+                    "The BitBox02 showed a different address than this wallet. Don't use it"
+                        .into(),
+                )
+                .into());
+            }
+            Ok(shown)
+        }
+    })
+    .await
+}
+
+// --- multisig vaults --------------------------------------------------------
+//
+// A vault is registered on the BitBox02 once (the person checks the quorum
+// and keys, and the name, on the device); after that it shows the vault's
+// receive addresses and recognises its change. BIP48 keys only
+// (`m/48'/coin'/0..99'/2'` native SegWit, `…/1'` nested), sorted keys
+// (`sortedmulti`); signing needs firmware 9.15 or newer.
+
+/// A multisig vault from the wallet's accounts (shared with Jade and Trezor).
+#[derive(Debug, Clone)]
+pub(crate) struct Vault {
+    /// The account's name.
+    pub name: String,
+    pub config: MultisigConfig,
+    pub descriptors: rail_onchain::DescriptorPair,
+    pub network: Network,
+}
+
+/// The vault `account`, or `None` for an account of another kind.
+pub(crate) async fn find_vault(state: &AppState, account: &AccountId) -> Result<Option<Vault>> {
+    let (name, pair, network) = {
+        let guard = state.inner.lock().await;
+        let u = guard.as_ref().ok_or(Error::Locked)?;
+        let spec = u
+            .config
+            .accounts
+            .iter()
+            .find(|a| a.id() == account)
+            .ok_or_else(|| Error::AccountNotFound(account.0.clone()))?;
+        match spec {
+            AccountSpec::Multisig {
+                name, descriptors, ..
+            } => (name.clone(), descriptors.clone(), u.config.network),
+            _ => return Ok(None),
+        }
+    };
+    let config = MultisigConfig::from_descriptor(&pair.external, network)?;
+    Ok(Some(Vault {
+        name,
+        config,
+        descriptors: pair,
+        network,
+    }))
+}
+
+/// The vault `account`; an error for any other kind of account.
+pub(crate) async fn vault(state: &AppState, account: &AccountId) -> Result<Vault> {
+    find_vault(state, account)
+        .await?
+        .ok_or_else(|| Error::Invalid("That account isn't a multisig vault".into()))
+}
+
+fn xpub_type(network: Network) -> pb::btc_xpubs_request::XPubType {
+    if network == Network::Bitcoin {
+        pb::btc_xpubs_request::XPubType::Xpub
+    } else {
+        pb::btc_xpubs_request::XPubType::Tpub
+    }
+}
+
+/// The BitBox02's script type for a vault, if it can sign for it at all.
+fn multisig_type(config: &MultisigConfig) -> Result<MultisigType> {
+    let Policy::Multi { sorted, .. } = config.policy;
+    if !sorted {
+        return Err(Error::Invalid(
+            "The BitBox02 only supports vaults with sorted keys (sortedmulti)".into(),
+        ));
+    }
+    match config.script {
+        ScriptType::P2wsh => Ok(MultisigType::P2wsh),
+        ScriptType::P2shP2wsh => Ok(MultisigType::P2wshP2sh),
+        ScriptType::P2sh => Err(Error::Invalid(
+            "The BitBox02 doesn't support legacy (P2SH) multisig vaults".into(),
+        )),
+    }
+}
+
+/// The vault as the BitBox02 takes it, with key `ours` (an index into the
+/// vault's keys) as the device's: the script config and the account keypath.
+fn multisig_script_config(
+    config: &MultisigConfig,
+    network: Network,
+    ours: usize,
+) -> Result<(pb::BtcScriptConfig, Vec<u32>)> {
+    let script_type = multisig_type(config)?;
+    let key = config
+        .cosigners
+        .get(ours)
+        .ok_or_else(|| helpers::not_a_vault_key(&BITBOX02))?;
+    let path: Vec<u32> = DerivationPath::from_str(&key.path)
+        .map_err(|e| Error::Crypto(e.to_string()))?
+        .into_iter()
+        .map(|c| u32::from(*c))
+        .collect();
+    // The firmware takes m/48'/coin'/account'/script', account 0' to 99',
+    // script 2' native or 1' nested.
+    const H: u32 = 0x8000_0000;
+    let coin = if network == Network::Bitcoin { H } else { 1 | H };
+    let level = match script_type {
+        MultisigType::P2wsh => 2 | H,
+        MultisigType::P2wshP2sh => 1 | H,
+    };
+    if !matches!(path.as_slice(), [p, c, a, s] if *p == 48 | H && *c == coin && (H..=99 | H).contains(a) && *s == level)
+    {
+        return Err(Error::Invalid(format!(
+            "The BitBox02 only signs with vault keys on the standard path ({}), account 0 to 99",
+            match script_type {
+                MultisigType::P2wsh => "m/48'/coin'/account'/2'",
+                MultisigType::P2wshP2sh => "m/48'/coin'/account'/1'",
+            }
+        )));
+    }
+    let xpubs = config
+        .cosigners
+        .iter()
+        .map(|c| Xpub::from_str(&c.xpub).map_err(|e| Error::Crypto(e.to_string())))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((
+        make_script_config_multisig(
+            config.threshold() as u32,
+            &xpubs,
+            ours as u32,
+            script_type,
+        ),
+        path,
+    ))
+}
+
+/// A vault as this BitBox02 signs for it.
+#[derive(Clone)]
+struct OnDevice {
+    script_config: pb::BtcScriptConfig,
+    /// The device's account keypath in the vault.
+    account: Vec<u32>,
+    fingerprint: Fingerprint,
+}
+
+/// Finds which of the vault's keys this BitBox02 holds (checking its xpub,
+/// not only the fingerprint).
+async fn vault_on_device(
+    d: &Device,
+    network: Network,
+    config: &MultisigConfig,
+) -> std::result::Result<OnDevice, Fail> {
+    let fingerprint = Fingerprint::from_str(&d.root_fingerprint().await?)
+        .map_err(|_| DeviceError::UnexpectedResponse)?;
+    let mut candidates = Vec::new();
+    let mut refused = None;
+    for key in helpers::vault_keys(&BITBOX02, config, fingerprint)? {
+        match multisig_script_config(config, network, key.index) {
+            Ok(c) => candidates.push((key, c)),
+            Err(e) => refused = Some(e),
+        }
+    }
+    if candidates.is_empty() {
+        return Err(refused.unwrap_or_else(|| helpers::not_a_vault_key(&BITBOX02)).into());
+    }
+    let paths: Vec<Keypath> = candidates.iter().map(|(_, (_, p))| keypath(p)).collect();
+    let xpubs = d
+        .btc_xpubs(coin(network), &paths, xpub_type(network))
+        .await?;
+    for ((key, (script_config, account)), xpub) in candidates.into_iter().zip(&xpubs) {
+        if Xpub::from_str(xpub).is_ok_and(|x| helpers::same_key(&x, &key.xpub)) {
+            return Ok(OnDevice {
+                script_config,
+                account,
+                fingerprint,
+            });
+        }
+    }
+    Err(helpers::not_a_vault_key(&BITBOX02).into())
+}
+
+/// Register the vault on the BitBox02 unless it already is (the person
+/// confirms on the device). Returns whether it registered it now.
+async fn ensure_registered(
+    d: &Device,
+    ui: &AppHandle,
+    network: Network,
+    vault: &OnDevice,
+    name: &str,
+) -> std::result::Result<bool, Fail> {
+    let account = keypath(&vault.account);
+    if d
+        .btc_is_script_config_registered(coin(network), &vault.script_config, Some(&account))
+        .await?
+    {
+        return Ok(false);
+    }
+    status(ui, "confirm");
+    d.btc_register_script_config(
+        coin(network),
+        &vault.script_config,
+        Some(&account),
+        pb::btc_register_script_config_request::XPubType::AutoXpubTpub,
+        Some(name),
+    )
+    .await
+    .map_err(|e| registration_failed(e, name))?;
+    Ok(true)
+}
+
+fn registration_failed(e: DeviceError, name: &str) -> Fail {
+    match e {
+        DeviceError::BitBox(BitBoxError::Duplicate) => Fail::App(Error::Invalid(format!(
+            "This BitBox02 already has a different multisig account called \"{name}\". Rename this vault, then try again"
+        ))),
+        DeviceError::BitBox(BitBoxError::Memory) => Fail::App(Error::Invalid(
+            "This BitBox02 has no room for another multisig account".into(),
+        )),
+        e => Fail::Device(e),
+    }
+}
+
+/// This BitBox02's key for a multisig vault (BIP48 native SegWit):
+/// `[fingerprint/48h/0h/{account}h/2h]xpub…`.
+#[tauri::command]
+pub async fn bitbox_multisig_key(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    bitbox: State<'_, BitBoxState>,
+    account: u32,
+) -> Result<String> {
+    if account > 99 {
+        return Err(Error::Invalid(
+            "The BitBox02 supports multisig account numbers 0 to 99".into(),
+        ));
+    }
+    let network = network(&state).await;
+    let path = keypath(&helpers::multisig_account_keypath(network, account)?);
+    with_device(&app, &bitbox, |d| {
+        let path = path.clone();
+        async move {
+            let fp = d.root_fingerprint().await?;
+            let xpubs = d
+                .btc_xpubs(coin(network), std::slice::from_ref(&path), xpub_type(network))
+                .await?;
+            let xpub = xpubs.first().ok_or(DeviceError::UnexpectedResponse)?;
+            Ok(helpers::multisig_key_on(
+                &BITBOX02, network, &fp, account, xpub,
+            )?)
+        }
+    })
+    .await
+}
+
+/// Register multisig vault `account` on the BitBox02, unless it already is.
+/// Returns whether it was registered now (the person confirmed on the device).
+#[tauri::command]
+pub async fn bitbox_register_multisig(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    bitbox: State<'_, BitBoxState>,
+    account: AccountId,
+) -> Result<bool> {
+    let vault = vault(&state, &account).await?;
+    multisig_type(&vault.config)?;
+    let name = helpers::bitbox02_vault_name(&vault.name);
+    let network = vault.network;
+    let config = Arc::new(vault.config);
+    let ui = app.clone();
+    with_device(&app, &bitbox, |d| {
+        let (config, ui, name) = (config.clone(), ui.clone(), name.clone());
+        async move {
+            let on = vault_on_device(&d, network, &config).await?;
+            ensure_registered(&d, &ui, network, &on, &name).await
+        }
+    })
+    .await
+}
+
+/// Sign a vault PSBT: register the vault first if needed, then add this
+/// BitBox02's signatures. Other cosigners may still have to sign.
+async fn sign_vault(
+    app: &AppHandle,
+    bitbox: &BitBoxState,
+    unsigned: Psbt,
+    vault: Vault,
+) -> Result<String> {
+    multisig_type(&vault.config)?;
+    let name = helpers::bitbox02_vault_name(&vault.name);
+    let network = vault.network;
+    let config = Arc::new(vault.config);
+    let ui = app.clone();
+    with_device(app, bitbox, |d| {
+        let mut psbt = unsigned.clone();
+        let (config, ui, name) = (config.clone(), ui.clone(), name.clone());
+        async move {
+            let on = vault_on_device(&d, network, &config).await?;
+            helpers::check_multisig_psbt(&BITBOX02, &psbt, on.fingerprint)?;
+            ensure_registered(&d, &ui, network, &on, &name).await?;
+            status(&ui, "confirm");
+            let forced = BtcScriptConfigWithKeypath {
+                script_config: Some(on.script_config.clone()),
+                keypath: on.account.clone(),
+            };
+            d.btc_sign_psbt(
+                coin(network),
+                &mut psbt,
+                Some(forced),
+                pb::btc_sign_init_request::FormatUnit::Default,
+            )
+            .await?;
+            if !helpers::signed_own_inputs(&psbt, on.fingerprint) {
+                return Err(
+                    Error::Invalid("The BitBox02 didn't sign this vault's inputs".into()).into(),
+                );
+            }
+            Ok(psbt.to_string())
+        }
+    })
+    .await
+}
+
+/// Show receive address `index` of multisig vault `account` on the BitBox02
+/// (registering the vault first if needed), after checking it matches the
+/// address this wallet derives. Returns the address.
+#[tauri::command]
+pub async fn bitbox_show_multisig_address(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    bitbox: State<'_, BitBoxState>,
+    account: AccountId,
+    index: u32,
+) -> Result<String> {
+    let vault = vault(&state, &account).await?;
+    multisig_type(&vault.config)?;
+    if index > 9999 {
+        return Err(Error::Invalid(
+            "The BitBox02 shows vault addresses 0 to 9999".into(),
+        ));
+    }
+    let network = vault.network;
+    let expected = descriptors::address_at(&vault.descriptors, network, index)?;
+    let name = helpers::bitbox02_vault_name(&vault.name);
+    let config = Arc::new(vault.config);
+    let ui = app.clone();
+    with_device(&app, &bitbox, |d| {
+        let (config, ui, name, expected) =
+            (config.clone(), ui.clone(), name.clone(), expected.clone());
+        async move {
+            let on = vault_on_device(&d, network, &config).await?;
+            ensure_registered(&d, &ui, network, &on, &name).await?;
+            status(&ui, "confirm");
+            let mut path = on.account.clone();
+            path.extend([0, index]);
+            let shown = d
+                .btc_address(coin(network), &keypath(&path), &on.script_config, true)
                 .await?;
             if shown != expected {
                 return Err(Error::Invalid(

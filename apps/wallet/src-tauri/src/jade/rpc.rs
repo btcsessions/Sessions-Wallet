@@ -191,6 +191,99 @@ pub fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
     Some((next()?, next()?, next()?))
 }
 
+// --- multisig ---------------------------------------------------------------
+
+/// One key of a multisig wallet registered on Jade.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signer {
+    /// Root fingerprint of the key's wallet.
+    pub fingerprint: [u8; 4],
+    /// Path from that root to `xpub` (Jade checks it for its own key).
+    pub derivation: Vec<u32>,
+    pub xpub: String,
+    /// Fixed path applied after the xpub; empty for BIP48 wallets.
+    pub path: Vec<u32>,
+}
+
+/// A multisig wallet as Jade registers it (`register_multisig`,
+/// `get_registered_multisig`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Multisig {
+    /// "wsh(multi(k))", "sh(wsh(multi(k)))" or "sh(multi(k))".
+    pub variant: String,
+    /// BIP67 key sorting (`sortedmulti`).
+    pub sorted: bool,
+    pub threshold: u32,
+    pub signers: Vec<Signer>,
+}
+
+/// A registration as `get_registered_multisigs` sums it up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultisigSummary {
+    pub variant: String,
+    pub sorted: bool,
+    pub threshold: u32,
+    pub num_signers: u32,
+}
+
+fn as_u32(v: &Cbor) -> Option<u32> {
+    as_u64(v).and_then(|n| u32::try_from(n).ok())
+}
+
+fn path_of(v: Option<&Cbor>) -> Option<Vec<u32>> {
+    match v {
+        None | Some(Cbor::Null) => Some(Vec::new()),
+        Some(v) => v.as_array()?.iter().map(as_u32).collect(),
+    }
+}
+
+impl Multisig {
+    fn to_cbor(&self) -> Cbor {
+        map(vec![
+            ("variant", text(&self.variant)),
+            ("sorted", Cbor::Bool(self.sorted)),
+            ("threshold", Cbor::Integer(self.threshold.into())),
+            (
+                "signers",
+                Cbor::Array(
+                    self.signers
+                        .iter()
+                        .map(|s| {
+                            map(vec![
+                                ("fingerprint", Cbor::Bytes(s.fingerprint.to_vec())),
+                                ("derivation", path(&s.derivation)),
+                                ("xpub", text(&s.xpub)),
+                                ("path", path(&s.path)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ])
+    }
+
+    fn from_cbor(v: &Cbor) -> Option<Multisig> {
+        let signers = get(v, "signers")?
+            .as_array()?
+            .iter()
+            .map(|s| {
+                Some(Signer {
+                    fingerprint: get(s, "fingerprint")?.as_bytes()?.as_slice().try_into().ok()?,
+                    derivation: path_of(get(s, "derivation"))?,
+                    xpub: get(s, "xpub")?.as_text()?.to_owned(),
+                    path: path_of(get(s, "path"))?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Multisig {
+            variant: get(v, "variant")?.as_text()?.to_owned(),
+            sorted: get(v, "sorted")?.as_bool()?,
+            threshold: as_u32(get(v, "threshold")?)?,
+            signers,
+        })
+    }
+}
+
 // --- client -----------------------------------------------------------------
 
 /// One conversation with Jade at a time over a [`Link`].
@@ -455,6 +548,97 @@ impl Client {
                     ("network", text(network)),
                     ("variant", text(variant)),
                     ("path", path(path_)),
+                ])),
+                wait,
+            )
+            .await?;
+        r.into_text().map_err(|_| unexpected())
+    }
+
+    /// Multisig wallets registered on Jade for its current wallet, by name.
+    pub async fn registered_multisigs(
+        &self,
+        wait: Duration,
+    ) -> Result<Vec<(String, MultisigSummary)>, Fail> {
+        let r = self.call("get_registered_multisigs", None, wait).await?;
+        let entries = r.as_map().ok_or_else(unexpected)?;
+        entries
+            .iter()
+            .map(|(name, v)| {
+                let summary = MultisigSummary {
+                    variant: get(v, "variant")?.as_text()?.to_owned(),
+                    sorted: get(v, "sorted")?.as_bool()?,
+                    threshold: as_u32(get(v, "threshold")?)?,
+                    num_signers: as_u32(get(v, "num_signers")?)?,
+                };
+                Some((name.as_text()?.to_owned(), summary))
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(unexpected)
+    }
+
+    /// The keys of registered multisig wallet `name` (firmware 1.0.23+, and
+    /// only for wallets registered by such firmware).
+    pub async fn registered_multisig(&self, name: &str, wait: Duration) -> Result<Multisig, Fail> {
+        let r = self
+            .call(
+                "get_registered_multisig",
+                Some(map(vec![
+                    ("multisig_name", text(name)),
+                    ("as_file", Cbor::Bool(false)),
+                ])),
+                wait,
+            )
+            .await?;
+        get(&r, "descriptor")
+            .and_then(Multisig::from_cbor)
+            .ok_or_else(unexpected)
+    }
+
+    /// Register multisig wallet `name` (at most 15 characters). Jade asks the
+    /// person to confirm, unless the very same registration already exists;
+    /// a different registration with the same name is overwritten.
+    pub async fn register_multisig(
+        &self,
+        network: &str,
+        name: &str,
+        multisig: &Multisig,
+        wait: Duration,
+    ) -> Result<(), Fail> {
+        let r = self
+            .call(
+                "register_multisig",
+                Some(map(vec![
+                    ("network", text(network)),
+                    ("multisig_name", text(name)),
+                    ("descriptor", multisig.to_cbor()),
+                ])),
+                wait,
+            )
+            .await?;
+        match r {
+            Cbor::Bool(true) => Ok(()),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// Show an address of registered multisig wallet `name` on Jade. `paths`
+    /// are the suffixes after each signer's xpub, in registration order.
+    /// Returns it once the person confirms.
+    pub async fn multisig_receive_address(
+        &self,
+        network: &str,
+        name: &str,
+        paths: &[Vec<u32>],
+        wait: Duration,
+    ) -> Result<String, Fail> {
+        let r = self
+            .call(
+                "get_receive_address",
+                Some(map(vec![
+                    ("network", text(network)),
+                    ("multisig_name", text(name)),
+                    ("paths", Cbor::Array(paths.iter().map(|p| path(p)).collect())),
                 ])),
                 wait,
             )

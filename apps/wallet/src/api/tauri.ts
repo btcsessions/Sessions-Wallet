@@ -123,7 +123,7 @@ export const tauriApi: WalletApi = {
   trezorSignRequest: (psbt) => invoke("trezor_sign_request", { psbt }),
   trezorMerge: (psbt, signedTx) => invoke("trezor_merge", { psbt, signedTx }),
   bitboxDescriptors: (script, accounts) => invoke("bitbox_descriptors", { script, accounts }),
-  bitboxSign: (psbt) => invoke("bitbox_sign", { psbt }),
+  bitboxSign: (psbt, account) => invoke("bitbox_sign", { psbt, account: account ?? null }),
   bitboxShowAddress: (account, index) => invoke("bitbox_show_address", { account, index }),
   onBitbox: async (cb) => {
     const offs = await Promise.all([
@@ -134,7 +134,7 @@ export const tauriApi: WalletApi = {
     return () => offs.forEach((off) => off());
   },
   jadeDescriptors: (script, accounts) => invoke("jade_descriptors", { script, accounts }),
-  jadeSign: (psbt) => invoke("jade_sign", { psbt }),
+  jadeSign: (psbt, account) => invoke("jade_sign", { psbt, account: account ?? null }),
   jadeShowAddress: (account, index) => invoke("jade_show_address", { account, index }),
   onJade: async (cb) => {
     const offs = await Promise.all([
@@ -143,6 +143,26 @@ export const tauriApi: WalletApi = {
     ]);
     return () => offs.forEach((off) => off());
   },
+  vaultPhoneKey: () => invoke("vault_phone_key"),
+  vaultReadKey: (text) => invoke("vault_read_key", { text }),
+  bitboxMultisigKey: (account) => invoke("bitbox_multisig_key", { account }),
+  jadeMultisigKey: (account) => invoke("jade_multisig_key", { account }),
+  bitboxRegisterMultisig: (account) => invoke("bitbox_register_multisig", { account }),
+  jadeRegisterMultisig: (account) => invoke("jade_register_multisig", { account }),
+  bitboxShowMultisigAddress: (account, index) => invoke("bitbox_show_multisig_address", { account, index }),
+  jadeShowMultisigAddress: (account, index) => invoke("jade_show_multisig_address", { account, index }),
+  vaultCreate: (vault) => invoke("vault_create", { vault }),
+  vaultImportPreview: (text) => invoke("vault_import_preview", { text }),
+  vaultImport: (vault) => invoke("vault_import", { vault }),
+  vaultDetails: (account) => invoke("vault_details", { account }),
+  vaultSetKeyLabel: (account, fingerprint, label) => invoke("vault_set_key_label", { account, fingerprint, label }),
+  vaultExport: (account, format) => invoke("vault_export", { account, format }),
+  vaultSignatures: (account, psbt) => invoke("vault_signatures", { account, psbt }),
+  vaultCombine: (psbt, other) => invoke("vault_combine", { psbt, other }),
+  proposals: (account) => invoke("proposals", { account: account ?? null }),
+  proposalSave: (proposal) => invoke("proposal_save", { proposal }),
+  proposalDelete: (id) => invoke("proposal_delete", { id }),
+  fileExport: (file, share) => invoke("file_export", { ...file, share }),
   nwcList: () => invoke("nwc_list"),
   nwcCreate: (req) => invoke("nwc_create", { req }),
   nwcUpdate: (id, patch) => invoke("nwc_update", { id, patch }),

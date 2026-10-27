@@ -42,6 +42,8 @@ tauri-plugin-biometric-vault = { path = "plugins/tauri-plugin-biometric-vault" }
 # Payment alerts: notifications, and a service that keeps watching with the
 # app closed.
 tauri-plugin-alerts = { path = "plugins/tauri-plugin-alerts" }
+# Save or share wallet export files.
+tauri-plugin-files = { path = "plugins/tauri-plugin-files" }
 rand = "0.8"
 async-trait.workspace = true
 bitcoin.workspace = true
