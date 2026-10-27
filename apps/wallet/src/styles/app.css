@@ -1530,11 +1530,11 @@ button {
   --shadow-sheet: 0 -24px 60px -20px rgba(0, 0, 0, 0.45);
   --tile-border: 1px solid #e2e4e8;
 
-  /* Diagram rule: orange is in your hands, electro is out on the network. */
-  --rail-spark: #3fa8d4;
+  /* Spending is orange (the wallet you use every day); hardware is electro. */
+  --rail-spark: #c46f0a;
   --rail-ecash: #1c6f95;
   --rail-onchain: #f7931a;
-  --rail-hardware: #c46f0a;
+  --rail-hardware: #3fa8d4;
   --rail-vault: #7a4405;
   --rail-watch: #8a90a3;
 
@@ -1579,10 +1579,10 @@ button {
   --shadow-sheet: 0 -24px 60px -20px rgba(0, 0, 0, 0.8);
   --tile-border: 1px solid #262b3d;
 
-  --rail-spark: #7ed3f2;
+  --rail-spark: #ffb35c;
   --rail-ecash: #3fa8d4;
   --rail-onchain: #f7931a;
-  --rail-hardware: #ffb35c;
+  --rail-hardware: #7ed3f2;
   --rail-vault: #c46f0a;
   --rail-watch: #8a90a3;
 }
