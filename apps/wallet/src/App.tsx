@@ -21,6 +21,7 @@ import { CheckinSheet } from "./components/Checkins";
 import { GroupSheet } from "./sheets/GroupSheet";
 import { GroupJoinSheet } from "./sheets/GroupJoinSheet";
 import { NostrIdSheet } from "./sheets/NostrIdSheet";
+import { DevicesSheet } from "./sheets/DevicesSheet";
 import { NwcSheet } from "./sheets/NwcSheet";
 import { VaultSheet } from "./sheets/VaultSheet";
 import { VaultExportSheet } from "./sheets/VaultPanel";
@@ -66,6 +67,8 @@ function ActiveSheet() {
       return <GroupJoinSheet code={sheet.code} />;
     case "nostr-id":
       return <NostrIdSheet />;
+    case "devices":
+      return <DevicesSheet />;
     case "checkin":
       return <CheckinSheet />;
     case "contacts":

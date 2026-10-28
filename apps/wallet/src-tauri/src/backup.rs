@@ -44,6 +44,13 @@ pub const MIN_ANSWERS: usize = 2;
 /// The UI's prefs are small; refuse anything silly.
 pub const MAX_PREFS_BYTES: usize = 64 * 1024;
 
+fn now_ms_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -372,7 +379,9 @@ impl Backup {
             let unchanged = i.saved.hash.as_deref() == Some(hash.as_str());
             (
                 unchanged && !forced && !stale,
-                (i.saved.version + 1).max(now_s),
+                // Milliseconds: two devices writing in the same second still
+                // get different versions (and newer always wins).
+                (i.saved.version + 1).max(now_ms_epoch()),
                 (i.saved.last_created_at + 1).max(now_s),
                 i.saved.envelope.clone(),
             )
@@ -1088,6 +1097,21 @@ async fn pull(state: &AppState, keys: &StateKeys, take_theirs: bool) -> Result<b
     Ok(changed)
 }
 
+/// Version of the newest snapshot on the relays.
+async fn newest_version(state: &AppState, keys: &StateKeys) -> Option<u64> {
+    let b = &state.backup;
+    let (urls, _) = b.urls();
+    let events: Vec<Event> = b
+        .relays
+        .fetch(&urls, &keys.nostr.public_hex(), KIND_APP_DATA)
+        .await
+        .into_iter()
+        .filter_map(|(_, r)| r.ok())
+        .flatten()
+        .collect();
+    snapshot::decode(keys, &events).map(|s| s.version)
+}
+
 /// A device linked to this wallet.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1171,6 +1195,10 @@ pub async fn sync_now(state: &AppState, direction: SyncDirection) -> Result<Sync
             pull(state, &keys, true).await?;
         }
         SyncDirection::SendMine => {
+            // Go out above whatever is there now, without taking it in.
+            if let Some(v) = newest_version(state, &keys).await {
+                b.update_saved(|s| s.version = s.version.max(v));
+            }
             let token = random_hex(8);
             {
                 let mut i = b.lock();
@@ -1328,4 +1356,97 @@ mod tests {
         assert!(safe_id("hw-3") && safe_id("savings") && safe_id("vault_1"));
         assert!(!safe_id("../config") && !safe_id("a/b") && !safe_id("") && !safe_id("x.y"));
     }
+
+    /// Two devices on one seed, syncing through a relay. Needs a local relay:
+    /// `python3 scripts/marmot-test/relay.py 7781`, then
+    /// `SYNC_RELAY=ws://127.0.0.1:7781 cargo test -p sessions-wallet-app two_devices -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn two_devices_stay_in_sync() {
+        let relay = std::env::var("SYNC_RELAY").expect("SYNC_RELAY");
+        let seed = Seed::generate(12).unwrap();
+        let phrase = seed.phrase().to_string();
+        let device = |dir: &std::path::Path| {
+            let mut s = AppState::new(dir.to_path_buf(), None);
+            s.backup = Arc::new(Backup::new(dir, true));
+            s
+        };
+        async fn use_relay(s: &AppState, relay: &str) {
+            let mut g = s.inner.lock().await;
+            let u = g.as_mut().unwrap();
+            u.config.backup_relays = vec![relay.to_string()];
+            s.save_config(&u.config).unwrap();
+        }
+        async fn names(s: &AppState) -> Vec<String> {
+            let g = s.inner.lock().await;
+            let mut v: Vec<String> = g.as_ref().unwrap().config.accounts.iter().map(|a| a.name().to_string()).collect();
+            v.sort();
+            v
+        }
+
+        // The phone: a wallet with savings, backed up.
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(da.path());
+        a.create(Seed::from_phrase(&phrase).unwrap(), "123456").await.unwrap();
+        use_relay(&a, &relay).await;
+        let savings = a
+            .add_account(AccountSpec::Savings { id: "savings".into(), name: "On-Chain".into(), account_index: 0, payjoin_receive: false })
+            .await
+            .unwrap();
+        backup_now(&a).await.unwrap();
+
+        // The computer links (same seed) and picks the setup up.
+        let b = device(db.path());
+        b.create_with(Seed::from_phrase(&phrase).unwrap(), "654321", BackupFlags::new_phrase(), true).await.unwrap();
+        // Read where the phone writes (a linked device starts with the defaults).
+        b.backup.lock().relay_urls = vec![relay.clone()];
+        let r = restore_state(&b).await;
+        assert!(r.found, "{r:?}");
+        assert_eq!(names(&b).await, ["On-Chain", "Spending"]);
+        assert_eq!(b.inner.lock().await.as_ref().unwrap().config.backup_relays, vec![relay.clone()]);
+
+        // Both change something different.
+        a.rename_account(&savings, "Rainy day").await.unwrap();
+        b.add_account(AccountSpec::WatchOnly {
+            id: "watch-b".into(),
+            name: "Dad's".into(),
+            descriptors: descriptors::import(&format!("[73c5da0a/84h/0h/0h]{XPUB}"), Network::Bitcoin).unwrap(),
+        })
+        .await
+        .unwrap();
+        sync_now(&a, SyncDirection::Both).await.unwrap();
+        sync_now(&b, SyncDirection::Both).await.unwrap();
+        sync_now(&a, SyncDirection::Both).await.unwrap();
+        assert_eq!(names(&a).await, ["Dad's", "Rainy day", "Spending"]);
+        assert_eq!(names(&b).await, ["Dad's", "Rainy day", "Spending"]);
+        assert_eq!(sync_status(&a).devices.len(), 2);
+
+        // Each keeps its own home screen.
+        {
+            let mut g = b.inner.lock().await;
+            let u = g.as_mut().unwrap();
+            u.config.layout.advanced = !u.config.layout.advanced;
+            b.save_config(&u.config).unwrap();
+        }
+        let a_adv = a.inner.lock().await.as_ref().unwrap().config.layout.advanced;
+        sync_now(&b, SyncDirection::Both).await.unwrap();
+        sync_now(&a, SyncDirection::Both).await.unwrap();
+        assert_eq!(a.inner.lock().await.as_ref().unwrap().config.layout.advanced, a_adv);
+
+        // "Use this device's setup everywhere" from the computer, after the
+        // phone made a change of its own: the phone ends up matching.
+        a.rename_account(&savings, "Phone's name").await.unwrap();
+        b.rename_account(&savings, "Computer's name").await.unwrap();
+        sync_now(&b, SyncDirection::SendMine).await.unwrap();
+        sync_now(&a, SyncDirection::Both).await.unwrap();
+        assert_eq!(names(&a).await, ["Computer's name", "Dad's", "Spending"]);
+
+        // And the reverse.
+        a.rename_account(&savings, "Phone wins").await.unwrap();
+        backup_now(&a).await.unwrap();
+        b.rename_account(&savings, "Not this").await.unwrap();
+        sync_now(&b, SyncDirection::TakeTheirs).await.unwrap();
+        assert_eq!(names(&b).await, ["Dad's", "Phone wins", "Spending"]);
+    }
+
 }

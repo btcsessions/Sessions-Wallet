@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Icon } from "./components/Icon";
-import { useBusy } from "./components/ui";
+import { CopyButton, QR, useBusy } from "./components/ui";
 import { errorText } from "./format";
 import { useWallet } from "./state/store";
-import { isBiometricError, type BiometricStatus } from "./api/types";
+import { isBiometricError, type BiometricStatus, type LinkStatus } from "./api/types";
 
 const PASSCODE_LENGTH = 6;
 
@@ -127,7 +127,7 @@ export function Lock() {
   );
 }
 
-type Step = "welcome" | "setup" | "backup" | "restore-choice" | "restore" | "passcode" | "confirm" | "phrase" | "biometric";
+type Step = "welcome" | "link" | "setup" | "backup" | "restore-choice" | "restore" | "passcode" | "confirm" | "phrase" | "biometric";
 type Backup = "passkey" | "phrase" | "both";
 
 /** A big tappable choice card. */
@@ -146,7 +146,7 @@ function Choice({ title, body, badge, selected, onClick }: { title: string; body
 export function Onboarding() {
   const setStatus = useWallet((s) => s.setStatus);
   const [step, setStep] = useState<Step>("welcome");
-  const [mode, setMode] = useState<"create" | "restore">("create");
+  const [mode, setMode] = useState<"create" | "restore" | "link">("create");
   const [restoreWith, setRestoreWith] = useState<"passkey" | "phrase">("passkey");
   const [advanced, setAdvanced] = useState(false);
   const [backup, setBackup] = useState<Backup>("passkey");
@@ -216,6 +216,13 @@ export function Onboarding() {
       setPasscode(passcode);
       const a = await api();
       try {
+        if (mode === "link") {
+          await a.linkFinish(passcode);
+          useWallet.setState({ restored: true });
+          const r = await a.restoreState().catch((e) => ({ found: false, accounts: 0, error: errorText(e) }));
+          await open(r.found ? "Linked. Your accounts and settings came across." : restoredNote(r));
+          return;
+        }
         if (mode === "restore") {
           if (restoreWith === "passkey") {
             const r = await a.restoreWithPasskey(passcode);
@@ -313,9 +320,16 @@ export function Onboarding() {
           <button className="btn block" onClick={() => (setMode("restore"), setStep(passkeys ? "restore-choice" : "restore"), setRestoreWith(passkeys ? "passkey" : "phrase"))}>
             Restore my wallet
           </button>
+          <button className="text-button" onClick={() => (setMode("link"), setStep("link"))}>
+            Link to my wallet on another device
+          </button>
         </div>
       </main>
     );
+  }
+
+  if (step === "link") {
+    return <LinkHere onBack={() => setStep("welcome")} onReady={() => setStep("passcode")} />;
   }
 
   if (step === "setup") {
@@ -497,6 +511,110 @@ export function Onboarding() {
       <button className="btn primary block" disabled={!saved || busy} onClick={afterPhrase}>
         {busy && plan === "both" ? "Create your passkey when asked…" : plan === "both" ? "Next: add the passkey" : "Open my wallet"}
       </button>
+    </main>
+  );
+}
+
+/** A new device: show a QR for the phone (or computer) that has the wallet. */
+function LinkHere({ onBack, onReady }: { onBack: () => void; onReady: () => void }) {
+  const [qr, setQr] = useState<string | null>(null);
+  const [status, setStatus] = useState<LinkStatus>({ state: "waiting" });
+  const [error, setError] = useState<string | null>(null);
+  const ready = useRef(onReady);
+  ready.current = onReady;
+
+  const start = async () => {
+    setError(null);
+    setStatus({ state: "waiting" });
+    try {
+      setQr((await (await api()).linkOffer()).qr);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  const done = useRef(false);
+  useEffect(() => {
+    void start();
+    return () => {
+      // Leaving before the wallet arrived: drop the code.
+      if (!done.current) void api().then((a) => a.linkCancel());
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!qr) return;
+    let live = true;
+    const t = setInterval(async () => {
+      try {
+        const s = await (await api()).linkPoll();
+        if (!live) return;
+        setStatus(s);
+        if (s.state === "ready") {
+          clearInterval(t);
+          done.current = true;
+          ready.current();
+        }
+      } catch {
+        /* relays come and go */
+      }
+    }, 2500);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [qr]);
+
+  return (
+    <main className="center-screen">
+      <button className="text-button" style={{ alignSelf: "flex-start", marginLeft: -8 }} onClick={onBack}>
+        Back
+      </button>
+      <h1 className="welcome-title" style={{ fontSize: 30 }}>
+        Link this device
+      </h1>
+      {status.state === "code" ? (
+        <>
+          <p className="welcome-copy">
+            Check that <strong>{status.from}</strong> shows the same code, then confirm there.
+          </p>
+          <div className="join-code mono" aria-label="Check code" style={{ marginBottom: 12 }}>
+            {status.code}
+          </div>
+          <p className="group-note" style={{ textAlign: "center" }}>
+            Waiting for your other device…
+          </p>
+        </>
+      ) : status.state === "expired" ? (
+        <>
+          <p className="welcome-copy">That code ran out.</p>
+          <button className="btn primary block" onClick={start}>
+            Show a new code
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="welcome-copy">On the device that has your wallet, open Settings › Linked devices › Link a device, and scan this.</p>
+          {qr ? (
+            <>
+              <div style={{ display: "flex", justifyContent: "center", width: "100%" }}>
+                <QR value={qr} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: 44, margin: "12px 0 18px" }}>
+                <CopyButton text={qr} label="Copy code" />
+              </div>
+            </>
+          ) : (
+            <p className="group-note">Making a code…</p>
+          )}
+          <p className="group-note">Your wallet comes over encrypted. Only this screen can read it. The code works for 15 minutes.</p>
+        </>
+      )}
+      {error && (
+        <p className="field-error" role="alert">
+          <Icon name="warn" size={14} /> {error}
+        </p>
+      )}
     </main>
   );
 }

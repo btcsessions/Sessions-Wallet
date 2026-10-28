@@ -174,6 +174,15 @@ export function SettingsSheet() {
         </>
       )}
 
+      <p className="group-label">Devices</p>
+      <div className="group">
+        <button className="cell" onClick={() => open({ name: "devices" })}>
+          <span className="grow">Linked devices</span>
+          <span className="value">Phone and computer</span>
+          <Icon name="chevron" size={16} />
+        </button>
+      </div>
+
       <AlertsSetting />
 
       <BiometricSetting />

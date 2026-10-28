@@ -22,6 +22,7 @@ export type SheetName =
   | { name: "checkin" }
   | { name: "nwc" }
   | { name: "nostr-id" }
+  | { name: "devices" }
   | { name: "group-join"; code?: string }
   | { name: "group"; groupId?: string }
   | { name: "vault" }
@@ -248,6 +249,14 @@ export const useWallet = create<State>((set, get) => {
           void a.onStateRestored(() => {
             void get().refresh();
             void get().loadPrefs();
+          });
+          // Coming back to the app: pick up changes from linked devices.
+          let lastSync = 0;
+          document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState !== "visible" || get().status !== "unlocked") return;
+            if (Date.now() - lastSync < 60_000) return;
+            lastSync = Date.now();
+            void a.syncNow("both").catch(() => {});
           });
           unlisten = await a.onChange(() => {
             clearTimeout(t);
