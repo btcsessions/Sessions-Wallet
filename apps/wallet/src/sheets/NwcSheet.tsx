@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { NwcBudgetPeriod, NwcConnection, NwcPermission } from "../api/types";
 import { Icon } from "../components/Icon";
-import { CopyButton, QR, Sheet, useBusy } from "../components/ui";
+import { CopyButton, QR, Sheet, useBusy, useSecureScreen } from "../components/ui";
 import { errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 
@@ -121,6 +121,7 @@ function NewConnection({ onCreated, onCancel }: { onCreated: (uri: string, c: Nw
 }
 
 function ShowUri({ uri, name, onDone }: { uri: string; name: string; onDone: () => void }) {
+  useSecureScreen();
   return (
     <Sheet title={`Connect ${name}`}>
       <p className="group-note" style={{ marginTop: 0 }}>
@@ -128,7 +129,7 @@ function ShowUri({ uri, name, onDone }: { uri: string; name: string; onDone: () 
       </p>
       <QR value={uri} />
       <div style={{ display: "flex", gap: 10, justifyContent: "center", margin: "14px 0 22px" }}>
-        <CopyButton text={uri} label="Copy link" />
+        <CopyButton text={uri} label="Copy link" sensitive />
         <button
           className="btn small"
           onClick={async () => {
@@ -136,7 +137,7 @@ function ShowUri({ uri, name, onDone }: { uri: string; name: string; onDone: () 
               const { openUrl } = await import("@tauri-apps/plugin-opener");
               await openUrl(uri);
             } catch {
-              window.location.href = uri;
+              /* no app for it: they can scan or copy instead */
             }
           }}
         >

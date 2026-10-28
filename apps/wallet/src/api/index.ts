@@ -179,6 +179,8 @@ export interface WalletApi {
   bitboxSign(psbt: string, account?: string): Promise<string>;
   /** Show receive address `index` of a BitBox02 account on the device (checked against ours); returns it. */
   bitboxShowAddress(account: string, index: number): Promise<string>;
+  /** Which receive index `address` is, for a single-sig hardware account (to show it on the device). */
+  hardwareAddressIndex(account: string, address: string): Promise<number>;
   /** BitBox02 progress (status, pairing code, paired). Returns an unsubscribe. */
   onBitbox(cb: (e: BitboxEvent) => void): Promise<() => void>;
   /** Jade over Bluetooth: one descriptor per account number, `wpkh([fp/84h/0h/{n}h]xpub…/<0;1>/*)` (`tr`/86h for Taproot, firmware 1.0.34+). Connects and unlocks first if needed. */
@@ -294,6 +296,8 @@ export interface WalletApi {
   /** Wallet device: codes match: send the wallet (checks the passcode). */
   linkSend(passcode: string): Promise<void>;
   syncStatus(): Promise<SyncStatus>;
+  /** A secret is on screen: block screenshots, recording, previews and overlay taps. */
+  setSecureScreen(on: boolean): Promise<void>;
   syncNow(direction: SyncDirection): Promise<SyncStatus>;
   groupRespond(groupId: string, accept: boolean): Promise<void>;
   groupSetName(name: string): Promise<void>;
@@ -330,6 +334,8 @@ export interface WalletApi {
   onWalletChanged(cb: (account: string) => void): Promise<() => void>;
 }
 
+declare const __APP_BUILD__: boolean;
+
 function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -338,9 +344,13 @@ let instance: Promise<WalletApi> | null = null;
 
 export function api(): Promise<WalletApi> {
   if (!instance) {
-    instance = inTauri()
-      ? import("./tauri").then((m) => m.tauriApi)
-      : import("./mock").then((m) => m.mockApi);
+    // App builds (`tauri build` sets TAURI_ENV_PLATFORM) never include the
+    // mock: the constant lets the bundler drop it.
+    if (__APP_BUILD__) {
+      instance = import("./tauri").then((m) => m.tauriApi);
+    } else {
+      instance = inTauri() ? import("./tauri").then((m) => m.tauriApi) : import("./mock").then((m) => m.mockApi);
+    }
   }
   return instance;
 }

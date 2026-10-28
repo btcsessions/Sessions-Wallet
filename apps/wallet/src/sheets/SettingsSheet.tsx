@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Settings } from "../api/types";
-import { Sheet, useBusy } from "../components/ui";
+import { Sheet, useBusy, useSecureScreen } from "../components/ui";
 import { useWallet } from "../state/store";
 import { THEMES, type Appearance } from "../theme";
 import { ModeSwitch } from "../components/ModeSwitch";
@@ -26,6 +26,7 @@ export function SettingsSheet() {
   const [electrum, setElectrum] = useState("");
   const [breezKey, setBreezKey] = useState("");
   const notify = useWallet((s) => s.notify);
+  useSecureScreen(!!phrase);
 
   useEffect(() => {
     api()
@@ -223,7 +224,7 @@ export function SettingsSheet() {
               <input
                 type="password"
                 inputMode="numeric"
-                autoComplete="current-password"
+                autoComplete="off" data-1p-ignore data-lpignore="true"
                 value={passcode}
                 onChange={(e) => setPasscode(e.target.value)}
                 style={{ textAlign: "right" }}

@@ -148,7 +148,8 @@ export function QR({ value }: { value: string }) {
   return <div className="qr" aria-label="QR code" role="img" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
-export function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+/** `sensitive`: a secret; cleared from the clipboard after a minute. */
+export function CopyButton({ text, label = "Copy", sensitive = false }: { text: string; label?: string; sensitive?: boolean }) {
   const notify = useWallet((s) => s.notify);
   return (
     <button
@@ -156,7 +157,8 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
-          notify("ok", "Copied");
+          notify("ok", sensitive ? "Copied. Cleared from the clipboard in a minute." : "Copied");
+          if (sensitive) setTimeout(() => void navigator.clipboard.writeText("").catch(() => {}), 60_000);
         } catch {
           notify("error", "Couldn't copy. Select the text instead.");
         }
@@ -205,6 +207,22 @@ export function AmountInput({
       </div>
     </div>
   );
+}
+
+let secureCount = 0;
+
+/**
+ * While `on`, a secret is on screen: no screenshots, screen recording, app
+ * switcher preview or overlay taps (Android), no screen capture (desktop).
+ */
+export function useSecureScreen(on = true) {
+  useEffect(() => {
+    if (!on) return;
+    if (secureCount++ === 0) void api().then((a) => a.setSecureScreen(true)).catch(() => {});
+    return () => {
+      if (--secureCount === 0) void api().then((a) => a.setSecureScreen(false)).catch(() => {});
+    };
+  }, [on]);
 }
 
 export function useBusy() {

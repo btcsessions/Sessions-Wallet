@@ -238,6 +238,56 @@ impl<R: Runtime> BiometricVault<R> {
             .map_err(android::map_err)?;
         Ok(Zeroizing::new(reply.passcode))
     }
+    /// Block screenshots, recording and overlay taps while a secret shows.
+    pub async fn set_secure(&self, on: bool) -> Result<(), BiometricError> {
+        self.handle
+            .run_mobile_plugin_async::<serde_json::Value>("setSecure", serde_json::json!({ "on": on }))
+            .await
+            .map_err(android::map_err)?;
+        Ok(())
+    }
+
+    /// Wrap a small secret with the device key: an AES-256-GCM key in the
+    /// Android Keystore (StrongBox where the phone has one) that needs no
+    /// biometric and never leaves the hardware. Binds the wallet vault to
+    /// this phone.
+    pub async fn device_wrap(&self, secret: &[u8]) -> Result<Vec<u8>, BiometricError> {
+        let reply: Hex = self
+            .handle
+            .run_mobile_plugin_async("deviceWrap", serde_json::json!({ "data": hex(secret) }))
+            .await
+            .map_err(android::map_err)?;
+        unhex(&reply.data).ok_or_else(|| BiometricError::Other("bad reply".into()))
+    }
+
+    pub async fn device_unwrap(&self, wrapped: &[u8]) -> Result<Zeroizing<Vec<u8>>, BiometricError> {
+        let reply: Hex = self
+            .handle
+            .run_mobile_plugin_async("deviceUnwrap", serde_json::json!({ "data": hex(wrapped) }))
+            .await
+            .map_err(android::map_err)?;
+        let data = Zeroizing::new(reply.data);
+        unhex(&data).map(Zeroizing::new).ok_or_else(|| BiometricError::Other("bad reply".into()))
+    }
+}
+
+#[derive(Deserialize)]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+struct Hex {
+    data: String,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
 /// Desktop and iOS: not yet.

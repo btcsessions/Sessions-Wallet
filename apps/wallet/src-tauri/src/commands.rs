@@ -135,6 +135,23 @@ pub async fn lock(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
     Ok(())
 }
 
+/// A secret is on screen (`on`) or gone: block screenshots, screen
+/// recording and the app switcher's preview of it, and overlay taps.
+#[tauri::command]
+pub async fn set_secure_screen(app: AppHandle, on: bool) -> Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        let v = app.state::<tauri_plugin_biometric_vault::BiometricVault<tauri::Wry>>();
+        v.set_secure(on).await.map_err(|e| Error::Invalid(e.to_string()))?;
+    }
+    #[cfg(desktop)]
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_content_protected(on);
+    }
+    let _ = (&app, on);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn reveal_phrase(state: State<'_, AppState>, passcode: String) -> Result<String> {
     // Always re-check the passcode, even when unlocked.

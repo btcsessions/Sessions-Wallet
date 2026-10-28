@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Hide other apps' overlays while the wallet is in front (tapjacking). -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- BitBox02 over USB. Optional: phones without USB host still install. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
@@ -19,6 +21,7 @@
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
+            android:taskAffinity=""
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
             android:exported="true">

@@ -11,6 +11,7 @@ import android.security.keystore.KeyProperties
 import android.util.AtomicFile
 import android.util.Base64
 import android.util.Log
+import android.view.WindowManager
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
@@ -55,6 +56,30 @@ private const val MSG_INVALIDATED =
 @InvokeArg
 class EnableArgs {
     var passcode: String = ""
+}
+
+@InvokeArg
+class SecureArgs {
+    var on: Boolean = false
+}
+
+@InvokeArg
+class HexArgs {
+    var data: String = ""
+}
+
+/**
+ * The device key that binds the wallet vault to this phone: no biometric,
+ * never leaves the Keystore (StrongBox where there is one). Not under
+ * [KEY_PREFIX], so turning biometric unlock off never deletes it.
+ */
+private const val DEVICE_KEY = "io.btcsessions.wallet.vault-device"
+
+private fun toHex(b: ByteArray): String = b.joinToString("") { "%02x".format(it) }
+
+private fun fromHex(s: String): ByteArray {
+    require(s.length % 2 == 0)
+    return ByteArray(s.length / 2) { i -> s.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
 }
 
 /** Rejected with a code the Rust side maps (see `BiometricError::from_code`). */
@@ -394,6 +419,94 @@ class BiometricVaultPlugin(private val activity: Activity) : Plugin(activity) {
         ret.put("kind", kind)
         if (reason != null) ret.put("reason", reason)
         return ret
+    }
+
+    // ---- Secret screens ---------------------------------------------------
+
+    /**
+     * While a secret is on screen (recovery phrase, connection secrets,
+     * ecash): no screenshots, recordings or casting (FLAG_SECURE), and taps
+     * are ignored while another app draws over this one (tapjacking).
+     */
+    @Command
+    fun setSecure(invoke: Invoke) {
+        val args = invoke.parseArgs(SecureArgs::class.java)
+        main.post {
+            try {
+                val w = activity.window
+                if (args.on) w.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                else w.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                w.decorView.filterTouchesWhenObscured = args.on
+                invoke.resolve(JSObject())
+            } catch (e: Exception) {
+                invoke.reject(e.message ?: e.javaClass.simpleName, "OTHER")
+            }
+        }
+    }
+
+    // ---- Device key (vault binding) -------------------------------------
+
+    /** `{ data: hex }` → `{ data: hex(iv || ciphertext) }`. */
+    @Command
+    fun deviceWrap(invoke: Invoke) {
+        val args = invoke.parseArgs(HexArgs::class.java)
+        try {
+            val plain = fromHex(args.data)
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, deviceKey())
+            val out = cipher.iv + cipher.doFinal(plain)
+            Arrays.fill(plain, 0)
+            invoke.resolve(JSObject().put("data", toHex(out)))
+        } catch (e: Exception) {
+            Log.w(TAG, "device wrap failed: ${e.javaClass.simpleName}")
+            invoke.reject(e.message ?: e.javaClass.simpleName, "OTHER")
+        }
+    }
+
+    /** `{ data: hex(iv || ciphertext) }` → `{ data: hex }`. */
+    @Command
+    fun deviceUnwrap(invoke: Invoke) {
+        val args = invoke.parseArgs(HexArgs::class.java)
+        try {
+            val sealed = fromHex(args.data)
+            val key = keyStore().getKey(DEVICE_KEY, null) as? SecretKey
+                ?: throw KeyPermanentlyInvalidatedException("device key missing")
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, sealed, 0, 12))
+            val plain = cipher.doFinal(sealed, 12, sealed.size - 12)
+            invoke.resolve(JSObject().put("data", toHex(plain)))
+            Arrays.fill(plain, 0)
+        } catch (e: Exception) {
+            Log.w(TAG, "device unwrap failed: ${e.javaClass.simpleName}")
+            invoke.reject(e.message ?: e.javaClass.simpleName, "OTHER")
+        }
+    }
+
+    private fun deviceKey(): SecretKey {
+        (keyStore().getKey(DEVICE_KEY, null) as? SecretKey)?.let { return it }
+        fun spec(strongBox: Boolean): KeyGenParameterSpec {
+            val b = KeyGenParameterSpec.Builder(
+                DEVICE_KEY,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+            if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) b.setIsStrongBoxBacked(true)
+            return b.build()
+        }
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
+        return try {
+            val strongBox = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                activity.packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
+            generator.init(spec(strongBox))
+            generator.generateKey()
+        } catch (e: Exception) {
+            // StrongBox listed but unusable (some phones): the TEE instead.
+            Log.i(TAG, "StrongBox unavailable (${e.javaClass.simpleName}), using the TEE")
+            generator.init(spec(strongBox = false))
+            generator.generateKey()
+        }
     }
 
     // ---- Keys and storage -----------------------------------------------

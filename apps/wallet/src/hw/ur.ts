@@ -13,12 +13,18 @@ export interface UrProgress {
 }
 
 /** Collects the frames of a (possibly animated) UR. */
+/** More parts than any wallet export or PSBT needs (Sparrow tops out in the hundreds). */
+const MAX_UR_PARTS = 2000;
+
 export class UrCollector {
   private d = new URDecoder();
 
   /** Feed one scanned frame. Returns null for frames that aren't UR. */
   receive(part: string): UrProgress | null {
     if (!/^ur:/i.test(part.trim())) return null;
+    // A crafted code can claim millions of parts and stall the decoder.
+    const seq = /^ur:[^/]+\/(\d+)-(\d+)\//i.exec(part.trim());
+    if (seq && (Number(seq[2]) > MAX_UR_PARTS || seq[2].length > 6)) return null;
     this.d.receivePart(part.trim().toLowerCase());
     // A frame from a different code (or a decode error): start over.
     if (this.d.isError()) {

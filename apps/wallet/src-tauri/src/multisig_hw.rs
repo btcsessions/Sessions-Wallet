@@ -75,3 +75,61 @@ pub async fn trezor_multisig_address_request(
         trezor::multisig_address_request(&vault.config, vault.network, &fingerprint, index)?;
     Ok(TrezorAddressRequest { params, address })
 }
+
+// --- single-sig hardware accounts --------------------------------------------
+
+/// The external descriptor pair and network of single-sig hardware account `account`.
+async fn hardware(state: &AppState, account: &AccountId) -> Result<(rail_onchain::descriptors::DescriptorPair, sessions_core::Network)> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(sessions_core::Error::Locked)?;
+    match u.config.accounts.iter().find(|a| a.id() == account) {
+        Some(crate::config::AccountSpec::Hardware { descriptors, .. }) => Ok((descriptors.clone(), u.config.network)),
+        Some(_) => Err(sessions_core::Error::Unsupported("check addresses on a device for this account".into())),
+        None => Err(sessions_core::Error::AccountNotFound(account.0.clone())),
+    }
+}
+
+/// How far to look for an address (receive addresses handed out so far).
+const MAX_ADDRESS_INDEX: u32 = 10_000;
+
+/// Which receive index `address` is in hardware account `account`, so the
+/// device can be asked to show that exact address.
+#[tauri::command]
+pub async fn hardware_address_index(state: State<'_, AppState>, account: AccountId, address: String) -> Result<u32> {
+    let (pair, network) = hardware(&state, &account).await?;
+    let want = address.trim().trim_start_matches("bitcoin:").split('?').next().unwrap_or("").to_lowercase();
+    tokio::task::spawn_blocking(move || {
+        for i in 0..MAX_ADDRESS_INDEX {
+            if rail_onchain::descriptors::address_at(&pair, network, i)?.to_lowercase() == want {
+                return Ok(i);
+            }
+        }
+        Err(sessions_core::Error::Invalid("That address isn't one of this account's receive addresses".into()))
+    })
+    .await
+    .map_err(|e| sessions_core::Error::Invalid(e.to_string()))?
+}
+
+/// Trezor Connect `getAddress` parameters to show receive address `index` of
+/// single-sig hardware account `account`, and the address it must show.
+#[tauri::command]
+pub async fn trezor_address_request(state: State<'_, AppState>, account: AccountId, index: u32) -> Result<TrezorAddressRequest> {
+    let (pair, network) = hardware(&state, &account).await?;
+    let path = rail_onchain::bitbox::receive_path(&pair.external, index).map_err(|_| {
+        sessions_core::Error::Unsupported("show this account's addresses on a Trezor".into())
+    })?;
+    let address = rail_onchain::descriptors::address_at(&pair, network, index)?;
+    let path_str = format!(
+        "m/{}",
+        path.keypath
+            .iter()
+            .map(|c| if c & 0x8000_0000 != 0 { format!("{}'", c & 0x7fff_ffff) } else { c.to_string() })
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    let coin = if network == sessions_core::Network::Bitcoin { "btc" } else { "test" };
+    Ok(TrezorAddressRequest {
+        params: serde_json::json!({ "path": path_str, "coin": coin, "showOnTrezor": true }),
+        address,
+    })
+}

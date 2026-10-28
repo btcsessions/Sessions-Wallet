@@ -87,6 +87,9 @@ pub fn run() {
             app.manage(bitbox::BitBoxState::new(&dir));
             app.manage(jade::JadeState::new());
             let state = state::AppState::new(dir, Some(notify));
+            // Bind the wallet vault to this phone's Keystore.
+            #[cfg(target_os = "android")]
+            state.set_device_key(Arc::new(KeystoreKey(app.handle().clone())));
             // `backup://status` (BackupStatus) whenever it changes, and
             // `backup://restored` (RestoreResult) when the backup loop
             // restored a wallet's state on its own.
@@ -258,6 +261,9 @@ pub fn run() {
             group::group_list,
             group::group_accounts,
             group::group_delete,
+            multisig_hw::hardware_address_index,
+            multisig_hw::trezor_address_request,
+            commands::set_secure_screen,
             commands::sync_status,
             commands::sync_now,
             link::link_offer,
@@ -292,4 +298,27 @@ pub fn run() {
             #[cfg(desktop)]
             desktop::on_run_event(_app, &_event);
         });
+}
+
+/// The Android Keystore device key (through the biometric-vault plugin).
+#[cfg(target_os = "android")]
+struct KeystoreKey(tauri::AppHandle);
+
+#[cfg(target_os = "android")]
+#[async_trait::async_trait]
+impl state::DeviceKey for KeystoreKey {
+    async fn wrap(&self, secret: &[u8]) -> sessions_core::Result<Vec<u8>> {
+        let v = self.0.state::<tauri_plugin_biometric_vault::BiometricVault<tauri::Wry>>();
+        v.device_wrap(secret)
+            .await
+            .map_err(|e| sessions_core::Error::Crypto(e.to_string()))
+    }
+
+    async fn unwrap(&self, wrapped: &[u8]) -> sessions_core::Result<Vec<u8>> {
+        let v = self.0.state::<tauri_plugin_biometric_vault::BiometricVault<tauri::Wry>>();
+        v.device_unwrap(wrapped)
+            .await
+            .map(|z| z.to_vec())
+            .map_err(|e| sessions_core::Error::Crypto(e.to_string()))
+    }
 }

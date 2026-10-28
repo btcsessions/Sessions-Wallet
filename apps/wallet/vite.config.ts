@@ -22,6 +22,10 @@ export default defineConfig({
     watch: { ignored: ["**/src-tauri/**"] },
   },
   envPrefix: ["VITE_", "TAURI_ENV_*"],
+  define: {
+    // True in `tauri build` / `tauri dev`: the app never ships the mock API.
+    __APP_BUILD__: JSON.stringify(Boolean(process.env.TAURI_ENV_PLATFORM)),
+  },
   build: {
     target: "es2022",
     sourcemap: false,

@@ -71,7 +71,7 @@ export function BiometricSetting() {
             <input
               type="password"
               inputMode="numeric"
-              autoComplete="current-password"
+              autoComplete="off" data-1p-ignore data-lpignore="true"
               autoFocus
               value={passcode}
               onChange={(e) => setPasscode(e.target.value)}

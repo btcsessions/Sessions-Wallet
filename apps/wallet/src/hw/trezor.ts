@@ -219,6 +219,19 @@ export async function trezorMultisigSign(account: string, psbt: string, fingerpr
 }
 
 /**
+ * Show receive address `index` of single-sig hardware account `account` on
+ * the Trezor. Returns the address once the Trezor showed (and Connect
+ * checked) the one this wallet derives.
+ */
+export async function trezorShowAddress(account: string, index: number): Promise<string> {
+  const { params, address } = await vaultCommand<{ params: Record<string, unknown>; address: string }>("trezor_address_request", { account, index });
+  const tc = await connect();
+  const shown = unwrap(await tc.getAddress({ ...params, address, showOnTrezor: true }));
+  if (shown.address !== address) throw new Error("The Trezor showed a different address than this wallet. Don't use it");
+  return shown.address;
+}
+
+/**
  * Show receive address `index` of multisig vault `account` on the Trezor,
  * after the wallet worked out which address it must be. Returns the address
  * once the Trezor showed it.

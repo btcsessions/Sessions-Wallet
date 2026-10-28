@@ -41,6 +41,9 @@ android {
                 keyPassword = keystoreProperties["password"] as String
                 storeFile = file(keystoreProperties["storeFile"] as String)
                 storePassword = keystoreProperties["password"] as String
+                // v3 adds key-rotation lineage (a future signing key can take over).
+                enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }

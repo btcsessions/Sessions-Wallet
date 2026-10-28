@@ -3,7 +3,7 @@ import { api } from "../api";
 import type { SyncDirection, SyncStatus } from "../api/types";
 import { Icon } from "../components/Icon";
 import { ScanButton } from "../components/Scanner";
-import { Sheet, useBusy } from "../components/ui";
+import { Sheet, useBusy, useSecureScreen } from "../components/ui";
 import { errorText, relativeTime } from "../format";
 import { useWallet } from "../state/store";
 
@@ -122,6 +122,7 @@ function LinkDevice({ onDone }: { onDone: () => void }) {
   const [typed, setTyped] = useState("");
   const [passcode, setPasscode] = useState("");
   const [sent, setSent] = useState(false);
+  useSecureScreen(!!code && !sent);
   const [error, setError] = useState<string | null>(null);
   const [busy, run] = useBusy();
 
@@ -191,7 +192,7 @@ function LinkDevice({ onDone }: { onDone: () => void }) {
         <div className="group">
           <label className="cell">
             <span className="visually-hidden">Passcode</span>
-            <input type="password" inputMode="numeric" autoComplete="current-password" value={passcode} onChange={(e) => setPasscode(e.target.value)} placeholder="To send your wallet" />
+            <input type="password" inputMode="numeric" autoComplete="off" data-1p-ignore data-lpignore="true" value={passcode} onChange={(e) => setPasscode(e.target.value)} placeholder="To send your wallet" />
           </label>
         </div>
         <button className="btn primary block" style={{ marginBottom: 14 }} disabled={busy || passcode.length < 6} onClick={send}>

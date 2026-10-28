@@ -7,7 +7,10 @@
 //!   phrase still recovers every account.
 //!
 //! At rest the phrase is encrypted with XChaCha20-Poly1305 under a key
-//! stretched from the user's passcode with Argon2id.
+//! stretched from the user's passcode with Argon2id. Where the platform has
+//! a hardware key store (Android Keystore), the key also mixes in a random
+//! device secret that only that store can unwrap (vault version 2), so a
+//! copy of the vault file can't be brute-forced off the device.
 
 use std::str::FromStr;
 
@@ -118,6 +121,17 @@ pub struct Vault {
     pub nonce: Vec<u8>,
     #[serde(with = "hex_bytes")]
     pub ciphertext: Vec<u8>,
+    /// Version 2: the device secret, wrapped by the platform key store.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_hex_bytes")]
+    pub device: Option<Vec<u8>>,
+}
+
+/// A random secret held by the platform's key store, mixed into the vault key.
+pub struct DeviceSecret {
+    /// The secret itself (in memory only).
+    pub secret: Zeroizing<[u8; 32]>,
+    /// As the key store wrapped it: what's saved in the vault.
+    pub wrapped: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -140,12 +154,17 @@ impl Default for KdfParams {
 
 impl Vault {
     pub fn seal(seed: &Seed, passcode: &str, kdf: KdfParams) -> Result<Vault> {
+        Self::seal_with(seed, passcode, kdf, None)
+    }
+
+    /// Seal, mixing in `device` when the platform has a key store.
+    pub fn seal_with(seed: &Seed, passcode: &str, kdf: KdfParams, device: Option<&DeviceSecret>) -> Result<Vault> {
         let mut salt = vec![0u8; 16];
         let mut nonce = vec![0u8; 24];
         rand::rngs::OsRng.fill_bytes(&mut salt);
         rand::rngs::OsRng.fill_bytes(&mut nonce);
 
-        let key = derive_key(passcode, &salt, kdf)?;
+        let key = derive_key(passcode, &salt, kdf, device.map(|d| &*d.secret))?;
         let cipher = XChaCha20Poly1305::new_from_slice(&key[..])
             .map_err(|e| Error::Crypto(e.to_string()))?;
         let phrase = seed.phrase();
@@ -154,16 +173,26 @@ impl Vault {
             .map_err(|e| Error::Crypto(e.to_string()))?;
 
         Ok(Vault {
-            version: 1,
+            version: if device.is_some() { 2 } else { 1 },
             kdf,
             salt,
             nonce,
             ciphertext,
+            device: device.map(|d| d.wrapped.clone()),
         })
     }
 
     pub fn open(&self, passcode: &str) -> Result<Seed> {
-        let key = derive_key(passcode, &self.salt, self.kdf)?;
+        self.open_with(passcode, None)
+    }
+
+    /// Open; a version 2 vault needs its device secret (unwrapped by the
+    /// key store from [`Vault::device`]).
+    pub fn open_with(&self, passcode: &str, device: Option<&[u8; 32]>) -> Result<Seed> {
+        if self.device.is_some() && device.is_none() {
+            return Err(Error::Crypto("this wallet's device key isn't available".into()));
+        }
+        let key = derive_key(passcode, &self.salt, self.kdf, device)?;
         let cipher = XChaCha20Poly1305::new_from_slice(&key[..])
             .map_err(|e| Error::Crypto(e.to_string()))?;
         let plain = Zeroizing::new(
@@ -176,14 +205,46 @@ impl Vault {
     }
 }
 
-fn derive_key(passcode: &str, salt: &[u8], kdf: KdfParams) -> Result<Zeroizing<[u8; 32]>> {
+fn derive_key(passcode: &str, salt: &[u8], kdf: KdfParams, device: Option<&[u8; 32]>) -> Result<Zeroizing<[u8; 32]>> {
     let params = Params::new(kdf.m_cost_kib, kdf.t_cost, kdf.p_cost, Some(32))
         .map_err(|e| Error::Crypto(e.to_string()))?;
     let mut key = Zeroizing::new([0u8; 32]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(passcode.as_bytes(), salt, &mut key[..])
         .map_err(|e| Error::Crypto(e.to_string()))?;
+    let Some(device) = device else { return Ok(key) };
+    // HMAC-SHA256 keyed by the device secret over the stretched passcode.
+    let mut e = hmac::HmacEngine::<bitcoin::hashes::sha256::Hash>::new(&device[..]);
+    e.input(b"sessions-vault/v2");
+    e.input(&key[..]);
+    let mixed = hmac::Hmac::<bitcoin::hashes::sha256::Hash>::from_engine(e).to_byte_array();
+    key.copy_from_slice(&mixed);
     Ok(key)
+}
+
+/// A fresh device secret (the key store wraps it).
+pub fn new_device_secret() -> Zeroizing<[u8; 32]> {
+    let mut s = Zeroizing::new([0u8; 32]);
+    rand::rngs::OsRng.fill_bytes(&mut s[..]);
+    s
+}
+
+mod opt_hex_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(b) => super::hex_bytes::serialize(b, s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        match Option::<String>::deserialize(d)? {
+            None => Ok(None),
+            Some(s) => super::hex_bytes::deserialize(serde::de::value::StrDeserializer::<D::Error>::new(&s)).map(Some),
+        }
+    }
 }
 
 mod hex_bytes {
@@ -227,6 +288,25 @@ mod tests {
         let vault: Vault = serde_json::from_str(&json).unwrap();
         assert_eq!(vault.open("123456").unwrap().phrase().as_str(), ABANDON);
         assert!(matches!(vault.open("000000"), Err(Error::WrongPasscode)));
+    }
+
+    #[test]
+    fn device_bound_vault_needs_the_device_secret() {
+        let seed = Seed::from_phrase(ABANDON).unwrap();
+        let secret = new_device_secret();
+        let dev = DeviceSecret { secret: secret.clone(), wrapped: vec![1, 2, 3] };
+        let vault = Vault::seal_with(&seed, "123456", fast(), Some(&dev)).unwrap();
+        assert_eq!(vault.version, 2);
+        let vault: Vault = serde_json::from_str(&serde_json::to_string(&vault).unwrap()).unwrap();
+        assert_eq!(vault.device.as_deref(), Some(&[1u8, 2, 3][..]));
+        assert_eq!(vault.open_with("123456", Some(&secret)).unwrap().phrase().as_str(), ABANDON);
+        // Right passcode, no device secret (a copied file): nothing.
+        assert!(vault.open("123456").is_err());
+        assert!(vault.open_with("123456", Some(&[7u8; 32])).is_err());
+        // Old vaults still open.
+        let v1: Vault = serde_json::from_str(&serde_json::to_string(&Vault::seal(&seed, "123456", fast()).unwrap()).unwrap()).unwrap();
+        assert!(v1.device.is_none());
+        assert_eq!(v1.open("123456").unwrap().phrase().as_str(), ABANDON);
     }
 
     #[test]

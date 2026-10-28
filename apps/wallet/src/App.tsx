@@ -131,13 +131,13 @@ export function App() {
     return () => stop?.();
   }, []);
 
-  // Auto-lock after five minutes in the background.
+  // Auto-lock after a minute in the background.
   useEffect(() => {
     let hiddenAt = 0;
     const onVis = async () => {
       if (document.hidden) {
         hiddenAt = Date.now();
-      } else if (hiddenAt && Date.now() - hiddenAt > 5 * 60_000 && useWallet.getState().status === "unlocked") {
+      } else if (hiddenAt && Date.now() - hiddenAt > 60_000 && useWallet.getState().status === "unlocked") {
         await (await api()).lock();
         useWallet.setState({ status: "locked", sheet: null });
       }

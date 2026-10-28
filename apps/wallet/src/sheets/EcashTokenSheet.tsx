@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { AmountInput, CopyButton, QR, Sheet, useBusy } from "../components/ui";
+import { AmountInput, CopyButton, QR, Sheet, useBusy, useSecureScreen } from "../components/ui";
 import { useWallet } from "../state/store";
 
 /** Turn ecash into a token you can text, email or print. */
@@ -10,6 +10,7 @@ export function EcashTokenSheet({ account }: { account: string }) {
   const [amount, setAmount] = useState<number | null>(null);
   const [memo, setMemo] = useState("");
   const [token, setToken] = useState<string | null>(null);
+  useSecureScreen(!!token);
   const [busy, run] = useBusy();
 
   const create = () =>

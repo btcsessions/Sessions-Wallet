@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Icon } from "./components/Icon";
-import { CopyButton, QR, useBusy } from "./components/ui";
+import { CopyButton, QR, useBusy, useSecureScreen } from "./components/ui";
 import { errorText } from "./format";
 import { useWallet } from "./state/store";
 import { isBiometricError, type BiometricStatus, type LinkStatus } from "./api/types";
@@ -55,6 +55,7 @@ function Mark() {
 const BIO_LABEL: Record<BiometricStatus["kind"], string> = { fingerprint: "fingerprint", face: "face", biometric: "fingerprint or face" };
 
 export function Lock() {
+  useSecureScreen();
   const setStatus = useWallet((s) => s.setStatus);
   const [code, setCode] = useState("");
   const [shake, setShake] = useState(false);
@@ -146,6 +147,7 @@ function Choice({ title, body, badge, selected, onClick }: { title: string; body
 export function Onboarding() {
   const setStatus = useWallet((s) => s.setStatus);
   const [step, setStep] = useState<Step>("welcome");
+  useSecureScreen(["phrase", "restore", "passcode", "confirm", "link"].includes(step));
   const [mode, setMode] = useState<"create" | "restore" | "link">("create");
   const [restoreWith, setRestoreWith] = useState<"passkey" | "phrase">("passkey");
   const [advanced, setAdvanced] = useState(false);
@@ -434,6 +436,9 @@ export function Onboarding() {
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
               style={{ minHeight: 140, fontFamily: "inherit", fontSize: 17 }}
             />
           </label>

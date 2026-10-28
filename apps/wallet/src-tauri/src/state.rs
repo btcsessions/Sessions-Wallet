@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use serde::{Deserialize, Serialize};
 
 use rail_ecash::{EcashAccount, EcashConfig};
 use rail_liquid::{BoltzConfig, BoltzSwaps};
@@ -32,6 +32,10 @@ pub struct Paths {
 impl Paths {
     pub fn vault(&self) -> PathBuf {
         self.root.join("vault.json")
+    }
+    /// Wrong-passcode count and lockout, kept across restarts.
+    pub fn lockout(&self) -> PathBuf {
+        self.root.join("lockout.json")
     }
     pub fn config(&self) -> PathBuf {
         self.root.join("config.json")
@@ -86,6 +90,36 @@ impl Unlocked {
     }
 }
 
+/// A platform key store that wraps and unwraps small secrets with a key
+/// that never leaves the device (Android Keystore).
+#[async_trait::async_trait]
+pub trait DeviceKey: Send + Sync {
+    async fn wrap(&self, secret: &[u8]) -> Result<Vec<u8>>;
+    async fn unwrap(&self, wrapped: &[u8]) -> Result<Vec<u8>>;
+}
+
+/// Wrong passcodes so far and when the next try is allowed (Unix seconds).
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct Lockout {
+    failures: u32,
+    until: u64,
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn device_key_gone() -> Error {
+    Error::Invalid(
+        "This phone's security key for the wallet is gone (the phone was reset or its lock screen changed). \
+         Restore the wallet with your recovery phrase or passkey"
+            .into(),
+    )
+}
+
 pub struct AppState {
     pub paths: Paths,
     /// Called when an account reports a change (e.g. a payment arrived).
@@ -93,7 +127,9 @@ pub struct AppState {
     /// background monitor).
     notify: Option<Notify>,
     pub inner: Mutex<Option<Unlocked>>,
-    failures: Mutex<(u32, Option<Instant>)>,
+    /// Held while a passcode is checked (one guess at a time).
+    failures: Mutex<()>,
+    device_key: std::sync::OnceLock<Arc<dyn DeviceKey>>,
     /// The encrypted state backup on relays.
     pub backup: Arc<Backup>,
     /// Payment alerts (new payments → UI event + notification).
@@ -126,7 +162,8 @@ impl AppState {
             paths: Paths { root },
             notify,
             inner: Mutex::new(None),
-            failures: Mutex::new((0, None)),
+            failures: Mutex::new(()),
+            device_key: std::sync::OnceLock::new(),
             alerts: Arc::default(),
             screen_locked: std::sync::atomic::AtomicBool::new(false),
             nwc_saver: std::sync::OnceLock::new(),
@@ -154,6 +191,44 @@ impl AppState {
         self.paths.vault().exists()
     }
 
+    /// The platform key store that binds the vault to this device (Android
+    /// Keystore). Set once at startup; absent on desktop for now.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn set_device_key(&self, key: Arc<dyn DeviceKey>) {
+        let _ = self.device_key.set(key);
+    }
+
+    /// A new device secret for sealing, wrapped by the key store (`None`
+    /// where there's no key store).
+    async fn new_device_secret(&self) -> Result<Option<sessions_core::keystore::DeviceSecret>> {
+        let Some(k) = self.device_key.get().cloned() else { return Ok(None) };
+        let secret = sessions_core::keystore::new_device_secret();
+        let wrapped = k.wrap(&secret[..]).await?;
+        Ok(Some(sessions_core::keystore::DeviceSecret { secret, wrapped }))
+    }
+
+    /// The device secret a version 2 vault needs.
+    async fn device_secret_for(&self, vault: &Vault) -> Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+        let Some(wrapped) = &vault.device else { return Ok(None) };
+        let k = self.device_key.get().cloned().ok_or_else(device_key_gone)?;
+        let raw = zeroize::Zeroizing::new(k.unwrap(wrapped).await.map_err(|_| device_key_gone())?);
+        let secret: [u8; 32] = raw.as_slice().try_into().map_err(|_| device_key_gone())?;
+        Ok(Some(zeroize::Zeroizing::new(secret)))
+    }
+
+    fn read_lockout(&self) -> Lockout {
+        std::fs::read(self.paths.lockout())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    fn write_lockout(&self, l: &Lockout) {
+        if let Ok(b) = serde_json::to_vec(l) {
+            let _ = write_atomic(&self.paths.lockout(), &b);
+        }
+    }
+
     fn read_vault(&self) -> Result<Vault> {
         let bytes = std::fs::read(self.paths.vault()).map_err(|e| Error::Storage(e.to_string()))?;
         serde_json::from_slice(&bytes).map_err(|e| Error::Storage(e.to_string()))
@@ -161,37 +236,60 @@ impl AppState {
 
     /// Open the vault, slowing down repeated wrong guesses.
     pub async fn open_vault(&self, passcode: &str) -> Result<Seed> {
-        {
-            let f = self.failures.lock().await;
-            if let (_, Some(until)) = *f {
-                if Instant::now() < until {
-                    let wait_secs = until.saturating_duration_since(Instant::now()).as_secs() + 1;
-                    return Err(Error::TooManyAttempts { wait_secs });
-                }
-            }
+        // One guess at a time, and the count survives closing the app.
+        let _one = self.failures.lock().await;
+        let mut lock = self.read_lockout();
+        let now = unix_now();
+        if lock.until > now {
+            return Err(Error::TooManyAttempts { wait_secs: lock.until - now + 1 });
         }
         let vault = self.read_vault()?;
+        let device = self.device_secret_for(&vault).await?;
         // Argon2 is CPU-heavy; keep it off the async workers.
         let pass = zeroize::Zeroizing::new(passcode.to_string());
-        let res = tokio::task::spawn_blocking(move || vault.open(&pass))
+        let v = vault.clone();
+        let res = tokio::task::spawn_blocking(move || v.open_with(&pass, device.as_deref()))
             .await
             .map_err(|e| Error::Crypto(e.to_string()))?;
-        let mut f = self.failures.lock().await;
         match res {
             Ok(seed) => {
-                *f = (0, None);
+                if lock.failures > 0 {
+                    self.write_lockout(&Lockout::default());
+                }
+                // Older vaults: bind to this device's key store now.
+                if vault.device.is_none() {
+                    if let Err(e) = self.reseal(&seed, passcode).await {
+                        tracing::warn!("vault: couldn't bind to the device key store: {e}");
+                    }
+                }
                 Ok(seed)
             }
             Err(e) => {
-                f.0 += 1;
-                if f.0 >= 3 {
+                lock.failures += 1;
+                if lock.failures >= 3 {
                     // 2 s, 4 s, 8 s … capped at 15 minutes.
-                    let wait = Duration::from_secs((1u64 << (f.0 - 2).min(10)).min(900));
-                    f.1 = Some(Instant::now() + wait);
+                    lock.until = unix_now() + (1u64 << (lock.failures - 2).min(10)).min(900);
                 }
+                self.write_lockout(&lock);
                 Err(e)
             }
         }
+    }
+
+    /// Seal the vault again (same passcode), bound to the device key store.
+    async fn reseal(&self, seed: &Seed, passcode: &str) -> Result<()> {
+        let Some(device) = self.new_device_secret().await? else { return Ok(()) };
+        let pass = zeroize::Zeroizing::new(passcode.to_string());
+        let phrase = seed.phrase();
+        let vault = tokio::task::spawn_blocking(move || {
+            Vault::seal_with(&Seed::from_phrase(&phrase)?, &pass, KdfParams::default(), Some(&device))
+        })
+        .await
+        .map_err(|e| Error::Crypto(e.to_string()))??;
+        write_atomic(
+            &self.paths.vault(),
+            &serde_json::to_vec(&vault).map_err(|e| Error::Storage(e.to_string()))?,
+        )
     }
 
     /// A new phrase wallet (not yet confirmed written down).
@@ -217,8 +315,9 @@ impl AppState {
         }
         let pass = zeroize::Zeroizing::new(passcode.to_string());
         let phrase = seed.phrase();
+        let device = self.new_device_secret().await?;
         let vault = tokio::task::spawn_blocking(move || {
-            Vault::seal(&Seed::from_phrase(&phrase)?, &pass, KdfParams::default())
+            Vault::seal_with(&Seed::from_phrase(&phrase)?, &pass, KdfParams::default(), device.as_ref())
         })
         .await
         .map_err(|e| Error::Crypto(e.to_string()))??;
@@ -227,6 +326,7 @@ impl AppState {
         config.backup = flags;
         config.save(&self.paths.config())?;
         self.backup.reset(restored);
+        let _ = std::fs::remove_file(self.paths.lockout());
         write_atomic(
             &self.paths.vault(),
             &serde_json::to_vec(&vault).map_err(|e| Error::Storage(e.to_string()))?,
@@ -698,6 +798,63 @@ mod tests {
 
     const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
+    /// Stands in for the Android Keystore: XOR with a key only it holds.
+    struct FakeKeystore([u8; 32]);
+
+    #[async_trait::async_trait]
+    impl DeviceKey for FakeKeystore {
+        async fn wrap(&self, secret: &[u8]) -> Result<Vec<u8>> {
+            Ok(secret.iter().zip(self.0.iter().cycle()).map(|(a, b)| a ^ b).collect())
+        }
+        async fn unwrap(&self, wrapped: &[u8]) -> Result<Vec<u8>> {
+            self.wrap(wrapped).await
+        }
+    }
+
+    #[tokio::test]
+    async fn vault_is_bound_to_the_device_and_lockout_survives_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let ks = Arc::new(FakeKeystore([0x5a; 32]));
+        let a = AppState::new(dir.path().to_path_buf(), None);
+        a.set_device_key(ks.clone());
+        a.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();
+        let vault: Vault = serde_json::from_slice(&std::fs::read(a.paths.vault()).unwrap()).unwrap();
+        assert_eq!(vault.version, 2);
+        assert!(vault.device.is_some());
+        // The file alone (no key store) doesn't open, even with the passcode.
+        assert!(vault.open("123456").is_err());
+        assert_eq!(a.open_vault("123456").await.unwrap().phrase().as_str(), ABANDON);
+
+        // Wrong guesses count across a restart.
+        for _ in 0..3 {
+            assert!(a.open_vault("000000").await.is_err());
+        }
+        let b = AppState::new(dir.path().to_path_buf(), None);
+        b.set_device_key(ks.clone());
+        assert!(matches!(b.open_vault("123456").await, Err(Error::TooManyAttempts { .. })));
+
+        // Without the key store (another device), a clear message.
+        let c = AppState::new(dir.path().to_path_buf(), None);
+        std::fs::remove_file(c.paths.lockout()).unwrap();
+        let err = c.open_vault("123456").await.err().unwrap();
+        assert!(err.to_string().contains("security key"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn old_vaults_are_bound_on_the_next_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = AppState::new(dir.path().to_path_buf(), None);
+        a.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();
+        let v1: Vault = serde_json::from_slice(&std::fs::read(a.paths.vault()).unwrap()).unwrap();
+        assert_eq!(v1.version, 1);
+        let b = AppState::new(dir.path().to_path_buf(), None);
+        b.set_device_key(Arc::new(FakeKeystore([7; 32])));
+        b.open_vault("123456").await.unwrap();
+        let v2: Vault = serde_json::from_slice(&std::fs::read(b.paths.vault()).unwrap()).unwrap();
+        assert_eq!(v2.version, 2);
+        assert_eq!(b.open_vault("123456").await.unwrap().phrase().as_str(), ABANDON);
+    }
+
     #[tokio::test]
     async fn create_lock_unlock_and_rate_limit() {
         let dir = tempfile::tempdir().unwrap();
@@ -745,7 +902,7 @@ mod tests {
         ));
 
         // After the lockout the right passcode works and resets the counter.
-        tokio::time::sleep(Duration::from_millis(2100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
         let seed = state.open_vault("123456").await.unwrap();
         assert_eq!(seed.phrase().as_str(), ABANDON);
         state.unlock_with(seed).await.unwrap();

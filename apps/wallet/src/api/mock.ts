@@ -669,6 +669,9 @@ export const mockApi: WalletApi = {
     await sleep(1500);
     return psbt;
   },
+  async hardwareAddressIndex() {
+    return 0;
+  },
   async bitboxShowAddress() {
     mockBitbox({ kind: "status", state: "confirm" });
     await sleep(1200);
@@ -1118,6 +1121,7 @@ export const mockApi: WalletApi = {
     if (passcode.length < 6) throw "Wrong passcode";
     mockDevices = [...mockDevices.filter((d) => d.id !== "mac1"), { id: "mac1", name: "Mac", kind: "desktop", seenAt: Math.floor(Date.now() / 1000), thisDevice: false }];
   },
+  async setSecureScreen() {},
   async syncStatus() {
     return { devices: mockDevices, lastSyncAt: Math.floor(Date.now() / 1000) - 60 };
   },

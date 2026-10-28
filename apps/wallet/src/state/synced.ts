@@ -52,6 +52,8 @@ export interface Synced {
   contacts: Contact[];
   sweep: SweepRule[];
   checkins: CheckinPrefs;
+  /** Per hardware account: unix seconds a receive address was last confirmed on the device itself. */
+  verified: Record<string, number>;
 }
 
 export const SYNCED_DEFAULTS: Synced = {
@@ -59,6 +61,7 @@ export const SYNCED_DEFAULTS: Synced = {
   contacts: [],
   sweep: [],
   checkins: { everyDays: 90, lastAt: 0, devices: {} },
+  verified: {},
 };
 
 export type SyncedKey = keyof Synced;
