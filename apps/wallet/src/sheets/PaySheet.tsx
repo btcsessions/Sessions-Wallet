@@ -326,6 +326,12 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
             {formatSats(amount ?? 0)} <span className="balance-unit">sats</span>
           </div>
           <div className="balance-sub">to {to(request)}</div>
+          {(request.type === "bitcoinAddress" || request.type === "liquidAddress") && (
+            // The whole address, in groups of four, to check against where it came from.
+            <p className="mono" aria-label="Full address" style={{ margin: "10px auto 0", maxWidth: 300, fontSize: 14, lineHeight: 1.6, wordSpacing: 4, textAlign: "center", color: "var(--label-2)" }}>
+              {request.address.match(/.{1,4}/g)?.join(" ")}
+            </p>
+          )}
         </div>
 
         <div className="group">

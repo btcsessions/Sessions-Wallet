@@ -28,10 +28,13 @@ pub fn descriptor_hash(descriptor: &str) -> String {
     sha256::Hash::hash(descriptor.trim().as_bytes()).to_string()
 }
 
-/// Six digits from the hash, read aloud on a call to catch a swapped key.
+/// Sixteen digits from the hash (four groups of four), read aloud on a call
+/// to catch a swapped key. Long enough (~53 bits) that whoever submits the
+/// last key can't try keys until the code matches one they want.
 pub fn short_code(hash: &str) -> String {
-    let n = u32::from_str_radix(hash.get(..8).unwrap_or("0"), 16).unwrap_or(0) % 1_000_000;
-    format!("{:03} {:03}", n / 1000, n % 1000)
+    let n = u64::from_str_radix(hash.get(..16).unwrap_or("0"), 16).unwrap_or(0) % 10_000_000_000_000_000;
+    let d = format!("{n:016}");
+    format!("{} {} {} {}", &d[..4], &d[4..8], &d[8..12], &d[12..])
 }
 
 pub fn network_name(network: Network) -> &'static str {
@@ -371,7 +374,7 @@ mod tests {
         assert!(s.slots[0].confirmed && s.slots[1].confirmed && !s.slots[2].confirmed);
         msgs.push(msg(12, C, conf(&addr)));
         assert!(reduce(&msgs, "p1", Network::Bitcoin).unwrap().ready);
-        assert_eq!(short_code(&h).len(), 7);
+        assert_eq!(short_code(&h).len(), 19);
     }
 
     #[test]

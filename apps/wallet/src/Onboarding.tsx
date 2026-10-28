@@ -358,6 +358,11 @@ export function Onboarding() {
             body="Every tool: coin control, vaults, custom fees, your own server. Back up with a recovery phrase, a passkey, or both."
           />
         </div>
+        {!advanced && passkeys && (
+          <p className="group-note">
+            Your passkey is the key to this wallet. It lives in your password manager (Google or iCloud), so protect that account with two-step sign-in.
+          </p>
+        )}
         <p className="group-note">You can switch between Basic and Advanced any time in Settings.</p>
         <button className="btn primary block" onClick={() => setStep(advanced ? "backup" : "passcode")}>
           Continue
@@ -379,7 +384,7 @@ export function Onboarding() {
           <Choice title="Recovery phrase" selected={backup === "phrase"} onClick={() => setBackup("phrase")} body="12 words you write down on paper. Works with any bitcoin wallet, forever." />
           {passkeys !== false && (
             <>
-              <Choice title="Passkey" selected={backup === "passkey"} onClick={() => setBackup("passkey")} body="Saved by your password manager and synced to your other devices. Restore with your fingerprint or face." />
+              <Choice title="Passkey" selected={backup === "passkey"} onClick={() => setBackup("passkey")} body="Saved by your password manager and synced to your other devices. Restore with your fingerprint or face. Whoever controls that password manager account can restore it, so keep it locked down." />
               <Choice title="Both" badge="Most resilient" selected={backup === "both"} onClick={() => setBackup("both")} body="Write down the words, and also keep a passkey backup. Either one restores your wallet." />
             </>
           )}

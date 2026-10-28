@@ -6,7 +6,9 @@ import { SuccessCheck } from "../components/SuccessCheck";
 import { AmountInput, CopyButton, QR, Sheet } from "../components/ui";
 import { ScanButton, scanText } from "../components/Scanner";
 import { METHOD_LABEL, errorText, formatSats } from "../format";
+import { deviceFor } from "../hw/devices";
 import { useWallet } from "../state/store";
+import { Icon } from "../components/Icon";
 import { activeAccounts } from "../modules/AccountModule";
 
 /**
@@ -50,6 +52,8 @@ const EXPLAIN: Partial<Record<Method, string>> = {
 
 export function ReceiveSheet({ account: initial }: { account?: string }) {
   const { accounts, activity, open, notify, layout } = useWallet();
+  const verified = useWallet((s) => s.synced.verified);
+  const [skipVerify, setSkipVerify] = useState(false);
   const advanced = layout?.advanced ?? false;
   const [openedAt] = useState(() => Math.floor(Date.now() / 1000) - 5);
   const [lnAddress, setLnAddress] = useState<LightningAddress | null>(null);
@@ -293,6 +297,9 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
         </>
       ) : error ? (
         <p className="notice">{error}</p>
+      ) : target && account?.custody.type === "hardware" && method === "bitcoinAddress" && !verified[account.id] && !skipVerify ? (
+        // The first deposit to a hardware wallet waits until its device shows the same address.
+        <VerifyOnDevice account={account} request={target.request} first onSkip={() => setSkipVerify(true)} />
       ) : target ? (
         <>
           <div className="qr-wrap">
@@ -313,6 +320,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
               </button>
             )}
           </div>
+          {account?.custody.type === "hardware" && method === "bitcoinAddress" && <VerifyOnDevice account={account} request={target.request} />}
           {advanced && account?.rail === "onchain" && method === "bitcoinAddress" && <AddressLabel account={account.id} request={target.request} />}
           <p className="group-note" style={{ margin: "0 0 8px", textAlign: "center" }}>
             {swap
@@ -429,4 +437,103 @@ function AddressLabel({ account, request }: { account: string; request: string }
       </label>
     </div>
   );
+}
+
+/**
+ * Show this receive address on the hardware wallet itself and check it
+ * matches, so a swapped key or a compromised phone can't redirect deposits.
+ * `first`: nothing has been checked on this device yet, so the address
+ * stays hidden until it is (or they choose to skip).
+ */
+function VerifyOnDevice({ account, request, first = false, onSkip }: { account: AccountInfo; request: string; first?: boolean; onSkip?: () => void }) {
+  const { synced, setSynced } = useWallet();
+  const device = deviceFor(account.custody.type === "hardware" ? account.custody.device : undefined);
+  const address = request.replace(/^bitcoin:/i, "").split("?")[0];
+  const [state, setState] = useState<"idle" | "busy" | "ok">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const live = device.connect !== "qr";
+  const [expanded, setExpanded] = useState(false);
+
+  const done = () => {
+    setSynced("verified", { ...synced.verified, [account.id]: Math.floor(Date.now() / 1000) });
+    setState("ok");
+  };
+
+  const verify = async () => {
+    setError(null);
+    setState("busy");
+    try {
+      const a = await api();
+      const index = await a.hardwareAddressIndex(account.id, address);
+      let shown: string;
+      if (device.connect === "bitbox") shown = await a.bitboxShowAddress(account.id, index);
+      else if (device.connect === "jade") shown = await a.jadeShowAddress(account.id, index);
+      else shown = await (await import("../hw/trezor")).trezorShowAddress(account.id, index);
+      if (shown.toLowerCase() !== address.toLowerCase()) throw new Error("Your device showed a different address. Don't use this one");
+      done();
+    } catch (e) {
+      setState("idle");
+      setError(errorText(e));
+    }
+  };
+
+  if (!first && !expanded && state !== "ok") {
+    return (
+      <p style={{ textAlign: "center", margin: "0 0 14px" }}>
+        <button className="text-button" onClick={() => (setExpanded(true), live && void verify())}>
+          Check this address on your {device.name}
+        </button>
+      </p>
+    );
+  }
+
+  if (state === "ok" && !first) {
+    return (
+      <p className="group-note" style={{ textAlign: "center" }}>
+        <Icon name="check" size={14} /> Matches your {device.name}.
+      </p>
+    );
+  }
+
+  const body = (
+    <>
+      {first && (
+        <p className="notice">
+          Before the first deposit, check this address on your {device.name}. It proves the address belongs to your device and not to someone who tampered with this phone.
+        </p>
+      )}
+      {first && (
+        <p className="request-text" style={{ marginBottom: 12 }}>
+          {address}
+        </p>
+      )}
+      {live ? (
+        <button className={first ? "btn primary block" : "btn small"} disabled={state === "busy"} onClick={verify}>
+          {state === "busy" ? `Confirm on your ${device.name}…` : "Verify on device"}
+        </button>
+      ) : (
+        <>
+          <p className="group-note">
+            On your {device.name}, use its address check (scan this address, or look it up in the wallet's addresses) and make sure it's exactly the same.
+          </p>
+          <button className={first ? "btn primary block" : "btn small"} onClick={done}>
+            It matches my device
+          </button>
+        </>
+      )}
+      {error && (
+        <p className="field-error" role="alert" style={{ marginTop: 10 }}>
+          <Icon name="warn" size={14} /> {error}
+        </p>
+      )}
+      {first && onSkip && (
+        <p style={{ textAlign: "center", margin: "14px 0 0" }}>
+          <button className="text-button" onClick={onSkip}>
+            Show it without checking
+          </button>
+        </p>
+      )}
+    </>
+  );
+  return first ? body : <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, marginBottom: 14 }}>{body}</div>;
 }

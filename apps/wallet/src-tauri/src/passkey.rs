@@ -241,16 +241,50 @@ pub async fn restore_with_passkey(
 /// untouched; the old encrypted copy is no longer re-published. Not for
 /// passkey wallets, whose seed comes from the passkey itself.
 #[tauri::command]
-pub async fn disable_passkey_backup(state: State<'_, AppState>) -> Result<BackupStatus> {
-    {
-        let mut guard = state.inner.lock().await;
-        let u = guard.as_mut().ok_or(Error::Locked)?;
+pub async fn disable_passkey_backup(app: AppHandle, state: State<'_, AppState>) -> Result<BackupStatus> {
+    let credential = {
+        let guard = state.inner.lock().await;
+        let u = guard.as_ref().ok_or(Error::Locked)?;
         if u.config.backup.seed_origin == SeedOrigin::Passkey {
             return Err(Error::Invalid(
                 "This wallet was made with its passkey, so the passkey can't be removed. Show your recovery phrase and write it down if you want a second backup"
                     .into(),
             ));
         }
+        u.config.backup.credential_id.clone()
+    };
+    // Erase the sealed phrase from the relays, not just stop refreshing it:
+    // that takes the passkey (it signs for the envelope's address).
+    let got = sign_in(&app, credential.into_iter().collect()).await.map_err(err)?;
+    let keys = PasskeyKeys::from_prf(&got.prf)?;
+    let now = crate::backup::now_secs();
+    let me = keys.nostr.public_hex();
+    let blank = Event::sign(
+        &keys.nostr,
+        now,
+        sessions_backup::KIND_APP_DATA,
+        vec![vec!["d".into(), sessions_backup::ENVELOPE_D.into()]],
+        String::new(),
+    );
+    let delete = Event::sign(
+        &keys.nostr,
+        now,
+        5,
+        vec![vec![
+            "a".into(),
+            format!("{}:{me}:{}", sessions_backup::KIND_APP_DATA, sessions_backup::ENVELOPE_D),
+        ]],
+        "Passkey backup turned off".into(),
+    );
+    let (write, read) = state.backup.urls();
+    let mut urls = write;
+    urls.extend(read);
+    urls.sort();
+    urls.dedup();
+    let _ = state.backup.relays().publish(&urls, &[blank, delete]).await;
+    {
+        let mut guard = state.inner.lock().await;
+        let u = guard.as_mut().ok_or(Error::Locked)?;
         u.config.backup.passkey = false;
         u.config.backup.credential_id = None;
         state.save_config(&u.config)?;

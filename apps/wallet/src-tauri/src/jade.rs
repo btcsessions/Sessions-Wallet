@@ -85,18 +85,32 @@ fn http_request(message: &Value) -> Result<&Value> {
 }
 
 /// First clearnet URL; onion URLs need Tor, which this app doesn't run.
+/// Blockstream's PIN servers. The request (and so the URL) can come from a
+/// scanned QR, so nothing else is contacted.
+const PIN_SERVERS: &[&str] = &["j8d.io", "jadepin.blockstream.com"];
+
 fn pick_url(params: &Value) -> Result<String> {
-    params
+    let urls: Vec<&str> = params
         .get("urls")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .find(|u| !u.is_empty() && !u.contains(".onion"))
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            Error::Invalid("Jade didn't give a PIN server address this app can reach".into())
-        })
+        .collect();
+    let official = |u: &&str| {
+        u.strip_prefix("https://")
+            .and_then(|rest| rest.split(['/', ':']).next())
+            .is_some_and(|host| PIN_SERVERS.contains(&host.to_ascii_lowercase().as_str()))
+    };
+    if let Some(u) = urls.iter().find(|u| official(u)) {
+        return Ok(u.to_string());
+    }
+    Err(Error::Invalid(match urls.iter().find(|u| !u.contains(".onion")) {
+        Some(u) => format!(
+            "This Jade uses a PIN server other than Blockstream's ({u}). For safety the app only talks to Blockstream's PIN server"
+        ),
+        None => "Jade didn't give a PIN server address this app can reach".into(),
+    }))
 }
 
 /// Forward Jade's request to its PIN server. Returns `(on_reply, body)`.
@@ -1737,5 +1751,15 @@ mod tests {
     fn rejects_other_qr_codes() {
         assert!(http_request(&json!({ "id": "1", "result": true })).is_err());
         assert!(pick_url(&json!({ "urls": ["http://x.onion/get_pin"] })).is_err());
+    }
+
+    #[test]
+    fn only_blockstreams_pin_server() {
+        let ok = pick_url(&json!({ "urls": ["https://j8d.io/get_pin", "http://abc.onion/get_pin"] })).unwrap();
+        assert_eq!(ok, "https://j8d.io/get_pin");
+        assert!(pick_url(&json!({ "urls": ["https://jadepin.blockstream.com/get_pin"] })).is_ok());
+        for bad in ["https://evil.example/get_pin", "http://j8d.io/get_pin", "https://j8d.io.evil.com/get_pin", "https://evil.com/j8d.io"] {
+            assert!(pick_url(&json!({ "urls": [bad] })).is_err(), "{bad}");
+        }
     }
 }

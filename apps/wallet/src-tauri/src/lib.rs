@@ -7,6 +7,8 @@ mod commands;
 mod config;
 mod jade;
 mod link;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod scrub;
 #[cfg(target_os = "android")]
 mod logcat;
 mod monitor;

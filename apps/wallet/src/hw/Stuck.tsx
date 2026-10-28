@@ -17,7 +17,7 @@ export function DeviceStuck({ text, onStop }: { text: string; onStop: () => void
             try {
               const log = await (await api()).diagnosticLog();
               await navigator.clipboard.writeText(log || "(empty)");
-              notify("ok", "Diagnostic log copied. It has no keys or amounts.");
+              notify("ok", "Diagnostic log copied. Keys, addresses and amounts are left out.");
             } catch {
               notify("error", "Couldn't copy the log");
             }

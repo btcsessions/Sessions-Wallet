@@ -73,7 +73,8 @@ pub fn client(url: &str) -> Result<AsyncClient> {
         .pool_idle_timeout(Duration::from_secs(5))
         .pool_max_idle_per_host(2)
         .tcp_keepalive(Duration::from_secs(20))
-        .user_agent(concat!("SessionsWallet/", env!("CARGO_PKG_VERSION")))
+        // No version: one less detail to tell users apart by.
+        .user_agent("SessionsWallet")
         .dns_resolver(Arc::new(PreferIpv4))
         .build()
         .map_err(err)?;

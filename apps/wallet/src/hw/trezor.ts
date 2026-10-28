@@ -97,6 +97,23 @@ export type TrezorScript = "wpkh" | "tr";
 
 const PURPOSE: Record<TrezorScript, number> = { wpkh: 84, tr: 86 };
 
+/**
+ * The reply must be for the key that was asked for (the reply comes back
+ * through a link another app could also send). Receive addresses are also
+ * checked on the Trezor itself before the first deposit.
+ */
+function checkKey(r: { serializedPath?: string; path?: number[]; depth?: number; childNum?: number }, path: string) {
+  const want = path.replace(/h/g, "'");
+  const parts = want.slice(2).split("/");
+  const last = parts[parts.length - 1];
+  const index = (parseInt(last, 10) + (last.endsWith("'") ? 0x80000000 : 0)) >>> 0;
+  const bad =
+    (r.serializedPath !== undefined && r.serializedPath.replace(/h/g, "'") !== want) ||
+    (r.depth !== undefined && r.depth !== parts.length) ||
+    (r.childNum !== undefined && r.childNum >>> 0 !== index);
+  if (bad) throw new Error("Trezor Suite answered for a different key than the one asked for. Try again");
+}
+
 /** The account's descriptor, read from the device via Trezor Suite. */
 export async function trezorDescriptor(script: TrezorScript, testnet = false, account = 0): Promise<string> {
   const tc = await connect();
@@ -108,6 +125,7 @@ export async function trezorDescriptor(script: TrezorScript, testnet = false, ac
       scriptType: script === "tr" ? "SPENDTAPROOT" : "SPENDWITNESS",
     }),
   );
+  checkKey(r as Parameters<typeof checkKey>[0], path);
   if (r.descriptor) return r.descriptor;
   if (r.rootFingerprint === undefined) throw new Error("Trezor Suite didn't return the wallet fingerprint. Update Trezor Suite and try again.");
   const fp = (r.rootFingerprint >>> 0).toString(16).padStart(8, "0");
@@ -124,7 +142,9 @@ export async function trezorDescriptors(script: TrezorScript, accounts: number[]
       bundle: paths.map((path) => ({ path, coin: "btc", scriptType: script === "tr" ? "SPENDTAPROOT" : "SPENDWITNESS" })),
     }),
   ) as unknown as Array<{ descriptor?: string; xpub: string; rootFingerprint?: number }>;
+  if (rs.length !== paths.length) throw new Error("Trezor Suite answered for a different request. Try again");
   return rs.map((r, i) => {
+    checkKey(r as Parameters<typeof checkKey>[0], paths[i]);
     if (r.descriptor) return r.descriptor;
     if (r.rootFingerprint === undefined) throw new Error("Trezor Suite didn't return the wallet fingerprint. Update Trezor Suite and try again.");
     const fp = (r.rootFingerprint >>> 0).toString(16).padStart(8, "0");
@@ -173,6 +193,7 @@ async function multisigAccountKey(tc: Connect, account: number, testnet: boolean
       // returns `xpub` as a plain xpub/tpub.
     }),
   );
+  checkKey(key as Parameters<typeof checkKey>[0], path);
   return { key, path };
 }
 

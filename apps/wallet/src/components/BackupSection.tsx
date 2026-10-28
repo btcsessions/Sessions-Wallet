@@ -71,7 +71,7 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
         notify("ok", "New passkey saved. Test it to make sure it works.");
       } else {
         update(await a.disablePasskeyBackup());
-        notify("ok", "Passkey backup removed. Your recovery phrase still backs up this wallet.");
+        notify("ok", "Passkey backup removed, and its copy erased from the backup servers. Your recovery phrase still backs up this wallet.");
       }
     } catch (e) {
       if (!isBackupTestError(e, "cancelled") && !/cancel/i.test(errorText(e))) notify("error", errorText(e));

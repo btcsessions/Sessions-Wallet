@@ -451,11 +451,11 @@ function GroupVaultView({ initial }: { initial: GroupView }) {
         <>
           <p className="group-label">Check it</p>
           <div className="group">
-            <div className="cell">
-              <span className="grow">Vault check code</span>
-              <span className="value num" style={{ fontSize: 20 }}>
+            <div className="cell" style={{ display: "block" }}>
+              <span>Vault check code</span>
+              <p className="num" style={{ fontSize: 22, letterSpacing: 1, margin: "6px 0 0" }}>
                 {view.shortCode}
-              </span>
+              </p>
             </div>
             <div className="cell" style={{ display: "block" }}>
               <span>First receive address</span>

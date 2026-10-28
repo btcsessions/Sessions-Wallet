@@ -17,8 +17,8 @@ extern "C" {
     fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
 }
 
-/// The last lines logged, for "Copy diagnostic log" (no keys or amounts are
-/// ever logged).
+/// The last lines logged, for "Copy diagnostic log": keys are never logged,
+/// and payment details from SDK lines are taken out (see `scrub`).
 static RECENT: std::sync::Mutex<std::collections::VecDeque<String>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
 const RECENT_LINES: usize = 400;
@@ -95,7 +95,7 @@ impl Drop for Line {
             r.push_back(format!(
                 "{:>7.1}s {}",
                 started().elapsed().as_secs_f32(),
-                String::from_utf8_lossy(&bytes)
+                crate::scrub::scrub(&String::from_utf8_lossy(&bytes))
             ));
         }
         let (Ok(text), Ok(tag)) = (CString::new(bytes), CString::new("SessionsWallet")) else {

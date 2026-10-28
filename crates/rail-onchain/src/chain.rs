@@ -406,6 +406,14 @@ impl Backend {
     /// Fee estimates in sat/vB by confirmation target (blocks), in the shape
     /// Esplora's `fee-estimates` has (see [`esplora_client::convert_fee_rate`]).
     pub async fn fee_estimates(&self) -> std::result::Result<HashMap<u16, f64>, ChainError> {
+        // A server can say anything: never take more than this from it, so a
+        // dishonest one can't make every send overpay.
+        self.raw_fee_estimates()
+            .await
+            .map(|m| m.into_iter().map(|(t, r)| (t, r.min(MAX_SERVER_FEE_RATE))).collect())
+    }
+
+    async fn raw_fee_estimates(&self) -> std::result::Result<HashMap<u16, f64>, ChainError> {
         match self {
             Backend::Esplora { client, .. } => client
                 .get_fee_estimates()
@@ -439,6 +447,10 @@ impl Backend {
         }
     }
 }
+
+/// The most a chain server's fee estimate is believed (sat/vB). Past peaks
+/// stayed well under this; a custom fee can still go higher.
+pub const MAX_SERVER_FEE_RATE: f64 = 1_000.0;
 
 /// Targets asked for from Electrum (`blockchain.estimatefee`).
 pub const FEE_TARGETS: [u16; 6] = [1, 2, 3, 6, 12, 144];

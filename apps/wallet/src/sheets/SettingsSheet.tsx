@@ -134,9 +134,14 @@ export function SettingsSheet() {
         </label>
       </div>
       <p className="group-note">
-        Point at your own Electrum server (Umbrel, Start9), e.g. ssl://umbrel.local:50002 or tcp://192.168.1.10:50001, so no third party sees your addresses. Leave empty to use public servers, with automatic fallback.
+        Point at your own Electrum server (Umbrel, Start9), e.g. ssl://umbrel.local:50002, so no third party sees your addresses. Leave empty to use public servers, with automatic fallback.
         {settings?.chainServer ? ` Connected to ${settings.chainServer}.` : ""}
       </p>
+      {plaintext(electrum) || plaintext(server) ? (
+        <p className="field-error" role="alert" style={{ marginTop: -8, marginBottom: 14 }}>
+          <Icon name="warn" size={14} /> Not encrypted: anyone on the network between you and this server can see your addresses and balances. Use ssl:// (or https://) unless it's on a network you trust.
+        </p>
+      ) : null}
       <button
         className="btn block"
         style={{ marginBottom: 22 }}
@@ -299,4 +304,9 @@ function ThemePicker() {
       </div>
     </>
   );
+}
+
+/** tcp:// and http:// send everything in the clear. */
+function plaintext(url: string): boolean {
+  return /^(tcp|http):\/\//i.test(url.trim());
 }

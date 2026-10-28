@@ -19,8 +19,12 @@ if [[ ! -d "$SRC/.git" ]]; then
   git clone --filter=blob:none "$MDK_REPO" "$SRC"
 fi
 git -C "$SRC" fetch --quiet origin "$MDK_COMMIT" || true
+git -C "$SRC" checkout --quiet -- Cargo.lock 2>/dev/null || true
 git -C "$SRC" -c advice.detachedHead=false checkout --quiet "$MDK_COMMIT"
 [[ "$(git -C "$SRC" rev-parse HEAD)" == "$MDK_COMMIT" ]] || { echo "MDK checkout isn't at $MDK_COMMIT" >&2; exit 1; }
+
+# Security fixes the pinned lock predates: tokio (RUSTSEC-2026-0386) and lru.
+( cd "$SRC" && cargo update --quiet -p tokio --precise 1.54.1 && cargo update --quiet -p lru@0.18.0 )
 
 export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${NDK_HOME:-}}"
 rustup target add aarch64-linux-android --toolchain "$(sed -n 's/^channel = "\(.*\)"/\1/p' "$SRC/rust-toolchain.toml")"

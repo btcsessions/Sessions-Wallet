@@ -79,12 +79,15 @@ fn utxo(o: AddressOutput) -> Utxo {
 
 /// mempool.space's field names for Electrum's estimates.
 pub fn recommended(f: FeeRates) -> RecommendedFees {
+    // Deposit claims pay what the server recommends: cap it (see
+    // `rail_onchain::chain::MAX_SERVER_FEE_RATE`).
+    let cap = |r: u64| r.min(rail_onchain::chain::MAX_SERVER_FEE_RATE as u64);
     RecommendedFees {
-        fastest_fee: f.fastest,
-        half_hour_fee: f.half_hour,
-        hour_fee: f.hour,
-        economy_fee: f.economy,
-        minimum_fee: f.minimum,
+        fastest_fee: cap(f.fastest),
+        half_hour_fee: cap(f.half_hour),
+        hour_fee: cap(f.hour),
+        economy_fee: cap(f.economy),
+        minimum_fee: cap(f.minimum),
     }
 }
 
