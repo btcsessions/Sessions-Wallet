@@ -534,7 +534,9 @@ async fn private_send_and_receive_hop_through_ecash() {
         .unwrap();
     assert_eq!(p.amount_sat, 1_000);
     assert!(p.fund_sat >= 1_000 + FEE_RESERVE, "{}", p.fund_sat);
-    assert_eq!(p.invoice, fake_invoice(1_000, 77));
+    // The recipient's invoice (same payment hash; the timestamp may differ).
+    let hash = |i: &str| *i.parse::<cdk::lightning_invoice::Bolt11Invoice>().unwrap().payment_hash();
+    assert_eq!(hash(&p.invoice), hash(&fake_invoice(1_000, 77)));
     let paid = w.pay_private(p.clone()).await.unwrap();
     assert_eq!(paid.len(), 2);
     assert_eq!(paid[0].direction, Direction::Internal);
