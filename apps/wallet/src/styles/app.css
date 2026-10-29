@@ -3041,3 +3041,37 @@ button {
 .sheet:focus-visible {
   outline: none;
 }
+
+/* ───────── In-app confirm ───────── */
+.confirm-scrim {
+  z-index: 90;
+}
+.confirm {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 91;
+  width: min(340px, calc(100vw - 32px));
+  background: var(--card);
+  border-radius: 16px;
+  box-shadow: var(--shadow-sheet);
+  padding: 20px 18px 16px;
+  animation: fade 0.18s ease;
+}
+.confirm p {
+  margin: 0 0 18px;
+  font-size: 15px;
+  line-height: 1.45;
+}
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+}
+.confirm-actions .btn {
+  flex: 1;
+}
+.confirm-actions .btn.danger {
+  background: var(--red);
+  color: #fff;
+}

@@ -23,6 +23,7 @@ export type SheetName =
   | { name: "nwc" }
   | { name: "nostr-id" }
   | { name: "devices" }
+  | { name: "accounts" }
   | { name: "group-join"; code?: string }
   | { name: "group"; groupId?: string }
   | { name: "vault" }

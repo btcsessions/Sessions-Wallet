@@ -15,7 +15,7 @@ import { Icon } from "../components/Icon";
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
 
 export function SettingsSheet() {
-  const { currencies, setCurrencies, layout, setStatus, close, setSpendStyle, open } = useWallet();
+  const { currencies, setCurrencies, layout, setStatus, close, setSpendStyle, open, accounts } = useWallet();
   const contacts = useWallet((s) => s.synced.contacts);
   const [phrase, setPhrase] = useState<string | null>(null);
   const [backup, setBackup] = useState<BackupStatus | null>(null);
@@ -182,6 +182,11 @@ export function SettingsSheet() {
 
       <p className="group-label">Devices</p>
       <div className="group">
+        <button className="cell" onClick={() => open({ name: "accounts" })}>
+          <span className="grow">All accounts</span>
+          <span className="value">{accounts.length}</span>
+          <Icon name="chevron" size={16} />
+        </button>
         <button className="cell" onClick={() => open({ name: "devices" })}>
           <span className="grow">Linked devices</span>
           <span className="value">Phone and computer</span>

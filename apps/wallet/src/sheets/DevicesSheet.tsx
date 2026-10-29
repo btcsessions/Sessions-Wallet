@@ -6,6 +6,7 @@ import { ScanButton } from "../components/Scanner";
 import { Sheet, useBusy, useSecureScreen } from "../components/ui";
 import { errorText, relativeTime } from "../format";
 import { useWallet } from "../state/store";
+import { confirmDialog } from "../components/Confirm";
 
 /** Settings › Linked devices: the phones and computers on this wallet, linking another, and resync. */
 export function DevicesSheet() {
@@ -34,7 +35,7 @@ export function DevicesSheet() {
           : direction === "takeTheirs"
             ? "Replace this device's setup with the latest from your other device? Accounts, labels and settings here are replaced. Your home screen stays as it is."
             : null;
-      if (ask && !window.confirm(ask)) return;
+      if (ask && !(await confirmDialog(ask, { ok: direction === "sendMine" ? "Use this setup" : "Replace" }))) return;
       setError(null);
       try {
         setStatus(await (await api()).syncNow(direction));

@@ -15,6 +15,7 @@ import { SpendingDeposits } from "../components/SpendingDeposits";
 import { SweepSetting } from "../components/Sweep";
 import { VaultPanel } from "./VaultPanel";
 import { useWallet } from "../state/store";
+import { confirmDialog } from "../components/Confirm";
 
 export function AccountSheet({ id }: { id: string }) {
   const { accounts, activity, unit, price, currency, open, refresh, notify, close } = useWallet();
@@ -28,7 +29,8 @@ export function AccountSheet({ id }: { id: string }) {
 
   const remove = () =>
     run(async () => {
-      if (!window.confirm(`Remove ${a.name}? It's empty. Its keys come from your recovery phrase, so you can add it back any time.`)) return;
+      const again = a.custody.type === "hot" ? "Its keys come from your recovery phrase, so you can add it back any time." : "You can add it back any time.";
+      if (!(await confirmDialog(`Remove ${a.name}? It's empty. ${again}`, { ok: "Remove", danger: true }))) return;
       await (await api()).removeAccount(a.id);
       await refresh();
       notify("ok", `Removed ${a.name}`);

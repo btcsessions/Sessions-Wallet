@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { ConfirmHost } from "./components/Confirm";
 import { api } from "./api";
 import { DesktopShell, useDesktopLayout } from "./Desktop";
 import { Home } from "./Home";
@@ -13,6 +14,7 @@ import { MoveSheet } from "./sheets/MoveSheet";
 import { PaySheet } from "./sheets/PaySheet";
 import { ReceiveSheet } from "./sheets/ReceiveSheet";
 import { SettingsSheet } from "./sheets/SettingsSheet";
+import { AccountsSheet } from "./sheets/AccountsSheet";
 import { TxSheet } from "./sheets/TxSheet";
 import { CoinsSheet } from "./sheets/CoinsSheet";
 import { DiscoverSheet } from "./sheets/DiscoverSheet";
@@ -69,6 +71,8 @@ function ActiveSheet() {
       return <NostrIdSheet />;
     case "devices":
       return <DevicesSheet />;
+    case "accounts":
+      return <AccountsSheet />;
     case "checkin":
       return <CheckinSheet />;
     case "contacts":
@@ -160,6 +164,7 @@ export function App() {
         </>
       )}
       <Toast />
+      <ConfirmHost />
     </>
   );
 }

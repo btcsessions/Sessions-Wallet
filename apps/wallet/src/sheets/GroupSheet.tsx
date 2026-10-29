@@ -6,6 +6,7 @@ import { CopyButton, QR, Sheet, useBusy } from "../components/ui";
 import { errorText } from "../format";
 import { KeyPicker } from "../hw/KeyPicker";
 import { useWallet } from "../state/store";
+import { confirmDialog } from "../components/Confirm";
 import { QuorumPicker } from "./VaultSheet";
 
 const short = (npub: string) => `${npub.slice(0, 10)}…${npub.slice(-4)}`;
@@ -512,7 +513,7 @@ function DeleteGroup({ groupId, name, creator }: { groupId: string; name: string
       const what = creator
         ? `Delete ${name}? Everyone is taken out of it and its invite code stops working. No funds are involved: it isn't set up yet.`
         : `Leave ${name}? It's removed from this phone. No funds are involved: it isn't set up yet.`;
-      if (!window.confirm(what)) return;
+      if (!(await confirmDialog(what, { ok: creator ? "Delete" : "Leave", danger: true }))) return;
       setError(null);
       try {
         await (await api()).groupDelete(groupId);
