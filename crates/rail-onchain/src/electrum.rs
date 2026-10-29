@@ -196,24 +196,29 @@ impl ServerUrl {
     }
 }
 
+/// A private, loopback, link-local or CGNAT (Tailscale) address.
+pub fn is_local_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// On your own network: a `.local`/`.lan`/`.home` name, a bare name,
 /// localhost, or a private, loopback, link-local or CGNAT (Tailscale) address.
 pub fn is_local_host(host: &str) -> bool {
     let h = host.trim_end_matches('.').to_ascii_lowercase();
     if let Ok(ip) = h.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_private()
-                    || v4.is_loopback()
-                    || v4.is_link_local()
-                    || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
-            }
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback()
-                    || (v6.segments()[0] & 0xfe00) == 0xfc00
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-            }
-        };
+        return is_local_ip(ip);
     }
     h == "localhost"
         || !h.contains('.')
@@ -403,32 +408,70 @@ fn tcp_connect(server: &ServerUrl, timeout: Duration) -> std::io::Result<TcpStre
         }
         return Ok(s);
     }
+    let mdns_name = server.host.ends_with(".local");
+    let mdns = || -> Vec<SocketAddr> {
+        crate::mdns::resolve(&server.host, Duration::from_millis(1500))
+            .into_iter()
+            .map(|ip| SocketAddr::from((ip, server.port)))
+            .collect()
+    };
     let mut addrs: Vec<SocketAddr> = match (server.host.as_str(), server.port).to_socket_addrs() {
         Ok(a) => a.collect(),
-        Err(e) if server.host.ends_with(".local") => {
+        Err(e) if mdns_name => {
             // The system can't find .local names here: ask on the network.
-            let found = crate::mdns::resolve(&server.host, Duration::from_secs(2));
+            let found = mdns();
             if found.is_empty() {
                 return Err(e);
             }
             found
-                .into_iter()
-                .map(|ip| SocketAddr::from((ip, server.port)))
-                .collect()
         }
         Err(e) => return Err(e),
     };
+    if mdns_name {
+        // A .local name only lives on your own network. Some resolvers send
+        // it to the ISP's DNS, which answers with an address on the
+        // internet (a "search help" page): never use those.
+        addrs.retain(|a| is_local_ip(a.ip()));
+        if addrs.is_empty() {
+            addrs = mdns();
+        }
+        if addrs.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("couldn't look up {} on this network", server.host),
+            ));
+        }
+    }
     ipv4_first(&mut addrs);
+    let mut tried: Vec<SocketAddr> = Vec::new();
     let mut last = timed_out("couldn't connect in time");
-    for addr in addrs {
-        let budget = left();
-        if budget.is_zero() {
-            break;
+    let mut asked_mdns = false;
+    loop {
+        for addr in addrs.iter().filter(|a| !tried.contains(a)).copied().collect::<Vec<_>>() {
+            let budget = left();
+            if budget.is_zero() {
+                break;
+            }
+            tried.push(addr);
+            // Leave time for the other addresses on your own network.
+            let budget = if mdns_name { budget.min(Duration::from_secs(3)) } else { budget };
+            match TcpStream::connect_timeout(&addr, budget) {
+                Ok(s) => return Ok(s),
+                Err(e) => {
+                    last = std::io::Error::new(e.kind(), format!("{e} (connecting to {addr})"));
+                }
+            }
         }
-        match TcpStream::connect_timeout(&addr, budget) {
-            Ok(s) => return Ok(s),
-            Err(e) => last = e,
+        // The system's answer didn't work: ask the network directly.
+        if mdns_name && !asked_mdns && !left().is_zero() {
+            asked_mdns = true;
+            let more: Vec<SocketAddr> = mdns().into_iter().filter(|a| !tried.contains(a)).collect();
+            if !more.is_empty() {
+                addrs = more;
+                continue;
+            }
         }
+        break;
     }
     Err(last)
 }
@@ -484,7 +527,7 @@ pub fn explain(server: &ServerUrl, e: &EError) -> String {
     let port = server.port;
     let text = e.to_string();
     let lower = text.to_ascii_lowercase();
-    if lower.contains("lookup") || lower.contains("resolve") || lower.contains("name or service") || lower.contains("nodename") {
+    if lower.contains("lookup") || lower.contains("look up") || lower.contains("resolve") || lower.contains("name or service") || lower.contains("nodename") {
         if host.ends_with(".local") {
             format!("Couldn't find {host} on this network. Check the name and that you're on the same Wi-Fi, or use its IP address (like 192.168.1.20).")
         } else {
@@ -499,7 +542,7 @@ pub fn explain(server: &ServerUrl, e: &EError) -> String {
     } else if lower.contains("refused") {
         format!("{host} is there, but nothing answered on port {port}. Check the port, and that its Electrum server app (Electrs or Fulcrum) is running.")
     } else if lower.contains("timed out") || lower.contains("timeout") || lower.contains("would block") {
-        format!("No answer from {host}:{port}. Check you're on the same network (or VPN) as your node.")
+        format!("No answer from {host}:{port} ({text}). Check you're on the same network (or VPN) as your node, or try its IP address.")
     } else if lower.contains("tls") || lower.contains("certificate") || lower.contains("handshake") || lower.contains("corrupt message") {
         if server.tls {
             format!("{host}:{port} didn't accept an encrypted (SSL) connection: {text}")

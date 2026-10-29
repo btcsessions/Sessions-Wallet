@@ -4,6 +4,7 @@ import type { ChainStatus, ConnectionTest, Settings } from "../api/types";
 import { errorText, formatSats } from "../format";
 import { useWallet } from "../state/store";
 import { Icon } from "./Icon";
+import { confirmDialog } from "./Confirm";
 
 /** On your own network (no need to warn about an unencrypted link). */
 export function isLocalHost(url: string): boolean {
@@ -127,6 +128,15 @@ export function NodeConnection() {
     }
   };
 
+  const forget = async () => {
+    const what = hostOf(displayUrl(settings?.electrumUrl ?? settings?.esploraUrl ?? "")) || "your node";
+    if (!(await confirmDialog(`Forget ${what}? The wallet goes back to the public servers, on all your linked devices.`, { ok: "Forget", danger: true }))) return;
+    setElectrum("");
+    setEsplora("");
+    setTest(null);
+    await save({ electrum: null, esplora: null });
+  };
+
   const plain = test?.ok && !test.encrypted && !isLocalHost(electrum);
 
   return (
@@ -143,9 +153,12 @@ export function NodeConnection() {
             {status?.connected && status.height ? <div className="row-sub num">Block {formatSats(status.height)}</div> : null}
             {status && !status.connected && status.error ? <div className="row-sub">{status.error}</div> : null}
           </span>
-          <button className="text-button" onClick={() => void refreshChainStatus()}>
-            Check
-          </button>
+          <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+            <button className="text-button" onClick={() => void refreshChainStatus()}>
+              Check
+            </button>
+
+          </span>
         </div>
       </div>
 
@@ -154,6 +167,7 @@ export function NodeConnection() {
         <label className="cell">
           <span className="visually-hidden">Electrum server address</span>
           <input
+            style={{ flex: 1 }}
             value={electrum}
             onChange={(e) => (setElectrum(e.target.value), setTest(null))}
             placeholder="umbrel.local:50001"
@@ -163,6 +177,11 @@ export function NodeConnection() {
             spellCheck={false}
             className="mono"
           />
+          {electrum && (
+            <button className="icon-button" aria-label="Clear" onClick={(e) => (e.preventDefault(), setElectrum(""), setTest(null))}>
+              <Icon name="close" size={16} />
+            </button>
+          )}
         </label>
       </div>
       <p className="group-note" style={{ marginTop: -8 }}>
@@ -199,8 +218,8 @@ export function NodeConnection() {
         </p>
       )}
       {custom && (
-        <button className="btn block" style={{ marginBottom: 10 }} disabled={saving} onClick={() => (setElectrum(""), setEsplora(""), setTest(null), void save({ electrum: null, esplora: null }))}>
-          Use the default servers
+        <button className="btn block" style={{ marginBottom: 10, color: "var(--red)" }} disabled={saving} onClick={() => void forget()}>
+          Forget {hostOf(displayUrl(settings?.electrumUrl ?? settings?.esploraUrl ?? "")) || "my node"}
         </button>
       )}
       <p className="group-note" style={{ marginTop: 6 }}>
