@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod jade;
 mod link;
+mod private;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod scrub;
 #[cfg(target_os = "android")]
@@ -140,6 +141,8 @@ pub fn run() {
                     if let Some(w) = wallet {
                         w.tick_swaps().await;
                     }
+                    // Private receives waiting at the mint: move them on.
+                    private::tick(&handle).await;
                     // Incoming payjoins: every 30 s, for accounts that opted in.
                     if round.is_multiple_of(3) {
                         for account in state.payjoin_receivers().await {
@@ -268,6 +271,9 @@ pub fn run() {
             commands::set_secure_screen,
             commands::sync_status,
             commands::sync_now,
+            private::private_pay_prepare,
+            private::private_pay,
+            private::private_receive,
             link::link_offer,
             link::link_poll,
             link::link_finish,

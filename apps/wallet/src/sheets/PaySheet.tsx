@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { AccountInfo, Execution, FeePriority, Leg, PaymentRequest, Plan, Prepared, SpendStyle } from "../api/types";
+import type { AccountInfo, Execution, FeePriority, Leg, PaymentRequest, Plan, Prepared, PrivateQuote, SpendStyle } from "../api/types";
+import { MintPicker, SpeedSwitch, privateCapable, usePrivateHub, type Speed } from "../components/PrivateLightning";
 import { Icon } from "../components/Icon";
 import { ScanButton, scanText } from "../components/Scanner";
 import { AmountInput, FeePicker, HoldButton, QuoteNotes, Sheet, SpendStyleSwitch, feeEta, useBusy, useFeeRates } from "../components/ui";
@@ -87,6 +88,17 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
   const [planError, setPlanError] = useState<string | null>(null);
   const [paused, setPaused] = useState<Execution | null>(null);
   const [busy, run] = useBusy();
+  const layout = useWallet((s) => s.layout);
+  const payers = useMemo(() => activeAccounts(accounts, layout).filter((a) => a.pays.length > 0 || a.id === initialFrom), [accounts, layout, initialFrom]);
+
+  // Private Lightning (Advanced): Spending pays through the ecash mint.
+  const [speed, setSpeed] = useState<Speed>("fast");
+  const hub = usePrivateHub();
+  const privatePayer = from ? accounts.find((a) => a.id === from && a.rail === "spark") : payers.find((a) => a.rail === "spark");
+  const canPrivate = advanced && !all && privateCapable(request) && !!privatePayer;
+  const isPrivate = canPrivate && speed === "private";
+  const [privateQuote, setPrivateQuote] = useState<PrivateQuote | null>(null);
+  const [privateRound, setPrivateRound] = useState(0);
 
   // Parse as the user types/pastes.
   useEffect(() => {
@@ -107,7 +119,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
 
   // Re-plan and re-price whenever the inputs on the review screen change.
   useEffect(() => {
-    if (step !== "review" || !amount) return;
+    if (step !== "review" || !amount || isPrivate) return;
     let alive = true;
     setPrepared(null);
     setPlanError(null);
@@ -145,7 +157,22 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
     return () => {
       alive = false;
     };
-  }, [step, input, amount, from, fee, style, coins, coinMode, labelSent]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [step, input, amount, from, fee, style, coins, coinMode, labelSent, isPrivate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Private: price the hop through the mint instead.
+  useEffect(() => {
+    if (step !== "review" || !amount || !isPrivate || !hub || !privatePayer) return;
+    let alive = true;
+    setPrivateQuote(null);
+    setPlanError(null);
+    api()
+      .then((a) => a.privatePayPrepare(input, amount, privatePayer.id, hub.id))
+      .then((q) => alive && setPrivateQuote(q))
+      .catch((e) => alive && setPlanError(errorText(e)));
+    return () => {
+      alive = false;
+    };
+  }, [step, input, amount, isPrivate, hub?.id, privatePayer?.id, privateRound]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sending everything: shrink the amount until amount + fees is exactly the balance.
   useEffect(() => {
@@ -182,8 +209,6 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
     setPrivateBlocked(null);
   }, [from]);
 
-  const layout = useWallet((s) => s.layout);
-  const payers = useMemo(() => activeAccounts(accounts, layout).filter((a) => a.pays.length > 0 || a.id === initialFrom), [accounts, layout, initialFrom]);
   const isToken = request?.type === "cashuToken";
   const contact = request?.type === "lightningAddress" ? findContact(contacts, request.address) : undefined;
   const to = (r: PaymentRequest) => (contact ? `${contact.label} (${describe(r)})` : describe(r));
@@ -219,6 +244,21 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
       } else {
         setStep("done");
       }
+    });
+
+  const sendPrivate = () =>
+    run(async () => {
+      if (!privateQuote) return;
+      try {
+        await (await api()).privatePay(privateQuote.id);
+      } catch (e) {
+        // A quote is single use: price it again before another try.
+        setPrivateRound((n) => n + 1);
+        await refresh();
+        throw e;
+      }
+      await refresh();
+      setStep("done");
     });
 
   const redeem = () =>
@@ -352,6 +392,12 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         </div>
         {all && <p className="group-note" style={{ margin: "-12px 16px 16px" }}>Sending everything. Fees are taken from the amount.</p>}
 
+        {canPrivate && <SpeedSwitch value={speed} onChange={setSpeed} />}
+
+        {isPrivate ? (
+          <PrivateReview amount={amount ?? 0} payer={privatePayer!} quote={privateQuote} error={planError} busy={busy} onSend={sendPrivate} />
+        ) : (
+          <>
         {planError ? (
           <p className="notice">{planError}</p>
         ) : plan ? (
@@ -362,7 +408,7 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
 
         {showFees && <FeePicker value={fee} onChange={setFee} rates={rates} />}
 
-        {advanced && plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} unavailable={privateBlocked} />}
+        {advanced && plan && onchainAccountLeg(plan, accounts) && <SpendStyleSwitch value={style} onChange={setStyle} unavailable={privateBlocked} payjoin={!!prepared?.quote.payjoin} />}
 
         {advanced && from && plan && onchainAccountLeg(plan, accounts) && (
           <>
@@ -445,6 +491,8 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         <HoldButton disabled={!prepared || busy} onConfirm={send}>
           {busy ? "Sending…" : prepared?.quote.needsSignature ? "Hold to prepare for signing" : "Hold to send"}
         </HoldButton>
+          </>
+        )}
       </Sheet>
     );
   }
@@ -524,5 +572,48 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
         </button>
       )}
     </Sheet>
+  );
+}
+
+/** Review for a private Lightning payment: route through the mint, the most it can cost, send. */
+function PrivateReview({ amount, payer, quote, error, busy, onSend }: { amount: number; payer: AccountInfo; quote: PrivateQuote | null; error: string | null; busy: boolean; onSend: () => void }) {
+  const hub = usePrivateHub();
+  const { price, currency } = useWallet();
+  if (!hub) return <MintPicker />;
+  const total = quote ? amount + quote.maxFeeSat : null;
+  return (
+    <>
+      <div className="group">
+        <div className="cell">
+          <span className="grow">
+            Route
+            <div className="row-sub">
+              {payer.name} → {hub.name} → recipient
+            </div>
+          </span>
+        </div>
+        {quote && (
+          <>
+            <div className="cell">
+              <span className="grow">Fee</span>
+              <span className="value num">Up to {formatSats(quote.maxFeeSat)} sats</span>
+            </div>
+            <div className="cell">
+              <span className="grow" style={{ fontWeight: 600 }}>
+                Total
+              </span>
+              <span className="num" style={{ fontWeight: 600, textAlign: "right" }}>
+                Up to {formatSats(total!)} sats
+                <div className="row-sub">{formatFiat(total!, price, currency)}</div>
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+      {error ? <p className="notice">{error}</p> : !quote ? <p className="empty">Pricing the private route…</p> : <p className="group-note">Any fee the mint doesn't use stays in {hub.name}.</p>}
+      <HoldButton disabled={!quote || busy} onConfirm={onSend}>
+        {busy ? "Sending privately…" : "Hold to send privately"}
+      </HoldButton>
+    </>
   );
 }

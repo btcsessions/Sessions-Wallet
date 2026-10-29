@@ -264,10 +264,13 @@ export function SpendStyleSwitch({
   value,
   onChange,
   unavailable,
+  payjoin = false,
 }: {
   value: "efficient" | "private";
   onChange: (v: "efficient" | "private") => void;
   unavailable?: string | null;
+  /** The recipient offers payjoin, so Private uses it. */
+  payjoin?: boolean;
 }) {
   const [why, setWhy] = useState(false);
   return (
@@ -303,8 +306,10 @@ export function SpendStyleSwitch({
       <p className="group-note" style={{ margin: "0 16px 18px" }} role={unavailable && why ? "status" : undefined}>
         {unavailable && why
           ? `Private isn't available for this payment. ${unavailable.replace(/\.?$/, ".")}`
-          : value === "private"
-            ? "Looks like a two-person coinjoin, so observers can't tell which output is the payment. Uses more coins and costs about 2–3× the fee."
+          : value === "private" && payjoin
+            ? "Using payjoin: the recipient adds a coin of theirs, so observers can't tell what you paid. About the usual fee."
+            : value === "private"
+            ? "Using a coinjoin-style layout: looks like a two-person coinjoin, so observers can't tell which output is the payment. Uses more coins and costs about 2–3× the fee."
             : "Fewest coins and the lowest fee."}
       </p>
     </>

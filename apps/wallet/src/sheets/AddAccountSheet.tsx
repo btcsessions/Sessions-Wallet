@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { MINTS as SUGGESTED_MINTS } from "../state/mints";
 import { api } from "../api";
 import type { NewAccount } from "../api/types";
 import { Icon } from "../components/Icon";
@@ -11,13 +12,7 @@ import { errorText } from "../format";
 type Kind = "multisig" | "hardware" | "watchOnly" | "ecash" | "savings";
 
 /** Popular mints, checked live. Minibits is the default. */
-const MINTS = [
-  { value: "https://mint.minibits.cash/Bitcoin", label: "Minibits" },
-  { value: "https://mint.coinos.io", label: "Coinos" },
-  { value: "https://mint.macadamia.cash", label: "macadamia" },
-  { value: "https://mint.cubabitcoin.org", label: "Cuba Bitcoin" },
-  { value: "custom", label: "Other mint…" },
-];
+const MINTS = [...SUGGESTED_MINTS, { value: "custom", label: "Other mint…" }];
 
 const TITLES: Record<Kind, string> = {
   multisig: "New vault",

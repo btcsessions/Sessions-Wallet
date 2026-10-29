@@ -1629,7 +1629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quote_only_offers_payjoin_for_efficient_hot_sends() {
+    async fn quote_only_offers_payjoin_for_hot_sends() {
         let dir = tempfile::tempdir().unwrap();
         let a = open(dir.path(), "a", Some(ABANDON), false);
         fund(&a, 100_000, 3).await;
@@ -1644,6 +1644,21 @@ mod tests {
         max.send_max = true;
         let q = a.prepare_send(max).await.unwrap();
         assert!(!q.payjoin && !q.handle.contains('\n'));
+    }
+
+    #[tokio::test]
+    async fn private_uses_payjoin_when_the_recipient_offers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = open(dir.path(), "a", Some(ABANDON), false);
+        fund(&a, 100_000, 3).await;
+        let dest = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        let mut req = pay(dest, 40_000, Some(V1_URI.into()));
+        req.style = sessions_core::SpendStyle::Private;
+        let q = a.prepare_send(req).await.unwrap();
+        assert!(q.payjoin && q.private);
+        // A plain payment + change (the receiver rebuilds it), no decoy.
+        let (psbt, _) = OnchainAccount::decode_handle(&q.handle).unwrap();
+        assert_eq!(psbt.unsigned_tx.output.len(), 2);
     }
 
     #[tokio::test]

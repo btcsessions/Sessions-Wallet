@@ -427,3 +427,144 @@ async fn rejects_bad_config() {
         .unwrap();
     assert_eq!(acct.mint_url(), "https://mint.example.com");
 }
+
+// ---------- private Lightning through an ecash hub ----------
+
+/// Stands in for Spending: pays invoices by paying the fake mint's quotes,
+/// hands out fake invoices, resolves "addresses" to fake invoices.
+struct FakeSpending {
+    id: AccountId,
+    mint: Arc<FakeMint>,
+    tag: std::sync::atomic::AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl Rail for FakeSpending {
+    fn id(&self) -> &AccountId {
+        &self.id
+    }
+    fn kind(&self) -> RailKind {
+        RailKind::Spark
+    }
+    async fn info(&self) -> Result<AccountInfo> {
+        Ok(AccountInfo {
+            id: self.id.clone(),
+            name: "Spending".into(),
+            rail: RailKind::Spark,
+            custody: Custody::Hot,
+            balance: Balance::default(),
+            receives: vec![Method::Bolt11],
+            pays: vec![Method::Bolt11],
+            group: None,
+            account_index: None,
+            scanning: false,
+            scan_error: None,
+            scan_status: None,
+        })
+    }
+    async fn sync(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn receive(&self, req: ReceiveRequest) -> Result<ReceiveTarget> {
+        let n = self.tag.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ReceiveTarget {
+            method: Method::Bolt11,
+            request: fake_invoice(req.amount_sat.unwrap(), 1000 + n),
+            amount_sat: req.amount_sat,
+            fee_sat: None,
+            expires_at: None,
+            watch_id: None,
+        })
+    }
+    async fn invoice_for(&self, _r: &PaymentRequest, amount: Sats) -> Result<String> {
+        Ok(fake_invoice(amount, 77))
+    }
+    async fn prepare_send(&self, req: SendRequest) -> Result<SendQuote> {
+        let PaymentRequest::Bolt11 { invoice } = req.destination else { panic!("bolt11") };
+        Ok(SendQuote {
+            account: self.id.clone(),
+            method: Method::Bolt11,
+            amount_sat: req.amount_sat.unwrap(),
+            fee_sat: 1,
+            handle: invoice,
+            needs_signature: None,
+            private: false,
+            payjoin: false,
+            notes: vec![],
+        })
+    }
+    async fn send(&self, quote: SendQuote, _: Option<String>) -> Result<Payment> {
+        assert!(self.mint.pay_invoice(&quote.handle), "paid an invoice that isn't the mint's");
+        Ok(Payment {
+            id: "p1".into(),
+            account: self.id.clone(),
+            direction: Direction::Outgoing,
+            amount_sat: quote.amount_sat,
+            fee_sat: 1,
+            status: PaymentStatus::Complete,
+            method: Method::Bolt11,
+            timestamp: 0,
+            description: None,
+            token: None,
+        })
+    }
+    async fn payments(&self, _: usize) -> Result<Vec<Payment>> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn private_send_and_receive_hop_through_ecash() {
+    let dir = TempDir::new("private");
+    let mint = Arc::new(FakeMint::new(3));
+    let hub = Arc::new(open(&dir, "hub", MINT, PHRASE_A, &mint).await);
+    let spending = Arc::new(FakeSpending {
+        id: AccountId::from("spending"),
+        mint: mint.clone(),
+        tag: Default::default(),
+    });
+    let w = sessions_core::Wallet::new();
+    w.add_account(hub.clone()).await;
+    w.add_account(spending.clone()).await;
+
+    // --- send 1,000 sats to "alice@example.com", privately
+    let p = w
+        .prepare_private_pay("alice@example.com", Some(1_000), &"spending".into(), &"hub".into())
+        .await
+        .unwrap();
+    assert_eq!(p.amount_sat, 1_000);
+    assert!(p.fund_sat >= 1_000 + FEE_RESERVE, "{}", p.fund_sat);
+    assert_eq!(p.invoice, fake_invoice(1_000, 77));
+    let paid = w.pay_private(p.clone()).await.unwrap();
+    assert_eq!(paid.len(), 2);
+    assert_eq!(paid[0].direction, Direction::Internal);
+    // The mint paid the recipient's invoice, not ours.
+    assert!(mint.paid_invoices.lock().unwrap().contains(&p.invoice));
+    // Unused reserve and margin stay in the hub as change.
+    let left = hub.info().await.unwrap().balance.confirmed;
+    assert_eq!(left, p.fund_sat - 1_000 - FEE_PAID);
+
+    // --- receive 5,000 privately into Spending
+    let target = hub
+        .receive(ReceiveRequest { method: Method::Bolt11, amount_sat: Some(5_000), description: None })
+        .await
+        .unwrap();
+    let quote = target.watch_id.unwrap();
+    // Not paid yet: nothing to forward.
+    assert!(w
+        .forward_private_receive(&"hub".into(), &quote, &"spending".into(), 5_000)
+        .await
+        .unwrap()
+        .is_none());
+    mint.pay_mint_quote(&quote);
+    let fwd = w
+        .forward_private_receive(&"hub".into(), &quote, &"spending".into(), 5_000)
+        .await
+        .unwrap()
+        .expect("forwarded");
+    assert_eq!(fwd.direction, Direction::Internal);
+    assert!(fwd.amount_sat >= 5_000 - 60 && fwd.amount_sat < 5_000, "{}", fwd.amount_sat);
+    // Most of it moved on; only fee change is left behind.
+    let after = hub.info().await.unwrap().balance.confirmed;
+    assert!(after < left + 60, "{after}");
+}

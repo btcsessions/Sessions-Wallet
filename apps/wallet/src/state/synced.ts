@@ -54,6 +54,8 @@ export interface Synced {
   checkins: CheckinPrefs;
   /** Per hardware account: unix seconds a receive address was last confirmed on the device itself. */
   verified: Record<string, number>;
+  /** Private Lightning: the ecash account payments hop through. */
+  privacy: { hub: string | null };
 }
 
 export const SYNCED_DEFAULTS: Synced = {
@@ -62,6 +64,7 @@ export const SYNCED_DEFAULTS: Synced = {
   sweep: [],
   checkins: { everyDays: 90, lastAt: 0, devices: {} },
   verified: {},
+  privacy: { hub: null },
 };
 
 export type SyncedKey = keyof Synced;

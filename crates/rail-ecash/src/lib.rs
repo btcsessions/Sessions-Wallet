@@ -396,6 +396,30 @@ impl sessions_core::Rail for EcashAccount {
         Ok(())
     }
 
+    /// Has the mint quote `watch_id` been paid? Mints its ecash if so (and
+    /// it wasn't already). True once the ecash is in this account.
+    async fn check_incoming(&self, watch_id: &str) -> Result<bool> {
+        let q = self.wallet.check_mint_quote_status(watch_id).await.map_err(rail_err)?;
+        if q.amount_issued > Amount::ZERO {
+            return Ok(true);
+        }
+        if q.amount_paid == Amount::ZERO && q.state != cdk::nuts::MintQuoteState::Paid {
+            return Ok(false);
+        }
+        match self.wallet.mint(watch_id, Default::default(), None).await {
+            Ok(_) => Ok(true),
+            // Minted meanwhile (the regular sync got there first).
+            Err(e) => {
+                let q = self.wallet.check_mint_quote_status(watch_id).await.map_err(rail_err)?;
+                if q.amount_issued > Amount::ZERO {
+                    Ok(true)
+                } else {
+                    Err(rail_err(e))
+                }
+            }
+        }
+    }
+
     async fn receive(&self, req: ReceiveRequest) -> Result<ReceiveTarget> {
         if req.method != Method::Bolt11 {
             return Err(Error::Unsupported(format!(

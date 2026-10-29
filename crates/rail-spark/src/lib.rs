@@ -586,6 +586,35 @@ impl Rail for SparkAccount {
         Ok(target)
     }
 
+    async fn invoice_for(&self, request: &sessions_core::PaymentRequest, amount_sat: Sats) -> Result<String> {
+        if let Some(inv) = request.options().into_iter().find_map(|o| match o {
+            sessions_core::PaymentRequest::Bolt11 { invoice } => Some(invoice),
+            _ => None,
+        }) {
+            return Ok(inv);
+        }
+        let (_, input) = map::destination(request)?;
+        let pay_request = match self.sdk.parse(&input).await.map_err(rail_err)? {
+            InputType::LightningAddress(d) => d.pay_request,
+            InputType::LnurlPay(p) => p,
+            _ => return Err(Error::Unsupported("pay this privately (needs a Lightning invoice, address or LNURL)".into())),
+        };
+        let response = self
+            .sdk
+            .prepare_lnurl_pay(PrepareLnurlPayRequest {
+                amount: u128::from(amount_sat),
+                pay_request,
+                comment: None,
+                validate_success_action_url: None,
+                token_identifier: None,
+                conversion_options: None,
+                fee_policy: Some(FeePolicy::FeesExcluded),
+            })
+            .await
+            .map_err(rail_err)?;
+        Ok(response.invoice_details.invoice.bolt11)
+    }
+
     async fn prepare_send(&self, req: SendRequest) -> Result<SendQuote> {
         let (method, input) = map::destination(&req.destination)?;
         let parsed = self.sdk.parse(&input).await.map_err(rail_err)?;

@@ -673,9 +673,17 @@ impl Rail for OnchainAccount {
             }
         };
 
+        // Payjoin (sender): hot wallets only, and not when sending
+        // everything (the receiver adds to the transaction).
+        let payjoin = payjoin_uri.is_some()
+            && matches!(self.custody, Custody::Hot)
+            && !req.send_max;
         let private = req.style == SpendStyle::Private;
+        // Private: payjoin when the recipient offers it, else the
+        // coinjoin-style layout (payjoin's receiver rebuilds it anyway).
+        let decoy = private && !payjoin;
         let mut notes = Vec::new();
-        let psbt = if private {
+        let psbt = if decoy {
             if req.send_max {
                 return Err(Error::Invalid("Private mode can't send the whole balance, since the decoy needs a matching amount. Use Efficient".into()));
             }
@@ -820,13 +828,9 @@ impl Rail for OnchainAccount {
             pending.remember(psbt.unsigned_tx.compute_txid(), note);
         }
 
-        // Payjoin (sender): hot wallets only, and not combined with private
-        // mode, since the receiver rebuilds the transaction anyway.
-        let payjoin = payjoin_uri.is_some()
-            && matches!(self.custody, Custody::Hot)
-            && !private
-            && !req.send_max;
-        if payjoin {
+        if payjoin && private {
+            notes.push("Private: a payjoin with the recipient, so the coins in it don't all look like yours. If they don't answer, it goes as a normal payment.".into());
+        } else if payjoin {
             notes.push("The recipient supports payjoin. The wallet will try it first and send this transaction if they don't respond.".into());
         }
 

@@ -41,6 +41,14 @@ pub trait Rail: Send + Sync {
         Err(crate::Error::Unsupported("redeem tokens".into()))
     }
 
+    /// A BOLT11 invoice for `amount_sat` that pays `request` (a Lightning
+    /// address or LNURL-pay resolved through this account's Lightning
+    /// stack; a BOLT11 invoice is returned as it is). Lets another account
+    /// that only pays invoices (ecash) pay the same recipient.
+    async fn invoice_for(&self, _request: &PaymentRequest, _amount_sat: Sats) -> Result<String> {
+        Err(crate::Error::Unsupported("look up invoices".into()))
+    }
+
     /// Mint a bearer token for `amount_sat` (e.g. a Cashu token to give away).
     async fn create_token(&self, _amount_sat: Sats, _memo: Option<String>) -> Result<Payment> {
         Err(crate::Error::Unsupported("create tokens".into()))

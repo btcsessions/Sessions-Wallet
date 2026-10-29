@@ -334,6 +334,7 @@ function find(id: string) {
 }
 
 let linkStarted = 0;
+let mockPrivate: import("./types").PrivateQuote | null = null;
 let mockDevices: import("./types").LinkedDevice[] = [{ id: "me", name: "Android phone", kind: "phone", seenAt: Math.floor(Date.now() / 1000), thisDevice: true }];
 
 export const mockApi: WalletApi = {
@@ -1128,6 +1129,36 @@ export const mockApi: WalletApi = {
   async syncNow() {
     await sleep(800);
     return { devices: mockDevices, lastSyncAt: Math.floor(Date.now() / 1000) };
+  },
+  async privatePayPrepare(input, amountSat, from, hub) {
+    await sleep(700);
+    const amount = amountSat ?? (input.startsWith("lnbc") ? 21000 : null);
+    if (!amount) throw "Enter an amount";
+    find(hub);
+    const maxFeeSat = Math.max(Math.ceil(amount / 100), 2) + Math.max(Math.ceil(amount / 200), 2) + 3;
+    const have = find(from).balance.confirmed;
+    if (have < amount + maxFeeSat) throw `Not enough funds: need ${(amount + maxFeeSat).toLocaleString()} sats, have ${have.toLocaleString()} sats`;
+    mockPrivate = { id: `pp${Date.now()}`, amountSat: amount, maxFeeSat, from, hub };
+    return mockPrivate;
+  },
+  async privatePay(id) {
+    await sleep(2200);
+    const q = mockPrivate;
+    if (!q || q.id !== id) throw "That payment expired. Review it again";
+    mockPrivate = null;
+    const fee = Math.ceil(q.maxFeeSat / 2);
+    find(q.from).balance.confirmed -= q.amountSat + q.maxFeeSat;
+    find(q.hub).balance.confirmed += q.maxFeeSat - fee;
+    const pay = p(`x${Date.now()}`, q.from, "outgoing", q.amountSat, fee, "bolt11", now(), "Paid privately", "complete");
+    activity.unshift(pay);
+    return [pay];
+  },
+  async privateReceive(into, hub, amountSat) {
+    await sleep(400);
+    find(into);
+    find(hub);
+    lastReceive = { account: into, method: "bolt11", amountSat };
+    return { method: "bolt11", request: "lnbc210u1pjprivatexamplepp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq", amountSat, feeSat: Math.max(Math.ceil(amountSat / 100), 2) + 2, expiresAt: now() + 3600 };
   },
   async groupDelete(groupId) {
     await sleep(300);

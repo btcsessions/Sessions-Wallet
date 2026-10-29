@@ -80,6 +80,15 @@ export interface Plan {
   amountSat: number;
 }
 
+export interface PrivateQuote {
+  id: string;
+  amountSat: number;
+  /** The most it can cost; unused mint fee reserve stays in ecash. */
+  maxFeeSat: number;
+  from: string;
+  hub: string;
+}
+
 export interface ReceiveTarget {
   method: Method;
   request: string;

@@ -10,6 +10,7 @@ import { deviceFor } from "../hw/devices";
 import { useWallet } from "../state/store";
 import { Icon } from "../components/Icon";
 import { activeAccounts } from "../modules/AccountModule";
+import { MintPicker, SpeedSwitch, usePrivateHub, type Speed } from "../components/PrivateLightning";
 
 /**
  * Methods to offer for an account, best first. Spark addresses only work
@@ -76,6 +77,12 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [quote, setQuote] = useState<ReceiveQuote | null>(null);
   const swap = viaSwap(account, method);
+  // Private (Advanced): the payer pays the ecash mint; the sats move on to this account.
+  const [speed, setSpeed] = useState<Speed>("fast");
+  const hub = usePrivateHub();
+  const canPrivate = advanced && method === "bolt11" && !!account && account.rail !== "ecash";
+  const isPrivate = canPrivate && speed === "private";
+  const hubId = isPrivate ? hub?.id : undefined;
   const amountStep = !ready && (NEEDS_AMOUNT.includes(method) || swap);
 
   // A claimed Lightning address is the simplest thing to share, so lead with it.
@@ -130,7 +137,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     (p) =>
       p.direction === "incoming" &&
       p.timestamp >= openedAt &&
-      (p.account === accountId || (swap && ready && p.account === spendingId && (!amount || p.amountSat === amount))),
+      (p.account === accountId || (swap && ready && p.account === spendingId && (!amount || p.amountSat === amount)) || (!!hubId && ready && p.account === hubId)),
   );
 
   // The moment the wallet sees it (pushed from the Rust side: Lightning
@@ -144,7 +151,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     void api()
       .then((a) =>
         a.onPayment((e) => {
-          const ours = e.account === account.id || (swap && ready && e.account === spendingId && (!amount || e.amountSat === amount));
+          const ours = e.account === account.id || (swap && ready && e.account === spendingId && (!amount || e.amountSat === amount)) || (!!hubId && ready && e.account === hubId);
           if (!ours) return;
           setArrival((prev) => (prev && prev.id !== e.id && prev.kind !== "incoming" && prev.kind !== "deposit" ? prev : e));
           void useWallet.getState().refresh();
@@ -155,7 +162,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       alive = false;
       off?.();
     };
-  }, [target, account?.id, swap, spendingId, ready, amount]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [target, account?.id, swap, spendingId, ready, amount, hubId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Ask the live connection to watch this address the moment it's on screen.
   useEffect(() => {
@@ -175,7 +182,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     let busy = false;
     let tick = 0;
     const address = target.method === "bitcoinAddress" && !swap && target.watchId ? target.watchId : null;
-    const watched = swap && spendingId ? [account.id, spendingId] : [account.id];
+    const watched = hubId ? [account.id, hubId] : swap && spendingId ? [account.id, spendingId] : [account.id];
     const t = setInterval(async () => {
       if (busy) return;
       busy = true;
@@ -202,7 +209,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       alive = false;
       clearInterval(t);
     };
-  }, [target, account?.id, swap, spendingId, received, arrival]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [target, account?.id, swap, spendingId, received, arrival, hubId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setError(null);
@@ -214,17 +221,21 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       setTarget(lnAddress ? { method, request: lnAddress.address, amountSat: null } : null);
       return;
     }
+    if (isPrivate && !hubId) {
+      setTarget(null);
+      return;
+    }
     let alive = true;
     setTarget(null);
     api()
-      .then((a) => a.receive(account.id, method, amount, null))
+      .then((a) => (hubId && amount ? a.privateReceive(account.id, hubId, amount, null) : a.receive(account.id, method, amount, null)))
       .then((t) => alive && setTarget(t))
       .catch((e) => alive && setError(errorText(e)));
     return () => {
       alive = false;
     };
     // Keyed on the account id, not the object: refreshes must not replace an invoice on screen.
-  }, [account?.id, method, ready, lnAddress]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [account?.id, method, ready, lnAddress, isPrivate, hubId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (arrival || received) {
     const amountSat = arrival?.amountSat ?? received!.amountSat;
@@ -233,7 +244,9 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     const pending = kind === "incoming" || kind === "deposit";
     const where = accounts.find((a) => a.id === landedIn)?.name ?? account?.name;
     const note =
-      landedIn !== account?.id
+      hubId && landedIn === hubId
+        ? `Received privately. Moving it to ${account?.name} now.`
+        : landedIn !== account?.id
         ? `Sending on-chain to ${account?.name} now.`
         : kind === "deposit"
           ? `Seen on the network. It's added to ${where} after it confirms (about 30 minutes).`
@@ -280,7 +293,11 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
         </div>
       )}
 
-      {amountStep ? (
+      {canPrivate && <SpeedSwitch value={speed} onChange={setSpeed} receive />}
+
+      {isPrivate && !hub ? (
+        <MintPicker />
+      ) : amountStep ? (
         <>
           <AmountInput value={amount} onChange={setAmount} autoFocus />
           {swap ? (
@@ -323,12 +340,14 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
           {account?.custody.type === "hardware" && method === "bitcoinAddress" && <VerifyOnDevice account={account} request={target.request} />}
           {advanced && account?.rail === "onchain" && method === "bitcoinAddress" && <AddressLabel account={account.id} request={target.request} />}
           <p className="group-note" style={{ margin: "0 0 8px", textAlign: "center" }}>
-            {swap
+            {hubId
+              ? `Paid to your ecash mint (${hub?.name}), then moved to ${account?.name} automatically, less a few sats of fees. If the wallet is closed, it moves the next time you open it.`
+              : swap
               ? `Paid over Lightning into Spending, then sent on-chain to ${account?.name} automatically. If the wallet is closed, it's sent the next time you open it.`
               : method === "bitcoinAddress" && isSpark
                 ? "Send from any bitcoin wallet. It lands in Spending after 3 confirmations, ready to spend over Lightning."
                 : EXPLAIN[method]}
-            {target.feeSat ? ` Swap fee about ${formatSats(target.feeSat)} sats.` : ""}
+            {target.feeSat ? ` ${hubId ? "Fees" : "Swap fee"} about ${formatSats(target.feeSat)} sats.` : ""}
           </p>
           {isSpark && !lnAddress && (
             <p style={{ textAlign: "center", margin: "12px 0 0" }}>

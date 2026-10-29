@@ -106,6 +106,18 @@ impl FakeMint {
         q.state = MintQuoteState::Paid;
     }
 
+    /// Simulate someone paying a mint quote's invoice, found by the invoice.
+    pub fn pay_invoice(&self, invoice: &str) -> bool {
+        let mut st = self.state.lock().unwrap();
+        match st.mint_quotes.values_mut().find(|q| q.request == invoice) {
+            Some(q) => {
+                q.state = MintQuoteState::Paid;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn next_id(st: &mut State_, prefix: &str) -> String {
         st.counter += 1;
         format!("{prefix}-{}", st.counter)

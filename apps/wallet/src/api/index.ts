@@ -2,6 +2,7 @@ import type {
   LinkOffer,
   LinkStatus,
   SyncStatus,
+  PrivateQuote,
   SyncDirection,
   AccountInfo,
   BitboxEvent,
@@ -299,6 +300,12 @@ export interface WalletApi {
   /** A secret is on screen: block screenshots, recording, previews and overlay taps. */
   setSecureScreen(on: boolean): Promise<void>;
   syncNow(direction: SyncDirection): Promise<SyncStatus>;
+  /** Private Lightning (Advanced): price paying `input` from `from` through the ecash account `hub`. */
+  privatePayPrepare(input: string, amountSat: number | null, from: string, hub: string): Promise<PrivateQuote>;
+  /** Run a payment priced by privatePayPrepare (single use, 10 minutes). */
+  privatePay(id: string): Promise<Payment[]>;
+  /** Receive through the ecash account `hub`; the sats move on to `into` once paid. */
+  privateReceive(into: string, hub: string, amountSat: number, description: string | null): Promise<ReceiveTarget>;
   groupRespond(groupId: string, accept: boolean): Promise<void>;
   groupSetName(name: string): Promise<void>;
   groupPropose(groupId: string, slots: { holder: string; label: string }[]): Promise<GroupView>;
