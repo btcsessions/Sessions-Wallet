@@ -147,20 +147,25 @@ impl ServerUrl {
                 None => (rest.clone(), None),
             }
         };
+        let host = host.trim().to_ascii_lowercase();
+        if scheme.is_none() && !s.ends_with(":s") && port.is_none() && is_local_host(&host) {
+            tls = false;
+        }
         let port = match port {
             Some(p) => p.parse::<u16>().map_err(|_| bad("has an invalid port"))?,
             None if tls => 50002,
             None => 50001,
         };
-        // No scheme: 50001 (and testnet's 60001) is plain TCP by convention,
-        // which is what Umbrel and Start9 show for their Electrum servers.
-        if scheme.is_none() && matches!(port, 50001 | 60001) && !s.ends_with(":s") {
+        // No scheme: a node on your own network (umbrel.local, 192.168.x.x)
+        // is plain TCP, as Umbrel and Start9 show it; so is port 50001 (and
+        // testnet's 60001) anywhere. Electrum's ":s" still asks for SSL.
+        let local = is_local_host(&host);
+        if scheme.is_none() && !s.ends_with(":s") && (local || matches!(port, 50001 | 60001)) {
             tls = false;
         }
         if port == 0 {
             return Err(bad("has an invalid port"));
         }
-        let host = host.trim().to_ascii_lowercase();
         if host.is_empty()
             || host.contains('/')
             || host.contains(char::is_whitespace)
@@ -176,6 +181,11 @@ impl ServerUrl {
         Ok(ServerUrl { host, port, tls })
     }
 
+    /// On your own network (see [`is_local_host`]).
+    pub fn is_local(&self) -> bool {
+        is_local_host(&self.host)
+    }
+
     /// The same server with TLS switched (for "host:port" typed without a
     /// scheme, when the guess was wrong).
     pub fn other_transport(&self) -> Self {
@@ -184,6 +194,32 @@ impl ServerUrl {
             ..self.clone()
         }
     }
+}
+
+/// On your own network: a `.local`/`.lan`/`.home` name, a bare name,
+/// localhost, or a private, loopback, link-local or CGNAT (Tailscale) address.
+pub fn is_local_host(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_private()
+                    || v4.is_loopback()
+                    || v4.is_link_local()
+                    || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+            }
+        };
+    }
+    h == "localhost"
+        || !h.contains('.')
+        || [".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain"]
+            .iter()
+            .any(|s| h.ends_with(s))
 }
 
 /// The servers to use, in order, and which one is working.
@@ -453,6 +489,12 @@ pub fn explain(server: &ServerUrl, e: &EError) -> String {
             format!("Couldn't find {host} on this network. Check the name and that you're on the same Wi-Fi, or use its IP address (like 192.168.1.20).")
         } else {
             format!("Couldn't find {host}. Check the address.")
+        }
+    } else if lower.contains("no route to host") || lower.contains("unreachable") || lower.contains("not permitted") {
+        if cfg!(target_os = "macos") && server.is_local() {
+            format!("macOS is blocking the wallet from your home network. Open System Settings › Privacy & Security › Local Network, turn on Sessions Wallet, then try again.")
+        } else {
+            format!("Can't reach {host} from here. Check you're on the same network (or VPN) as your node.")
         }
     } else if lower.contains("refused") {
         format!("{host} is there, but nothing answered on port {port}. Check the port, and that its Electrum server app (Electrs or Fulcrum) is running.")
@@ -1106,6 +1148,12 @@ mod tests {
         assert_eq!(url("example.com:50001:t"), tcp("example.com", 50001));
         // What Umbrel shows: host:50001 means plain TCP unless told otherwise.
         assert_eq!(url("umbrelhome.local:50001"), tcp("umbrelhome.local", 50001));
+        // Anything on your own network is plain TCP unless it says ssl://.
+        assert_eq!(url("umbrelhome.local"), tcp("umbrelhome.local", 50001));
+        assert_eq!(url("192.168.1.20:50002"), tcp("192.168.1.20", 50002));
+        assert_eq!(url("ssl://192.168.1.20:50002"), ssl("192.168.1.20", 50002));
+        assert_eq!(url("umbrel:50001"), tcp("umbrel", 50001));
+        assert_eq!(url("example.com:443"), ssl("example.com", 443));
         assert_eq!(url("ssl://umbrel.local:50001"), ssl("umbrel.local", 50001));
         assert_eq!(url("umbrel.local:50001:s"), ssl("umbrel.local", 50001));
         assert_eq!(url("umbrel.local:50001").other_transport(), ssl("umbrel.local", 50001));

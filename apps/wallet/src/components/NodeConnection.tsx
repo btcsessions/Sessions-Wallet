@@ -49,6 +49,13 @@ export function ChainWarning() {
   );
 }
 
+/** How a saved server shows in the box: plain host:port, with ssl:// only for encrypted servers elsewhere. */
+function displayUrl(url: string): string {
+  if (!url) return "";
+  if (isLocalHost(url)) return url.replace(/^\w+:\/\//, "");
+  return url;
+}
+
 function hostOf(url: string): string {
   return url.replace(/^\w+:\/\//, "").replace(/:\d+$/, "");
 }
@@ -69,9 +76,7 @@ export function NodeConnection() {
   const load = async () => {
     const s = await (await api()).settings();
     setSettings(s);
-    // Saved by an older version as ssl://…:50001 (that port is plain TCP):
-    // show it without the scheme so Test finds what works.
-    setElectrum((s.electrumUrl ?? "").replace(/^ssl:\/\/(.+):50001$/, "$1:50001"));
+    setElectrum(displayUrl(s.electrumUrl ?? ""));
     setEsplora(s.esploraUrl ?? "");
     if (s.esploraUrl) setMore(true);
   };

@@ -32,7 +32,8 @@ pub async fn test_connection(url: String) -> Result<ConnectionTest> {
     let t = url.trim();
     let explicit = t.contains("://") || t.ends_with(":s") || t.ends_with(":t");
     let mut tries = vec![first.clone()];
-    if !explicit {
+    // On your own network, try both whatever was typed: it's the same box.
+    if !explicit || first.is_local() {
         tries.push(first.other_transport());
     }
     tokio::task::spawn_blocking(move || {
