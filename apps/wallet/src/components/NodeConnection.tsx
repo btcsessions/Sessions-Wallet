@@ -69,7 +69,9 @@ export function NodeConnection() {
   const load = async () => {
     const s = await (await api()).settings();
     setSettings(s);
-    setElectrum(s.electrumUrl ?? "");
+    // Saved by an older version as ssl://…:50001 (that port is plain TCP):
+    // show it without the scheme so Test finds what works.
+    setElectrum((s.electrumUrl ?? "").replace(/^ssl:\/\/(.+):50001$/, "$1:50001"));
     setEsplora(s.esploraUrl ?? "");
     if (s.esploraUrl) setMore(true);
   };
