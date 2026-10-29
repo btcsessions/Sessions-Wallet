@@ -117,6 +117,30 @@ impl<R: Runtime> Alerts<R> {
             Err(_) => self.status().await,
         }
     }
+
+    /// May the app reach your home network (Android 17+ asks)?
+    pub async fn local_network(&self) -> bool {
+        self.handle
+            .run_mobile_plugin_async::<LocalNetwork>("localNetwork", serde_json::json!({}))
+            .await
+            .map(|l| l.granted)
+            .unwrap_or(true)
+    }
+
+    /// Ask for home-network access (the "Nearby devices" prompt).
+    pub async fn request_local_network(&self) -> bool {
+        self.handle
+            .run_mobile_plugin_async::<LocalNetwork>("requestLocalNetwork", serde_json::json!({}))
+            .await
+            .map(|l| l.granted)
+            .unwrap_or(true)
+    }
+}
+
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct LocalNetwork {
+    granted: bool,
 }
 
 /// Desktop: system notifications, and "watching" keeps the app running in
@@ -139,6 +163,13 @@ impl<R: Runtime> Alerts<R> {
     pub async fn request_unrestricted(&self) -> Status {
         self.status().await
     }
+    /// No permission needed here (macOS asks on its own).
+    pub async fn local_network(&self) -> bool {
+        true
+    }
+    pub async fn request_local_network(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -151,6 +182,12 @@ impl<R: Runtime> Alerts<R> {
     }
     pub async fn request_unrestricted(&self) -> Status {
         Status::unsupported()
+    }
+    pub async fn local_network(&self) -> bool {
+        true
+    }
+    pub async fn request_local_network(&self) -> bool {
+        true
     }
 }
 

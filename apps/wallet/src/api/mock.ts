@@ -1140,6 +1140,9 @@ export const mockApi: WalletApi = {
     }
     return { ok: false, encrypted: false, millis: 0, error: `Couldn't find ${t.replace(/:\d+$/, "")}. Check the address.` };
   },
+  async allowLocalNetwork() {
+    return true;
+  },
   async chainStatus() {
     return { custom: false, server: "public servers", connected: true, height: 921345 };
   },

@@ -306,6 +306,8 @@ export interface WalletApi {
   testConnection(url: string): Promise<ConnectionTest>;
   /** Can the wallet reach its chain server right now? */
   chainStatus(): Promise<ChainStatus>;
+  /** Android 17+: ask to reach the home network ("Nearby devices"). */
+  allowLocalNetwork(): Promise<boolean>;
   /** Private Lightning (Advanced): price paying `input` from `from` through the ecash account `hub`. */
   privatePayPrepare(input: string, amountSat: number | null, from: string, hub: string): Promise<PrivateQuote>;
   /** Run a payment priced by privatePayPrepare (single use, 10 minutes). */

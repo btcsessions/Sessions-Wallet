@@ -187,6 +187,7 @@ export const tauriApi: WalletApi = {
   syncNow: (direction) => invoke("sync_now", { direction }),
   testConnection: (url) => invoke("test_connection", { url }),
   chainStatus: () => invoke("chain_status"),
+  allowLocalNetwork: () => invoke("allow_local_network"),
   privatePayPrepare: (input, amountSat, from, hub) => invoke("private_pay_prepare", { input, amountSat, from, hub }),
   privatePay: (id) => invoke("private_pay", { id }),
   privateReceiveQuote: (into, amountSat) => invoke("private_receive_quote", { into, amountSat }),

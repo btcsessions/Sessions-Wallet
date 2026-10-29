@@ -26,6 +26,15 @@ export function useChainStatus(): ChainStatus | null {
   return status;
 }
 
+/** Android 17+: ask for home-network access, then check again. */
+export async function allowLocalNetwork() {
+  try {
+    await (await api()).allowLocalNetwork();
+  } finally {
+    await refreshChainStatus();
+  }
+}
+
 export async function refreshChainStatus() {
   try {
     const s = await (await api()).chainStatus();
@@ -42,10 +51,17 @@ export function ChainWarning() {
   if (!status || status.connected) return null;
   return (
     <p className="notice" role="alert">
-      <strong>{status.custom ? `Can't reach your node (${hostOf(status.server)}).` : "Can't reach the bitcoin network."}</strong> On-chain balances may be out of date.{" "}
-      <button className="text-button strong" style={{ padding: 0 }} onClick={() => open({ name: "settings" })}>
-        Check connection
-      </button>
+      <strong>{status.custom ? `Can't reach your node (${hostOf(status.server)}).` : "Can't reach the bitcoin network."}</strong>{" "}
+      {status.needsPermission ? "The wallet needs permission to use your home network. " : "On-chain balances may be out of date. "}
+      {status.needsPermission ? (
+        <button className="text-button strong" style={{ padding: 0 }} onClick={() => void allowLocalNetwork()}>
+          Allow
+        </button>
+      ) : (
+        <button className="text-button strong" style={{ padding: 0 }} onClick={() => open({ name: "settings" })}>
+          Check connection
+        </button>
+      )}
     </p>
   );
 }
@@ -153,12 +169,15 @@ export function NodeConnection() {
             {status?.connected && status.height ? <div className="row-sub num">Block {formatSats(status.height)}</div> : null}
             {status && !status.connected && status.error ? <div className="row-sub">{status.error}</div> : null}
           </span>
-          <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+          {status?.needsPermission ? (
+            <button className="text-button strong" onClick={() => void allowLocalNetwork()}>
+              Allow
+            </button>
+          ) : (
             <button className="text-button" onClick={() => void refreshChainStatus()}>
               Check
             </button>
-
-          </span>
+          )}
         </div>
       </div>
 

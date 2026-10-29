@@ -97,6 +97,8 @@ export interface ChainStatus {
   connected: boolean;
   height?: number | null;
   error?: string | null;
+  /** Android 17+: the app isn't allowed on the home network yet (show Allow). */
+  needsPermission?: boolean;
 }
 
 export interface PrivateQuote {

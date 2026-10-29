@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- A short buzz when a payment lands on the Receive screen. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Android 17+: connect to your own node on the home network (Umbrel,
+         Start9), and find .local names. A runtime prompt ("Nearby devices"). -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
     <application>
         <service

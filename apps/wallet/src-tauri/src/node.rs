@@ -5,7 +5,19 @@ use rail_onchain::electrum::{self, ServerUrl};
 use rail_onchain::ChainServer;
 use serde::Serialize;
 use sessions_core::{Error, Result};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
+
+/// Android 17+: may the app reach your home network?
+async fn local_network(app: &AppHandle, ask: bool) -> bool {
+    let alerts = app.state::<tauri_plugin_alerts::Alerts<tauri::Wry>>();
+    if ask {
+        alerts.request_local_network().await
+    } else {
+        alerts.local_network().await
+    }
+}
+
+const NEEDS_LOCAL_NETWORK: &str = "Sessions Wallet isn't allowed on your home network yet. Allow \"Nearby devices\" when asked, or in Settings › Apps › Sessions Wallet › Permissions.";
 
 use crate::state::AppState;
 
@@ -25,8 +37,18 @@ pub struct ConnectionTest {
 
 /// Try an Electrum server (as typed in Settings) without saving it.
 #[tauri::command]
-pub async fn test_connection(url: String) -> Result<ConnectionTest> {
+pub async fn test_connection(app: AppHandle, url: String) -> Result<ConnectionTest> {
     let first = ServerUrl::parse(&url)?;
+    if first.is_local() && !local_network(&app, true).await {
+        return Ok(ConnectionTest {
+            ok: false,
+            url: None,
+            height: None,
+            encrypted: false,
+            millis: 0,
+            error: Some(NEEDS_LOCAL_NETWORK.into()),
+        });
+    }
     // A scheme (or Electrum's :s / :t) says which transport; otherwise the
     // other one is worth a try too.
     let t = url.trim();
@@ -79,11 +101,20 @@ pub struct ChainStatus {
     pub connected: bool,
     pub height: Option<usize>,
     pub error: Option<String>,
+    /// Your node is on the home network and the app isn't allowed there
+    /// (Android 17+): show an Allow button ([`allow_local_network`]).
+    pub needs_permission: bool,
+}
+
+/// Ask for home-network access (Android 17+'s "Nearby devices").
+#[tauri::command]
+pub async fn allow_local_network(app: AppHandle) -> Result<bool> {
+    Ok(local_network(&app, true).await)
 }
 
 /// Can the wallet reach its chain server right now?
 #[tauri::command]
-pub async fn chain_status(state: State<'_, AppState>) -> Result<ChainStatus> {
+pub async fn chain_status(app: AppHandle, state: State<'_, AppState>) -> Result<ChainStatus> {
     let config = {
         let guard = state.inner.lock().await;
         guard.as_ref().ok_or(Error::Locked)?.config.clone()
@@ -95,6 +126,16 @@ pub async fn chain_status(state: State<'_, AppState>) -> Result<ChainStatus> {
                 (true, Some(s)) => s.to_string(),
                 _ => "public servers".into(),
             };
+            if custom && servers.iter().any(|s| s.is_local()) && !local_network(&app, false).await {
+                return Ok(ChainStatus {
+                    custom,
+                    server: label,
+                    connected: false,
+                    height: None,
+                    error: Some(NEEDS_LOCAL_NETWORK.into()),
+                    needs_permission: true,
+                });
+            }
             let pool = electrum::pool_for(&servers)?;
             let first = servers.first().cloned();
             let r = tokio::task::spawn_blocking(move || pool.conn().tip_height())
@@ -107,8 +148,10 @@ pub async fn chain_status(state: State<'_, AppState>) -> Result<ChainStatus> {
                     connected: true,
                     height: Some(h),
                     error: None,
+                    needs_permission: false,
                 },
                 Err(e) => ChainStatus {
+                    needs_permission: false,
                     custom,
                     server: label,
                     connected: false,
@@ -140,6 +183,7 @@ pub async fn chain_status(state: State<'_, AppState>) -> Result<ChainStatus> {
                     connected: true,
                     height: Some(h),
                     error: None,
+                    needs_permission: false,
                 },
                 Ok(None) => ChainStatus {
                     custom,
@@ -147,6 +191,7 @@ pub async fn chain_status(state: State<'_, AppState>) -> Result<ChainStatus> {
                     connected: false,
                     height: None,
                     error: Some(format!("{url} answered, but not like an Esplora server")),
+                    needs_permission: false,
                 },
                 Err(e) => ChainStatus {
                     custom,
@@ -154,6 +199,7 @@ pub async fn chain_status(state: State<'_, AppState>) -> Result<ChainStatus> {
                     connected: false,
                     height: None,
                     error: Some(format!("Couldn't reach {url}: {e}")),
+                    needs_permission: false,
                 },
             })
         }

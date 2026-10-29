@@ -274,6 +274,7 @@ pub fn run() {
             commands::sync_now,
             node::test_connection,
             node::chain_status,
+            node::allow_local_network,
             private::private_pay_prepare,
             private::private_pay,
             private::private_receive,

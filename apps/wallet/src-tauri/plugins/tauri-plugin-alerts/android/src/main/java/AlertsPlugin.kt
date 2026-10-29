@@ -24,6 +24,12 @@ import app.tauri.plugin.Plugin
 
 private const val TAG = "SessionsAlerts"
 
+/** `Manifest.permission.ACCESS_LOCAL_NETWORK` (API 37), by name to build against older SDKs. */
+private const val LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
+
+/** Android 17: local network access needs the permission (for apps targeting it). */
+private const val LOCAL_NETWORK_SDK = 37
+
 /**
  * The parts of payment alerts that need the app's screen: the notification
  * permission prompt, the battery-optimisation prompt, and knowing whether the
@@ -31,7 +37,9 @@ private const val TAG = "SessionsAlerts"
  */
 @TauriPlugin(
     permissions = [
-        Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications")
+        Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
+        // Android 17+: reaching your own node on the home network (umbrel.local).
+        Permission(strings = [LOCAL_NETWORK], alias = "localNetwork")
     ]
 )
 class AlertsPlugin(private val activity: Activity) : Plugin(activity) {
@@ -100,6 +108,53 @@ class AlertsPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             }
         }
+    }
+
+    private fun localNetworkGranted(): Boolean =
+        Build.VERSION.SDK_INT < LOCAL_NETWORK_SDK || getPermissionState("localNetwork") == PermissionState.GRANTED
+
+    private fun localNetworkResult(): JSObject {
+        val o = JSObject()
+        o.put("granted", localNetworkGranted())
+        return o
+    }
+
+    /** May the app reach devices on the home network (your node)? */
+    @Command
+    fun localNetwork(invoke: Invoke) {
+        invoke.resolve(localNetworkResult())
+    }
+
+    /** Ask for it: the "Nearby devices" prompt (granted already if Bluetooth was). */
+    @Command
+    fun requestLocalNetwork(invoke: Invoke) {
+        if (localNetworkGranted()) {
+            invoke.resolve(localNetworkResult())
+            return
+        }
+        if (getPermissionState("localNetwork") == PermissionState.DENIED) {
+            // Refused before: Android won't ask again, only app settings can change it.
+            try {
+                val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:${ctx.packageName}"))
+                startActivityForResult(invoke, i, "localNetworkSettingsClosed")
+            } catch (e: Exception) {
+                Log.w(TAG, "app settings: ${e.message}")
+                invoke.resolve(localNetworkResult())
+            }
+            return
+        }
+        requestPermissionForAlias("localNetwork", invoke, "localNetworkAnswered")
+    }
+
+    @PermissionCallback
+    private fun localNetworkAnswered(invoke: Invoke) {
+        invoke.resolve(localNetworkResult())
+    }
+
+    @ActivityCallback
+    private fun localNetworkSettingsClosed(invoke: Invoke, @Suppress("UNUSED_PARAMETER") result: ActivityResult) {
+        invoke.resolve(localNetworkResult())
     }
 
     @PermissionCallback
