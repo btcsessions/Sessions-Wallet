@@ -492,7 +492,7 @@ pub fn explain(server: &ServerUrl, e: &EError) -> String {
         }
     } else if lower.contains("no route to host") || lower.contains("unreachable") || lower.contains("not permitted") {
         if cfg!(target_os = "macos") && server.is_local() {
-            format!("macOS is blocking the wallet from your home network. Open System Settings › Privacy & Security › Local Network, turn on Sessions Wallet, then try again.")
+            "macOS is blocking the wallet from your home network. Open System Settings › Privacy & Security › Local Network, turn on Sessions Wallet, then try again.".to_string()
         } else {
             format!("Can't reach {host} from here. Check you're on the same network (or VPN) as your node.")
         }
