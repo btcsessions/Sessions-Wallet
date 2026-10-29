@@ -244,10 +244,16 @@ button {
   min-height: 200px;
 }
 
-/* On wide screens large tiles take half the row, medium a quarter-pair. */
+/* On wide screens large tiles take half the row, medium a quarter-pair.
+   Small tiles stop being square there: a square quarter-column made the
+   whole row tall and left gaps in the tiles beside it. */
 @media (min-width: 720px) {
   .tile[data-size="large"] {
     grid-row: span 2;
+  }
+  .tile[data-size="small"] {
+    aspect-ratio: auto;
+    min-height: 150px;
   }
 }
 
@@ -491,7 +497,8 @@ button {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
   height: 100%;
-  align-content: end;
+  /* A taller row (beside a bigger tile) centres the buttons, not a gap on top. */
+  align-content: center;
 }
 
 .pay-receive .btn {
@@ -1292,7 +1299,7 @@ button {
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   height: 100%;
-  align-content: end;
+  align-content: center;
 }
 
 .three-actions .btn {
@@ -1819,6 +1826,21 @@ button {
   gap: 8px;
   margin-top: auto;
   padding-top: 10px;
+}
+
+/* Buttons shrink together to fit a narrow tile, rather than spill out. */
+.account-actions .round-action {
+  flex: 0 1 38px;
+  width: auto;
+  min-width: 26px;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+@container (max-width: 200px) {
+  .account-actions {
+    gap: 5px;
+  }
 }
 
 .round-action {

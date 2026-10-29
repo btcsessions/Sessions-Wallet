@@ -65,7 +65,9 @@ interface State {
   toast: Toast | null;
   syncing: boolean;
   isMock: boolean;
-  unavailable: { id: string; reason: string }[];
+  unavailable: { id: string; name?: string | null; reason: string }[];
+  /** Can the wallet reach its chain server (checked every minute). */
+  chain: import("../api/types").ChainStatus | null;
   /** Alerts, contacts, auto-sweep, check-ins: saved in the wallet (and its backup). */
   synced: Synced;
   setSynced<K extends SyncedKey>(key: K, value: Synced[K]): void;
@@ -204,6 +206,7 @@ export const useWallet = create<State>((set, get) => {
     syncing: false,
     isMock: false,
     unavailable: [],
+    chain: null,
     synced: Object.fromEntries(SYNCED_KEYS.map((k) => [k, normalize(k, loadPref(k, undefined))])) as unknown as Synced,
     setSynced(key, value) {
       savePref(key, value);

@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import { lockAfterMinutes } from "./state/autolock";
+import { refreshChainStatus } from "./components/NodeConnection";
 import { ConfirmHost } from "./components/Confirm";
 import { api } from "./api";
 import { DesktopShell, useDesktopLayout } from "./Desktop";
@@ -135,13 +137,14 @@ export function App() {
     return () => stop?.();
   }, []);
 
-  // Auto-lock after a minute in the background.
+  // Auto-lock after a minute in the background (computers: as chosen in Settings).
   useEffect(() => {
     let hiddenAt = 0;
     const onVis = async () => {
+      const minutes = lockAfterMinutes();
       if (document.hidden) {
         hiddenAt = Date.now();
-      } else if (hiddenAt && Date.now() - hiddenAt > 60_000 && useWallet.getState().status === "unlocked") {
+      } else if (minutes > 0 && hiddenAt && Date.now() - hiddenAt > minutes * 60_000 && useWallet.getState().status === "unlocked") {
         await (await api()).lock();
         useWallet.setState({ status: "locked", sheet: null });
       }
@@ -149,6 +152,22 @@ export function App() {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
+
+  // Is the chain server reachable? Every minute while unlocked, and on return.
+  useEffect(() => {
+    if (status !== "unlocked") {
+      useWallet.setState({ chain: null });
+      return;
+    }
+    void refreshChainStatus();
+    const t = setInterval(() => !document.hidden && void refreshChainStatus(), 60_000);
+    const onVis = () => !document.hidden && void refreshChainStatus();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [status]);
 
   return (
     <>

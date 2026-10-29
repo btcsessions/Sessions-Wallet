@@ -18,6 +18,7 @@ mod multisig_hw;
 mod desktop;
 mod group;
 mod group_join;
+mod node;
 mod nostr_id;
 mod nwc;
 mod passkey;
@@ -271,9 +272,12 @@ pub fn run() {
             commands::set_secure_screen,
             commands::sync_status,
             commands::sync_now,
+            node::test_connection,
+            node::chain_status,
             private::private_pay_prepare,
             private::private_pay,
             private::private_receive,
+            private::private_receive_quote,
             link::link_offer,
             link::link_poll,
             link::link_finish,

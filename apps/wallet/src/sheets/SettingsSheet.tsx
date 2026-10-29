@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
-import type { Settings } from "../api/types";
 import { Sheet, useBusy, useSecureScreen } from "../components/ui";
 import { useWallet } from "../state/store";
 import { THEMES, type Appearance } from "../theme";
@@ -11,6 +10,8 @@ import { AlertsSetting } from "../components/AlertsSetting";
 import { CheckinSetting } from "../components/Checkins";
 import type { BackupStatus } from "../api/types";
 import { Icon } from "../components/Icon";
+import { NodeConnection } from "../components/NodeConnection";
+import { AutoLockSetting } from "../components/AutoLockSetting";
 
 const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD", "CHF", "JPY"];
 
@@ -21,31 +22,8 @@ export function SettingsSheet() {
   const [backup, setBackup] = useState<BackupStatus | null>(null);
   const [passcode, setPasscode] = useState("");
   const [busy, run] = useBusy();
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [server, setServer] = useState("");
-  const [electrum, setElectrum] = useState("");
-  const [breezKey, setBreezKey] = useState("");
-  const notify = useWallet((s) => s.notify);
   useSecureScreen(!!phrase);
 
-  useEffect(() => {
-    api()
-      .then((a) => a.settings())
-      .then((s) => {
-        setSettings(s);
-        setServer(s.esploraUrl ?? "");
-        setElectrum(s.electrumUrl ?? "");
-      })
-      .catch(() => {});
-  }, []);
-
-  const saveConnection = () =>
-    run(async () => {
-      await (await api()).saveSettings({ esploraUrl: server.trim() || null, electrumUrl: electrum.trim() || null, hasBreezKey: false, breezApiKey: breezKey.trim() || null });
-      setBreezKey("");
-      setSettings(await (await api()).settings());
-      notify("ok", "Saved. Takes effect next time you unlock.");
-    });
 
   const reveal = () =>
     run(async () => {
@@ -94,62 +72,7 @@ export function SettingsSheet() {
         The default for sends from on-chain accounts. You can switch on each send. Private looks like a coinjoin and costs more in fees.
       </p>
 
-      <p className="group-label">Connection</p>
-      <div className="group">
-        <label className="cell">
-          <span className="grow">Electrum server</span>
-          <input
-            value={electrum}
-            onChange={(e) => setElectrum(e.target.value)}
-            placeholder="Public servers"
-            inputMode="url"
-            autoCapitalize="off"
-            spellCheck={false}
-            style={{ textAlign: "right" }}
-          />
-        </label>
-        <label className="cell">
-          <span className="grow">Esplora server</span>
-          <input
-            value={server}
-            onChange={(e) => setServer(e.target.value)}
-            placeholder="Optional"
-            inputMode="url"
-            autoCapitalize="off"
-            spellCheck={false}
-            style={{ textAlign: "right" }}
-          />
-        </label>
-        <label className="cell">
-          <span className="grow">Breez API key</span>
-          <input
-            type="password"
-            value={breezKey}
-            onChange={(e) => setBreezKey(e.target.value)}
-            placeholder={settings?.hasBreezKey ? "Saved" : "Needed for Spending"}
-            autoCapitalize="off"
-            spellCheck={false}
-            style={{ textAlign: "right" }}
-          />
-        </label>
-      </div>
-      <p className="group-note">
-        Point at your own Electrum server (Umbrel, Start9), e.g. ssl://umbrel.local:50002, so no third party sees your addresses. Leave empty to use public servers, with automatic fallback.
-        {settings?.chainServer ? ` Connected to ${settings.chainServer}.` : ""}
-      </p>
-      {plaintext(electrum) || plaintext(server) ? (
-        <p className="field-error" role="alert" style={{ marginTop: -8, marginBottom: 14 }}>
-          <Icon name="warn" size={14} /> Not encrypted: anyone on the network between you and this server can see your addresses and balances. Use ssl:// (or https://) unless it's on a network you trust.
-        </p>
-      ) : null}
-      <button
-        className="btn block"
-        style={{ marginBottom: 22 }}
-        disabled={busy || (server === (settings?.esploraUrl ?? "") && electrum === (settings?.electrumUrl ?? "") && !breezKey.trim())}
-        onClick={saveConnection}
-      >
-        Save connection
-      </button>
+      <NodeConnection />
       </>
       )}
 
@@ -197,6 +120,8 @@ export function SettingsSheet() {
       <AlertsSetting />
 
       <BiometricSetting />
+
+      <AutoLockSetting />
 
       <BackupSection onStatus={setBackup} />
 
@@ -312,6 +237,3 @@ function ThemePicker() {
 }
 
 /** tcp:// and http:// send everything in the clear. */
-function plaintext(url: string): boolean {
-  return /^(tcp|http):\/\//i.test(url.trim());
-}

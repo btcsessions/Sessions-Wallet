@@ -127,17 +127,37 @@ impl EcashAccount {
         }
         // A brand-new database means we may be restoring from the phrase.
         // (The in-process test mint doesn't implement restore, so tests skip it.)
-        let fresh = !config.db_path.exists() && client.is_none();
+        let mut fresh = !config.db_path.exists() && client.is_none();
         // redb opens the file synchronously (and runs migrations); keep that
         // off the async executor.
-        let db_path = config.db_path.clone();
-        let db = tokio::task::spawn_blocking(move || {
-            ensure_redb_tables(&db_path)?;
-            WalletRedbDatabase::new(&db_path).map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        let open_db = |db_path: std::path::PathBuf| {
+            tokio::task::spawn_blocking(move || {
+                ensure_redb_tables(&db_path)?;
+                WalletRedbDatabase::new(&db_path).map_err(|e| e.to_string())
+            })
+        };
+        let db = match open_db(config.db_path.clone()).await {
+            Ok(r) => r.map_err(Error::Storage)?,
+            // redb panics on a damaged file (seen on a phone: "slice index
+            // starts at 1626 but ends at 33"). Ecash is restorable from the
+            // recovery phrase, so set the damaged file aside and start a new
+            // one, restored from the mint.
+            Err(e) if e.is_panic() && config.db_path.exists() => {
+                let aside = config.db_path.with_extension(format!("damaged-{}", now()));
+                tracing::warn!(
+                    "ecash: {} is damaged ({e}); moved to {} and restoring from the mint",
+                    config.db_path.display(),
+                    aside.display()
+                );
+                std::fs::rename(&config.db_path, &aside).map_err(|e| Error::Storage(e.to_string()))?;
+                fresh = client.is_none();
+                open_db(config.db_path.clone())
+                    .await
+                    .map_err(|e| Error::Storage(e.to_string()))?
+                    .map_err(Error::Storage)?
+            }
+            Err(e) => return Err(Error::Storage(e.to_string())),
+        };
 
         let mut builder = WalletBuilder::new()
             .mint_url(mint_url)

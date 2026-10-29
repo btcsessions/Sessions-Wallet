@@ -80,6 +80,25 @@ export interface Plan {
   amountSat: number;
 }
 
+export interface ConnectionTest {
+  ok: boolean;
+  /** The full address that worked (e.g. tcp://umbrel.local:50001): save this one. */
+  url?: string | null;
+  height?: number | null;
+  encrypted: boolean;
+  millis: number;
+  error?: string | null;
+}
+
+export interface ChainStatus {
+  /** Your own server, not the public defaults. */
+  custom: boolean;
+  server: string;
+  connected: boolean;
+  height?: number | null;
+  error?: string | null;
+}
+
 export interface PrivateQuote {
   id: string;
   amountSat: number;

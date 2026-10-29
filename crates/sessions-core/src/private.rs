@@ -17,7 +17,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    Direction, Method, Payment, PaymentRequest, ReceiveRequest, Sats, SendQuote, SendRequest,
+    Direction, Method, Payment, PaymentRequest, ReceiveQuote, ReceiveRequest, Sats, SendQuote,
+    SendRequest,
 };
 use crate::{AccountId, Error, RailKind, Result, Wallet};
 
@@ -48,6 +49,21 @@ const MINT_WAIT: Duration = Duration::from_secs(90);
 /// forwarding a private receive (refined from the mint's answer).
 fn reserve_guess(amount: Sats) -> Sats {
     (amount / 100).max(2) + 2
+}
+
+/// What a private receive of `amount` first tries to move on to its
+/// account: the amount less a guess at the mint's fees.
+pub fn private_forward_amount(amount: Sats) -> Sats {
+    amount.saturating_sub(reserve_guess(amount))
+}
+
+/// The smallest private receive whose forwarded part is at least `min`.
+fn private_min(min: Sats) -> Sats {
+    let mut n = min;
+    while private_forward_amount(n) < min {
+        n += (min - private_forward_amount(n)).max(1);
+    }
+    n
 }
 
 /// Extra funding for the mint's input fees (proofs spent in the melt).
@@ -146,6 +162,27 @@ impl Wallet {
         Ok(vec![first, second])
     }
 
+    /// Limits and fees for receiving `amount_sat` privately into `into`, when
+    /// it lands through a bridge (an on-chain account): the bridge's terms
+    /// for what's left after the mint's cut. `None` for accounts that take
+    /// Lightning themselves.
+    pub async fn private_receive_quote(
+        &self,
+        into: &AccountId,
+        amount_sat: Option<Sats>,
+    ) -> Result<Option<ReceiveQuote>> {
+        let forward = amount_sat.map(private_forward_amount);
+        let Some(mut q) = self.receive_quote(into, Method::Bolt11, forward).await? else {
+            return Ok(None);
+        };
+        q.min_sat = private_min(q.min_sat);
+        q.max_sat = q.max_sat.saturating_add(reserve_guess(q.max_sat));
+        if let (Some(a), Some(fee)) = (amount_sat, q.total_fee_sat) {
+            q.total_fee_sat = Some(fee.saturating_add(reserve_guess(a)));
+        }
+        Ok(Some(q))
+    }
+
     /// A private receive's ecash (mint quote `watch_id` in `hub`, for
     /// `amount_sat`) has arrived? Then pay it on to `into`. `Ok(None)` while
     /// it hasn't been paid yet.
@@ -197,5 +234,19 @@ fn send_to(invoice: &str, amount: Sats) -> SendRequest {
         note: None,
         style: Default::default(),
         coins: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_minimum_covers_the_mints_cut() {
+        for min in [1, 2, 10, 500, 10_000, 12_345, 1_000_000] {
+            let n = private_min(min);
+            assert!(private_forward_amount(n) >= min, "{min} → {n}");
+            assert!(private_forward_amount(n - 1) < min || n == min, "{min} → {n} isn't the smallest");
+        }
     }
 }

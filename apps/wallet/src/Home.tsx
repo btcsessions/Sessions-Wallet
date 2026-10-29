@@ -1,4 +1,5 @@
 import { DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { ChainWarning } from "./components/NodeConnection";
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useRef, useState } from "react";
@@ -174,10 +175,11 @@ export function Home({ title = "Sessions Wallet" }: { title?: string }) {
       <h1 className="large-title">{title}</h1>
       {unavailable.map((u) => (
         <p className="notice" key={u.id} role="status">
-          <strong>{accounts.find((a) => a.id === u.id)?.name ?? (u.id === "spending" ? "Spending" : u.id)} is unavailable.</strong> {u.reason}, then lock and unlock to try again.
+          <strong>{u.name ?? accounts.find((a) => a.id === u.id)?.name ?? (u.id === "spending" ? "Spending" : u.id)} is unavailable.</strong> {u.reason}, then lock and unlock to try again.
         </p>
       ))}
 
+      <ChainWarning />
       {!editing && layout.advanced && <SweepOffers />}
       {!editing && <CheckinReminder />}
 

@@ -120,7 +120,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     let alive = true;
     const t = setTimeout(() => {
       api()
-        .then((a) => a.receiveQuote(account.id, method, amount))
+        .then((a) => (hubId ? a.privateReceiveQuote(account.id, amount) : a.receiveQuote(account.id, method, amount)))
         .then((q) => alive && setQuote(q))
         .catch((e) => alive && setError(errorText(e)));
     }, 250);
@@ -128,7 +128,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
       alive = false;
       clearTimeout(t);
     };
-  }, [account?.id, method, amount, swap]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [account?.id, method, amount, swap, hubId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Watch for the payment landing while this sheet is open.
   // Lightning into an on-chain account lands in Spending first; that's the moment it's received.
@@ -301,7 +301,7 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
         <>
           <AmountInput value={amount} onChange={setAmount} autoFocus />
           {swap ? (
-            <SwapTerms quote={quote} amount={amount} method={method} account={account} tooSmall={tooSmall} tooBig={tooBig} />
+            <SwapTerms quote={quote} amount={amount} method={method} account={account} tooSmall={tooSmall} tooBig={tooBig} viaMint={hubId ? hub?.name : undefined} />
           ) : (
             <p className="group-note" style={{ margin: "0 0 18px", textAlign: "center" }}>
               {METHOD_LABEL[method]} requests need an amount.
@@ -389,7 +389,9 @@ function SwapTerms({
   account,
   tooSmall,
   tooBig,
+  viaMint,
 }: {
+  viaMint?: string;
   quote: ReceiveQuote | null;
   amount: number | null;
   method: Method;
@@ -422,10 +424,12 @@ function SwapTerms({
       </div>
       <p className="group-note" style={{ margin: "-12px 4px 18px" }}>
         {tooSmall
-          ? `Ask for at least ${formatSats(quote.minSat)} sats so the on-chain fee is worth paying.`
+          ? `Ask for at least ${formatSats(quote.minSat)} sats so the ${viaMint ? "mint and on-chain fees are" : "on-chain fee is"} worth paying.`
           : tooBig
             ? `The most this can take at once is ${formatSats(quote.maxSat)} sats.`
-            : `${how} payments land in Spending, then go on-chain to ${account?.name ?? "this account"} automatically. The amount above is what they pay.`}
+            : viaMint
+              ? `Paid to ${viaMint}, then through Spending and on-chain to ${account?.name ?? "this account"} automatically. The amount above is what they pay; a few sats of the mint's fee may stay in ${viaMint}.`
+              : `${how} payments land in Spending, then go on-chain to ${account?.name ?? "this account"} automatically. The amount above is what they pay.`}
       </p>
     </>
   );

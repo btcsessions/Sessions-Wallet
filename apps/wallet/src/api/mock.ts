@@ -1130,6 +1130,19 @@ export const mockApi: WalletApi = {
     await sleep(800);
     return { devices: mockDevices, lastSyncAt: Math.floor(Date.now() / 1000) };
   },
+  async testConnection(url) {
+    await sleep(700);
+    const t = url.trim();
+    if (!t) throw "That Electrum server address is empty";
+    if (/umbrel/i.test(t)) {
+      const host = t.replace(/^\w+:\/\//, "").replace(/:\d+.*$/, "");
+      return { ok: true, url: `tcp://${host}:50001`, height: 921345, encrypted: false, millis: 84 };
+    }
+    return { ok: false, encrypted: false, millis: 0, error: `Couldn't find ${t.replace(/:\d+$/, "")}. Check the address.` };
+  },
+  async chainStatus() {
+    return { custom: false, server: "public servers", connected: true, height: 921345 };
+  },
   async privatePayPrepare(input, amountSat, from, hub) {
     await sleep(700);
     const amount = amountSat ?? (input.startsWith("lnbc") ? 21000 : null);
@@ -1152,6 +1165,14 @@ export const mockApi: WalletApi = {
     const pay = p(`x${Date.now()}`, q.from, "outgoing", q.amountSat, fee, "bolt11", now(), "Paid privately", "complete");
     activity.unshift(pay);
     return [pay];
+  },
+  async privateReceiveQuote(into, amountSat) {
+    const q = await this.receiveQuote(into, "bolt11", amountSat === null ? null : amountSat - (Math.max(Math.floor(amountSat / 100), 2) + 2));
+    if (!q) return null;
+    const guess = (n: number) => Math.max(Math.floor(n / 100), 2) + 2;
+    let min = q.minSat;
+    while (min - guess(min) < q.minSat) min += 1;
+    return { ...q, minSat: min, totalFeeSat: q.totalFeeSat != null && amountSat ? q.totalFeeSat + guess(amountSat) : q.totalFeeSat };
   },
   async privateReceive(into, hub, amountSat) {
     await sleep(400);

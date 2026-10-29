@@ -725,7 +725,7 @@ pub async fn settings(state: State<'_, AppState>) -> Result<Settings> {
     })
 }
 
-/// Saved now, applied the next time the wallet unlocks.
+/// Saved, and applied at once: a new chain server reopens the accounts on it.
 #[tauri::command]
 pub async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<()> {
     let mut guard = state.inner.lock().await;
@@ -750,21 +750,32 @@ pub async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Re
         // Saved in its full form, e.g. "ssl://host:50002".
         Some(Some(s)) => Some(rail_onchain::electrum::ServerUrl::parse(&s)?.to_string()),
     };
+    let server_changed = u.config.esplora_url != esplora_url || u.config.electrum_url != electrum_url;
     u.config.esplora_url = esplora_url;
     u.config.electrum_url = electrum_url;
+    let mut key_changed = false;
     if let Some(key) = settings
         .breez_api_key
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
     {
+        key_changed = u.config.breez_api_key.as_deref() != Some(key.as_str());
         u.config.breez_api_key = Some(key);
     }
-    state.save_config(&u.config)
+    state.save_config(&u.config)?;
+    if server_changed || key_changed {
+        // Reopen every account on the new settings (as a restore does).
+        let seed = guard.take().map(|u| u.seed).ok_or(Error::Locked)?;
+        drop(guard);
+        state.unlock_with(seed).await?;
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
 pub struct Unavailable {
     id: AccountId,
+    name: Option<String>,
     reason: String,
 }
 
@@ -777,6 +788,12 @@ pub async fn unavailable_accounts(state: State<'_, AppState>) -> Result<Vec<Unav
         .iter()
         .map(|(id, reason)| Unavailable {
             id: id.clone(),
+            name: u
+                .config
+                .accounts
+                .iter()
+                .find(|s| s.id() == id)
+                .map(|s| s.name().to_string()),
             reason: reason.clone(),
         })
         .collect())

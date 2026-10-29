@@ -15,6 +15,7 @@ pub mod chain;
 pub mod descriptors;
 pub mod discovery;
 pub mod electrum;
+pub mod mdns;
 pub mod electrum_chain;
 mod labels;
 pub mod multisig;

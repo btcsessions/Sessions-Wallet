@@ -96,6 +96,17 @@ pub async fn private_pay(state: State<'_, AppState>, id: String) -> Result<Vec<P
     r
 }
 
+/// Limits and fees for a private receive into `into` (on-chain accounts;
+/// `null` for accounts that take Lightning themselves).
+#[tauri::command]
+pub async fn private_receive_quote(
+    state: State<'_, AppState>,
+    into: AccountId,
+    amount_sat: Option<Sats>,
+) -> Result<Option<sessions_core::ReceiveQuote>> {
+    wallet(&state).await?.private_receive_quote(&into, amount_sat).await
+}
+
 /// A private receive waiting for the payer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,7 +147,17 @@ pub async fn private_receive(
     description: Option<String>,
 ) -> Result<ReceiveTarget> {
     let w = wallet(&state).await?;
-    let target = w
+    // Into an on-chain account: what's left after the mint's cut must still
+    // be enough for the move on-chain.
+    if let Some(q) = w.private_receive_quote(&into, Some(amount_sat)).await? {
+        if amount_sat < q.min_sat {
+            return Err(Error::Invalid(format!(
+                "Ask for at least {} sats: after the mint's fee, moving it on-chain needs that much",
+                q.min_sat
+            )));
+        }
+    }
+    let mut target = w
         .account(&hub)
         .await?
         .receive(ReceiveRequest {
@@ -145,6 +166,8 @@ pub async fn private_receive(
             description,
         })
         .await?;
+    // The mint's cut (a guess; the rest of it stays in ecash).
+    target.fee_sat = Some(amount_sat - sessions_core::private_forward_amount(amount_sat));
     let quote = target
         .watch_id
         .clone()

@@ -3,6 +3,8 @@ import type {
   LinkStatus,
   SyncStatus,
   PrivateQuote,
+  ConnectionTest,
+  ChainStatus,
   SyncDirection,
   AccountInfo,
   BitboxEvent,
@@ -217,7 +219,7 @@ export interface WalletApi {
   /** Applied the next time the wallet unlocks. */
   saveSettings(s: Settings): Promise<void>;
   /** Accounts that couldn't open at unlock, with the reason. */
-  unavailableAccounts(): Promise<{ id: string; reason: string }[]>;
+  unavailableAccounts(): Promise<{ id: string; name?: string | null; reason: string }[]>;
 
   lightningAddress(account: string): Promise<LightningAddress | null>;
   lightningAddressAvailable(account: string, username: string): Promise<boolean>;
@@ -300,10 +302,16 @@ export interface WalletApi {
   /** A secret is on screen: block screenshots, recording, previews and overlay taps. */
   setSecureScreen(on: boolean): Promise<void>;
   syncNow(direction: SyncDirection): Promise<SyncStatus>;
+  /** Try an Electrum server address without saving it. */
+  testConnection(url: string): Promise<ConnectionTest>;
+  /** Can the wallet reach its chain server right now? */
+  chainStatus(): Promise<ChainStatus>;
   /** Private Lightning (Advanced): price paying `input` from `from` through the ecash account `hub`. */
   privatePayPrepare(input: string, amountSat: number | null, from: string, hub: string): Promise<PrivateQuote>;
   /** Run a payment priced by privatePayPrepare (single use, 10 minutes). */
   privatePay(id: string): Promise<Payment[]>;
+  /** Limits and fees for a private receive into an on-chain account (null for accounts that take Lightning). */
+  privateReceiveQuote(into: string, amountSat: number | null): Promise<ReceiveQuote | null>;
   /** Receive through the ecash account `hub`; the sats move on to `into` once paid. */
   privateReceive(into: string, hub: string, amountSat: number, description: string | null): Promise<ReceiveTarget>;
   groupRespond(groupId: string, accept: boolean): Promise<void>;

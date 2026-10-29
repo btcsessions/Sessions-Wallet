@@ -16,6 +16,7 @@ import { SweepSetting } from "../components/Sweep";
 import { VaultPanel } from "./VaultPanel";
 import { useWallet } from "../state/store";
 import { confirmDialog } from "../components/Confirm";
+import { HomeToggle } from "./AccountsSheet";
 
 export function AccountSheet({ id }: { id: string }) {
   const { accounts, activity, unit, price, currency, open, refresh, notify, close } = useWallet();
@@ -152,6 +153,7 @@ export function AccountSheet({ id }: { id: string }) {
         </>
       )}
       <WalletDetails id={a.id} name={a.name}>
+        <HomeToggle account={a} block />
         {a.id !== "spending" && a.balance.confirmed + a.balance.pendingIn + a.balance.pendingOut === 0 && (
           <button className="btn block" style={{ color: "var(--red)", marginBottom: 22 }} disabled={busy} onClick={remove}>
             Remove {a.name}

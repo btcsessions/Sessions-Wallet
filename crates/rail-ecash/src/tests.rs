@@ -570,3 +570,24 @@ async fn private_send_and_receive_hop_through_ecash() {
     let after = hub.info().await.unwrap().balance.confirmed;
     assert!(after < left + 60, "{after}");
 }
+
+#[tokio::test]
+async fn a_damaged_database_is_set_aside_and_rebuilt() {
+    let dir = TempDir::new("damaged");
+    let mint = Arc::new(FakeMint::new(9));
+    drop(open(&dir, "e", MINT, PHRASE_A, &mint).await);
+    let path = dir.0.join("e.redb");
+    // Scribble over everything after the header.
+    let mut bytes = std::fs::read(&path).unwrap();
+    for (i, b) in bytes.iter_mut().enumerate().skip(512) {
+        *b = (i * 7 % 251) as u8;
+    }
+    std::fs::write(&path, &bytes).unwrap();
+    let a = open(&dir, "e", MINT, PHRASE_A, &mint).await;
+    assert_eq!(a.info().await.unwrap().balance.confirmed, 0);
+    let aside = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name().to_string_lossy().contains("damaged-"));
+    assert!(aside, "the damaged file is kept");
+}

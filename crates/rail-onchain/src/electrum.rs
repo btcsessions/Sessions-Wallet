@@ -152,6 +152,11 @@ impl ServerUrl {
             None if tls => 50002,
             None => 50001,
         };
+        // No scheme: 50001 (and testnet's 60001) is plain TCP by convention,
+        // which is what Umbrel and Start9 show for their Electrum servers.
+        if scheme.is_none() && matches!(port, 50001 | 60001) && !s.ends_with(":s") {
+            tls = false;
+        }
         if port == 0 {
             return Err(bad("has an invalid port"));
         }
@@ -169,6 +174,15 @@ impl ServerUrl {
             ));
         }
         Ok(ServerUrl { host, port, tls })
+    }
+
+    /// The same server with TLS switched (for "host:port" typed without a
+    /// scheme, when the guess was wrong).
+    pub fn other_transport(&self) -> Self {
+        ServerUrl {
+            tls: !self.tls,
+            ..self.clone()
+        }
     }
 }
 
@@ -353,9 +367,21 @@ fn tcp_connect(server: &ServerUrl, timeout: Duration) -> std::io::Result<TcpStre
         }
         return Ok(s);
     }
-    let mut addrs: Vec<SocketAddr> = (server.host.as_str(), server.port)
-        .to_socket_addrs()?
-        .collect();
+    let mut addrs: Vec<SocketAddr> = match (server.host.as_str(), server.port).to_socket_addrs() {
+        Ok(a) => a.collect(),
+        Err(e) if server.host.ends_with(".local") => {
+            // The system can't find .local names here: ask on the network.
+            let found = crate::mdns::resolve(&server.host, Duration::from_secs(2));
+            if found.is_empty() {
+                return Err(e);
+            }
+            found
+                .into_iter()
+                .map(|ip| SocketAddr::from((ip, server.port)))
+                .collect()
+        }
+        Err(e) => return Err(e),
+    };
     ipv4_first(&mut addrs);
     let mut last = timed_out("couldn't connect in time");
     for addr in addrs {
@@ -405,6 +431,42 @@ pub fn open(server: &ServerUrl) -> std::result::Result<Opened, EError> {
     socket.set_read_timeout(Some(CALL_TIMEOUT))?;
     socket.set_write_timeout(Some(CALL_TIMEOUT))?;
     Ok(Opened { client, socket })
+}
+
+/// Connect to `server` on its own (not the shared pool) and read the chain
+/// tip: the "Test connection" check. Returns the block height.
+pub fn probe(server: &ServerUrl) -> std::result::Result<usize, EError> {
+    let opened = open(server)?;
+    let tip = opened.client.block_headers_subscribe()?;
+    let _ = opened.socket.shutdown(std::net::Shutdown::Both);
+    Ok(tip.height)
+}
+
+/// What went wrong connecting to `server`, in plain words.
+pub fn explain(server: &ServerUrl, e: &EError) -> String {
+    let host = &server.host;
+    let port = server.port;
+    let text = e.to_string();
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("lookup") || lower.contains("resolve") || lower.contains("name or service") || lower.contains("nodename") {
+        if host.ends_with(".local") {
+            format!("Couldn't find {host} on this network. Check the name and that you're on the same Wi-Fi, or use its IP address (like 192.168.1.20).")
+        } else {
+            format!("Couldn't find {host}. Check the address.")
+        }
+    } else if lower.contains("refused") {
+        format!("{host} is there, but nothing answered on port {port}. Check the port, and that its Electrum server app (Electrs or Fulcrum) is running.")
+    } else if lower.contains("timed out") || lower.contains("timeout") || lower.contains("would block") {
+        format!("No answer from {host}:{port}. Check you're on the same network (or VPN) as your node.")
+    } else if lower.contains("tls") || lower.contains("certificate") || lower.contains("handshake") || lower.contains("corrupt message") {
+        if server.tls {
+            format!("{host}:{port} didn't accept an encrypted (SSL) connection: {text}")
+        } else {
+            format!("{host}:{port} expects an encrypted connection: {text}")
+        }
+    } else {
+        format!("Couldn't connect to {host}:{port}: {text}")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +580,12 @@ impl Conn {
     }
 
     /// The server in use, if connected.
+    /// The chain tip through this connection (reconnecting if needed):
+    /// whether the wallet can reach its server right now.
+    pub fn tip_height(&self) -> std::result::Result<usize, EError> {
+        Ok(self.block_headers_subscribe()?.height)
+    }
+
     pub fn connected_to(&self) -> Option<ServerUrl> {
         self.live
             .read()
@@ -991,6 +1059,26 @@ mod tests {
         ServerUrl::parse(s).unwrap()
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probe_reads_the_tip_and_explains_failures() {
+        let server = crate::push::tests::fake_server().await;
+        let url = server.url.clone();
+        let height = tokio::task::spawn_blocking(move || probe(&url)).await.unwrap().unwrap();
+        assert_eq!(height, 0);
+        // Wrong transport: SSL to a plain port fails.
+        let ssl = server.url.other_transport();
+        let e = tokio::task::spawn_blocking(move || probe(&ssl).map(|_| ()))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(!explain(&server.url.other_transport(), &e).is_empty());
+        // Nothing listening.
+        let closed = ServerUrl::parse("tcp://127.0.0.1:1").unwrap();
+        let c = closed.clone();
+        let e = tokio::task::spawn_blocking(move || probe(&c).map(|_| ())).await.unwrap().unwrap_err();
+        assert!(explain(&closed, &e).contains("nothing answered"), "{}", explain(&closed, &e));
+    }
+
     #[test]
     fn parses_server_addresses() {
         let ssl = |h: &str, p| ServerUrl {
@@ -1016,6 +1104,11 @@ mod tests {
             ssl("electrum.example.com", 443)
         );
         assert_eq!(url("example.com:50001:t"), tcp("example.com", 50001));
+        // What Umbrel shows: host:50001 means plain TCP unless told otherwise.
+        assert_eq!(url("umbrelhome.local:50001"), tcp("umbrelhome.local", 50001));
+        assert_eq!(url("ssl://umbrel.local:50001"), ssl("umbrel.local", 50001));
+        assert_eq!(url("umbrel.local:50001:s"), ssl("umbrel.local", 50001));
+        assert_eq!(url("umbrel.local:50001").other_transport(), ssl("umbrel.local", 50001));
         assert_eq!(url("example.com:50002:s"), ssl("example.com", 50002));
         assert_eq!(url("example.com"), ssl("example.com", 50002));
         assert_eq!(url("tcp://192.168.1.10"), tcp("192.168.1.10", 50001));

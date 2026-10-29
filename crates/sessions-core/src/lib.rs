@@ -26,5 +26,5 @@ pub mod wallet;
 pub use error::{Error, Result};
 pub use rail::{Rail, SwapProvider};
 pub use types::*;
-pub use private::PrivatePay;
+pub use private::{private_forward_amount, PrivatePay};
 pub use wallet::Wallet;
