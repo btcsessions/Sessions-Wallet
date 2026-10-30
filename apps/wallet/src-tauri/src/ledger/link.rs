@@ -592,7 +592,7 @@ mod imp {
             match outcome {
                 ConnectOutcome::Connected(c) => {
                     tracing::info!("ledger: connected to {} over Bluetooth (mtu {})", c.name, c.mtu);
-                    up.store(true, Ordering::SeqCst);
+                    up2.store(true, Ordering::SeqCst);
                     let link = BleLink {
                         app: app.clone(),
                         incoming: Mutex::new(receiver),
