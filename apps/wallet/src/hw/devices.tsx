@@ -1,7 +1,7 @@
 // Hardware wallets we know, with a tiny drawing of each so they're easy to
 // tell apart at a glance.
 
-export type Connect = "trezor" | "bitbox" | "jade" | "qr";
+export type Connect = "trezor" | "bitbox" | "jade" | "ledger" | "qr";
 
 export interface DeviceDef {
   id: string;
@@ -31,6 +31,22 @@ export const DEVICES: DeviceDef[] = [
     connect: "bitbox",
     via: "Plugged in by USB",
     exportHint: "Plug in your BitBox02 and unlock it with your password.",
+  },
+  {
+    id: "ledger-flex",
+    name: "Ledger Flex",
+    connect: "ledger",
+    via: "Plugged in by USB, or Bluetooth",
+    viaDesktop: "USB cable or Bluetooth",
+    exportHint: "Unlock your Ledger. The Bitcoin app opens when the wallet asks.",
+  },
+  {
+    id: "ledger-nano-gen5",
+    name: "Ledger Nano Gen5",
+    connect: "ledger",
+    via: "Plugged in by USB, or Bluetooth",
+    viaDesktop: "USB cable or Bluetooth",
+    exportHint: "Unlock your Ledger. The Bitcoin app opens when the wallet asks.",
   },
   {
     id: "jade",
@@ -128,6 +144,23 @@ function Drawing({ id }: { id: string }) {
           <rect x="6" y="8.5" width="12" height="8" rx="1" {...screen} />
           <path d="M15.5 6V4.6h3V6" />
           <path d="M2 11.2v2.6M22 11.2v2.6" strokeWidth="2.4" />
+        </>
+      );
+    case "ledger-flex":
+      // Portrait card with an edge-to-edge E Ink touchscreen.
+      return (
+        <>
+          <rect x="4.5" y="2" width="15" height="20" rx="2.6" />
+          <rect x="6.3" y="3.8" width="11.4" height="16.4" rx="1.2" {...screen} />
+        </>
+      );
+    case "ledger-nano-gen5":
+      // Smaller, rounder body, touchscreen, a key ring loop at the top.
+      return (
+        <>
+          <rect x="6" y="4" width="12" height="17" rx="3.2" />
+          <rect x="7.8" y="6" width="8.4" height="10.5" rx="1" {...screen} />
+          <path d="M10.5 4V2.6h3V4" />
         </>
       );
     case "bitbox02":

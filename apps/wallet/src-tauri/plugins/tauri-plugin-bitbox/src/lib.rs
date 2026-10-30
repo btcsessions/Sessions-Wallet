@@ -111,6 +111,28 @@ mod android {
                 .map_err(map_err)
         }
 
+        /// Open another HID device the same way: the first one from
+        /// `vendor_id` (and `product_id`, or any with `None`). `label` names
+        /// it in errors. Used for Ledger (one HID device open at a time).
+        pub async fn open_hid(
+            &self,
+            vendor_id: u16,
+            product_id: Option<u16>,
+            label: &str,
+        ) -> Result<Opened, UsbError> {
+            self.0
+                .run_mobile_plugin_async(
+                    "open",
+                    serde_json::json!({
+                        "vendorId": vendor_id,
+                        "productId": product_id.map(i32::from).unwrap_or(-1),
+                        "label": label,
+                    }),
+                )
+                .await
+                .map_err(map_err)
+        }
+
         /// Send `data` as 64-byte HID reports (raw: no report-ID byte; the
         /// last report is zero-padded).
         pub async fn write(&self, data: &[u8]) -> Result<(), UsbError> {

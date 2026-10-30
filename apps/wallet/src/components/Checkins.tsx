@@ -92,6 +92,7 @@ export function CheckinReminder() {
 const HOW: Record<string, string> = {
   bitbox02: "Plug it in and unlock it with your password.",
   jade: "Turn it on and unlock it with your PIN.",
+  ledger: "Plug it in or turn it on, and unlock it with your PIN.",
   trezor: "Plug it in and unlock it with your PIN.",
   seedsigner: "Make sure you still have your SeedQR or seed words, and that SeedSigner boots.",
 };

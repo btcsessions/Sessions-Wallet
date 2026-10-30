@@ -6,6 +6,7 @@ mod bitbox;
 mod commands;
 mod config;
 mod jade;
+mod ledger;
 mod link;
 mod private;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -90,6 +91,7 @@ pub fn run() {
             });
             app.manage(bitbox::BitBoxState::new(&dir));
             app.manage(jade::JadeState::new());
+            app.manage(ledger::LedgerState::new());
             let state = state::AppState::new(dir, Some(notify));
             // Bind the wallet vault to this phone's Keystore.
             #[cfg(target_os = "android")]
@@ -208,6 +210,10 @@ pub fn run() {
             jade::jade_descriptors,
             jade::jade_sign,
             jade::jade_show_address,
+            ledger::ledger_cancel,
+            ledger::ledger_descriptors,
+            ledger::ledger_sign,
+            ledger::ledger_show_address,
             commands::tx_details,
             commands::sync_account,
             commands::check_incoming,

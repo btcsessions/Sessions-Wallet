@@ -68,6 +68,42 @@ class ConnectArgs {
     var scanMs: Long = 15000
     /** Remove the phone's (stale) pairing with the last Jade first, then pair afresh. */
     var repair: Boolean = false
+    /**
+     * Another device than Jade (Ledger): the GATT services to look for, and
+     * for each its write and notify characteristics (same order). Empty: Jade.
+     */
+    var services: List<String> = emptyList()
+    var writes: List<String> = emptyList()
+    var notifies: List<String> = emptyList()
+    /** Named in messages; also keys where the device is remembered. */
+    var label: String = "Jade"
+    /** Paired devices whose name starts with one of these count as known. */
+    var names: List<String> = listOf("Jade")
+}
+
+/** The device being talked to: which service, characteristics and names. */
+private class Profile(
+    val label: String,
+    val services: List<UUID>,
+    val writes: List<UUID>,
+    val notifies: List<UUID>,
+    val names: List<String>,
+) {
+    companion object {
+        val JADE = Profile("Jade", listOf(SERVICE), listOf(RX), listOf(TX), listOf("Jade"))
+
+        fun of(args: ConnectArgs): Profile {
+            if (args.services.isEmpty()) return JADE
+            require(args.services.size == args.writes.size && args.services.size == args.notifies.size)
+            return Profile(
+                args.label,
+                args.services.map(UUID::fromString),
+                args.writes.map(UUID::fromString),
+                args.notifies.map(UUID::fromString),
+                args.names,
+            )
+        }
+    }
 }
 
 @InvokeArg
@@ -130,6 +166,9 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
     @Volatile private var channel: Channel? = null
     @Volatile private var device: BluetoothDevice? = null
     private var rx: BluetoothGattCharacteristic? = null
+    /** The characteristic the device answers on (Jade's TX, Ledger's notify). */
+    @Volatile private var txUuid: UUID = TX
+    private var profile: Profile = Profile.JADE
     private var chunk = 20
 
     /** The Jade of the last connect attempt: what `repair` un-pairs. */
@@ -182,7 +221,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
                 invoke.reject(f.message, f.code)
             } catch (l: LinkFailure) {
                 Log.w(TAG, "write: link ${l.message}")
-                invoke.reject("Jade disconnected", "DISCONNECTED")
+                invoke.reject("${profile.label} disconnected", "DISCONNECTED")
             } catch (e: Exception) {
                 Log.w(TAG, "write failed", e)
                 invoke.reject(e.message ?: "Bluetooth error", "OTHER")
@@ -235,7 +274,8 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
         )
         try {
             val args = invoke.parseArgs(ConnectArgs::class.java)
-            Log.d(TAG, "connect: repair=${args.repair}")
+            profile = Profile.of(args)
+            Log.d(TAG, "connect: ${profile.label} repair=${args.repair}")
             closeGatt()
             val manager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager?
             val adapter = manager?.adapter ?: throw Failure("NO_BLUETOOTH", "This phone has no Bluetooth")
@@ -250,7 +290,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
 
             val known = knownJades(adapter)
             val results = scan(adapter, args.scanMs, known.map { it.address }.toSet())
-            if (results.isEmpty()) throw Failure("NOT_FOUND", "No Jade found")
+            if (results.isEmpty()) throw Failure("NOT_FOUND", "No ${profile.label} found")
             val targets = chooseTargets(results, known, args.repair)
             val progress = JSObject()
             progress.put("connecting", true)
@@ -319,9 +359,12 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
         if (services.status != BluetoothGatt.GATT_SUCCESS) {
             throw Failure("OTHER", "Couldn't read Jade's services (${services.status})")
         }
-        val service = g.getService(SERVICE) ?: throw Failure("OTHER", "This isn't a Jade")
-        val tx = service.getCharacteristic(TX) ?: throw Failure("OTHER", "This isn't a Jade")
-        rx = service.getCharacteristic(RX) ?: throw Failure("OTHER", "This isn't a Jade")
+        val which = profile.services.indexOfFirst { g.getService(it) != null }
+        if (which < 0) throw Failure("OTHER", "This isn't a ${profile.label}")
+        val service = g.getService(profile.services[which])
+        val tx = service.getCharacteristic(profile.notifies[which]) ?: throw Failure("OTHER", "This isn't a ${profile.label}")
+        rx = service.getCharacteristic(profile.writes[which]) ?: throw Failure("OTHER", "This isn't a ${profile.label}")
+        txUuid = tx.uuid
 
         // Jade only talks over an encrypted, bonded link. Android shows its
         // pairing dialog; Jade shows the same number to confirm.
@@ -342,7 +385,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
         Log.d(TAG, "connected: mtu=$mtu freshBond=$freshBond")
 
         val ret = JSObject()
-        ret.put("name", target.name ?: "Jade")
+        ret.put("name", target.name ?: profile.label)
         ret.put("mtu", mtu)
         return ret
     }
@@ -352,7 +395,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
         var status = -1
         for (attempt in 0 until attempts) {
             val g = target.connectGatt(activity, false, callback, BluetoothDevice.TRANSPORT_LE)
-                ?: throw Failure("OTHER", "Couldn't connect to Jade")
+                ?: throw Failure("OTHER", "Couldn't connect to ${profile.label}")
             gatt = g
             // A disconnect arrives as an Ev.Conn here; only a dropped pairing throws.
             val conn = poll<Ev.Conn>(timeoutMs)
@@ -375,9 +418,11 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
     /** Paired Jades: the one we used last (if still paired), else any paired device named Jade. */
     private fun knownJades(adapter: BluetoothAdapter): List<BluetoothDevice> {
         val bonded = adapter.bondedDevices.orEmpty()
-        val remembered = prefs().getString(KEY_ADDRESS, null)
+        val remembered = prefs().getString(addressKey(), null)
         val last = bonded.filter { it.address == remembered }
-        val named = bonded.filter { it.address != remembered && (it.name ?: "").startsWith("Jade") }
+        val named = bonded.filter { d ->
+            d.address != remembered && profile.names.any { (d.name ?: "").startsWith(it) }
+        }
         return last + named
     }
 
@@ -419,7 +464,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
                 failed.set(errorCode)
             }
         }
-        val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE)).build())
+        val filters = profile.services.map { ScanFilter.Builder().setServiceUuid(ParcelUuid(it)).build() }
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         scanner.startScan(filters, settings, cb)
         try {
@@ -453,7 +498,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
         try {
             if (target.bondState == BluetoothDevice.BOND_BONDED) return
             if (target.bondState != BluetoothDevice.BOND_BONDING && !target.createBond()) {
-                throw Failure("PAIRING_FAILED", "Couldn't pair with Jade")
+                throw Failure("PAIRING_FAILED", "Couldn't pair with ${profile.label}")
             }
             Log.d(TAG, "bond: pairing with ${target.address}")
             // The user reads and confirms the number on both screens.
@@ -461,13 +506,13 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
             var sawBonding = false
             while (true) {
                 val elapsed = System.currentTimeMillis() - start
-                if (elapsed > 120_000) throw Failure("PAIRING_FAILED", "Pairing with Jade timed out")
+                if (elapsed > 120_000) throw Failure("PAIRING_FAILED", "Pairing with ${profile.label} timed out")
                 // Broadcasts can be missed: also look at the state directly.
                 val state = try {
                     poll<Ev.Bond>(1_000)?.state ?: target.bondState
                 } catch (l: LinkFailure) {
                     // Jade hangs up when the number is declined or not confirmed in time.
-                    throw Failure("PAIRING_FAILED", "Pairing with Jade was declined (${l.status})")
+                    throw Failure("PAIRING_FAILED", "Pairing with ${profile.label} was declined (${l.status})")
                 }
                 when (state) {
                     BluetoothDevice.BOND_BONDED -> {
@@ -476,7 +521,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                     BluetoothDevice.BOND_BONDING -> sawBonding = true
                     BluetoothDevice.BOND_NONE -> if (sawBonding || elapsed > 15_000) {
-                        throw Failure("PAIRING_FAILED", "Pairing with Jade was declined")
+                        throw Failure("PAIRING_FAILED", "Pairing with ${profile.label} was declined")
                     }
                 }
             }
@@ -493,7 +538,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
      */
     private fun unpair() {
         val target = lastTarget ?: knownJades(bluetoothAdapter() ?: return).firstOrNull() ?: return
-        prefs().edit().remove(KEY_ADDRESS).apply()
+        prefs().edit().remove(addressKey()).apply()
         if (target.bondState == BluetoothDevice.BOND_NONE) {
             Log.d(TAG, "unpair: ${target.address} isn't paired any more")
             return
@@ -509,7 +554,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
                 false
             }
             if (!removed) {
-                throw Failure("PAIRING_STALE", "Jade doesn't recognise this phone's pairing")
+                throw Failure("PAIRING_STALE", "${profile.label} doesn't recognise this phone's pairing")
             }
             val deadline = System.currentTimeMillis() + 5_000
             while (target.bondState != BluetoothDevice.BOND_NONE && System.currentTimeMillis() < deadline) {
@@ -517,7 +562,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
             }
             Log.d(TAG, "unpair: bond state now ${target.bondState}")
             if (target.bondState != BluetoothDevice.BOND_NONE) {
-                throw Failure("PAIRING_STALE", "Jade doesn't recognise this phone's pairing")
+                throw Failure("PAIRING_STALE", "${profile.label} doesn't recognise this phone's pairing")
             }
         } finally {
             bondingNow = false
@@ -530,9 +575,9 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
     /** Turn on indications (Jade's TX) or notifications, with a few retries. */
     private fun subscribe(g: BluetoothGatt, tx: BluetoothGattCharacteristic) {
         if (!g.setCharacteristicNotification(tx, true)) {
-            throw Failure("OTHER", "Couldn't listen to Jade")
+            throw Failure("OTHER", "Couldn't listen to ${profile.label}")
         }
-        val cccd = tx.getDescriptor(CCCD) ?: throw Failure("OTHER", "This isn't a Jade")
+        val cccd = tx.getDescriptor(CCCD) ?: throw Failure("OTHER", "This isn't a ${profile.label}")
         val value = if (tx.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) {
             BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
         } else {
@@ -560,14 +605,14 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
             Thread.sleep(if (lastStatus in AUTH_STATUSES) 1_000 else 500)
         }
         if (lastStatus in AUTH_STATUSES) throw LinkFailure("auth", lastStatus)
-        throw Failure("OTHER", "Couldn't listen to Jade ($lastStatus)")
+        throw Failure("OTHER", "Couldn't listen to ${profile.label} ($lastStatus)")
     }
 
     // --- writing --------------------------------------------------------------
 
     private fun writeChunk(bytes: ByteArray) {
-        val g = gatt ?: throw Failure("NOT_CONNECTED", "Jade isn't connected")
-        val c = rx ?: throw Failure("NOT_CONNECTED", "Jade isn't connected")
+        val g = gatt ?: throw Failure("NOT_CONNECTED", "${profile.label} isn't connected")
+        val c = rx ?: throw Failure("NOT_CONNECTED", "${profile.label} isn't connected")
         var tries = 0
         while (true) {
             val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -578,15 +623,15 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
             }
             if (started) break
             // The stack is still busy with the previous operation.
-            if (++tries >= 20) throw Failure("OTHER", "Couldn't write to Jade")
+            if (++tries >= 20) throw Failure("OTHER", "Couldn't write to ${profile.label}")
             Thread.sleep(50)
         }
         val ev = await<Ev.CharWrite>(15_000)
         if (ev.status in AUTH_STATUSES) {
-            throw Failure("PAIRING_STALE", "Jade doesn't recognise this phone's pairing")
+            throw Failure("PAIRING_STALE", "${profile.label} doesn't recognise this phone's pairing")
         }
         if (ev.status != BluetoothGatt.GATT_SUCCESS) {
-            throw Failure("OTHER", "Couldn't write to Jade (${ev.status})")
+            throw Failure("OTHER", "Couldn't write to ${profile.label} (${ev.status})")
         }
     }
 
@@ -649,7 +694,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun received(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
-        if (!ours(g) || characteristic.uuid != TX || value.isEmpty()) return
+        if (!ours(g) || characteristic.uuid != txUuid || value.isEmpty()) return
         val msg = JSObject()
         msg.put("data", Base64.encodeToString(value, Base64.NO_WRAP))
         channel?.send(msg)
@@ -690,11 +735,14 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
     private fun bluetoothAdapter(): BluetoothAdapter? =
         (activity.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager?)?.adapter
 
+    /** Jade keeps its old key; other devices get their own. */
+    private fun addressKey() = if (profile.label == "Jade") KEY_ADDRESS else "${KEY_ADDRESS}_${profile.label.lowercase()}"
+
     private fun prefs() = activity.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     private fun remember(target: BluetoothDevice) {
         if (target.bondState == BluetoothDevice.BOND_BONDED) {
-            prefs().edit().putString(KEY_ADDRESS, target.address).apply()
+            prefs().edit().putString(addressKey(), target.address).apply()
         }
     }
 
@@ -726,7 +774,7 @@ class JadePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private inline fun <reified T : Ev> await(ms: Long): T =
-        poll<T>(ms) ?: throw Failure("DISCONNECTED", "Jade didn't answer")
+        poll<T>(ms) ?: throw Failure("DISCONNECTED", "${profile.label} didn't answer")
 
     private fun closeGatt() {
         val g = gatt

@@ -342,6 +342,9 @@ export interface ReceiveQuote {
   receiveSat: number | null;
 }
 
+/** Progress from a Ledger (Tauri event `ledger://status`). */
+export type LedgerState = "connecting" | "bluetooth" | "pairing" | "unlock" | "open-app" | "confirm";
+
 /** Progress from a BitBox02 over USB (Tauri events `bitbox://status`, `bitbox://pairing`, `bitbox://paired`). */
 export type BitboxEvent =
   /** "connecting": opening the USB device; "unlock": enter the password on the BitBox02; "confirm": check and confirm on its screen. */

@@ -5,6 +5,7 @@ import { Icon } from "../components/Icon";
 import { ScanButton, type ScanResult } from "../components/Scanner";
 import { SelectRow, Sheet, useBusy } from "../components/ui";
 import { DEVICES, DeviceIcon, jadeLiveHint, viaFor, type DeviceDef } from "../hw/devices";
+import { LedgerProgress, useLedgerProgress } from "../hw/LedgerProgress";
 import { isMobile, trezorDescriptor, trezorDescriptors, type TrezorScript } from "../hw/trezor";
 import { errorText, formatSats } from "../format";
 import { JadeQrUnlock } from "../hw/JadeUnlock";
@@ -48,8 +49,9 @@ export function AddHardwareSheet() {
   const bitbox = useBitboxProgress(talking && device?.connect === "bitbox");
   const [jadeMode, setJadeMode] = useState<JadeMode>("ble");
   const jade = useJadeProgress(talking && device?.connect === "jade");
+  const ledger = useLedgerProgress(talking && device?.connect === "ledger");
   // Devices we talk to directly (not by scanning QR codes).
-  const direct = device?.connect === "trezor" || device?.connect === "bitbox" || (device?.connect === "jade" && jadeMode === "ble");
+  const direct = device?.connect === "trezor" || device?.connect === "bitbox" || device?.connect === "ledger" || (device?.connect === "jade" && jadeMode === "ble");
 
   const inspect = async (text: string) => {
     setError(null);
@@ -64,6 +66,7 @@ export function AddHardwareSheet() {
   /** Descriptors for these account numbers from a connected device. */
   const descriptorsFrom = async (accounts: number[]): Promise<string[]> => {
     if (device?.connect === "bitbox") return (await api()).bitboxDescriptors(script, accounts);
+    if (device?.connect === "ledger") return (await api()).ledgerDescriptors(script, accounts);
     if (device?.connect === "jade") return (await api()).jadeDescriptors(script, accounts);
     return trezorDescriptors(script, accounts);
   };
@@ -329,6 +332,20 @@ export function AddHardwareSheet() {
             {busy ? "Waiting for Trezor…" : "Connect Trezor"}
           </button>
           {isMobile() && <p className="group-note">Needs the Trezor Suite app, version 26.8 or later.</p>}
+        </>
+      ) : device.connect === "ledger" ? (
+        <>
+          <p className="notice">
+            {isMobile()
+              ? "Plug your Ledger into this phone (USB-C), or turn it on with Bluetooth enabled and keep it close. Unlock it with your PIN; the wallet opens the Bitcoin app for you."
+              : "Plug your Ledger into this computer, or turn it on with Bluetooth enabled and keep it close. Unlock it with your PIN; the wallet opens the Bitcoin app for you."}
+          </p>
+          {pickers}
+          <LedgerProgress step={ledger} />
+          <button className="btn primary block" disabled={busy} onClick={fromDevice}>
+            {busy ? "Waiting for Ledger…" : "Connect Ledger"}
+          </button>
+          <p className="group-note" style={{ marginTop: 12 }}>Needs the Bitcoin app (2.1 or newer), installed with Ledger Live. Close Ledger Live while you connect.</p>
         </>
       ) : device.connect === "bitbox" ? (
         <>

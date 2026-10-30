@@ -138,7 +138,8 @@ export function KeyPicker({
             <strong>This phone</strong>
             <span>{phoneUsed ? "Already in this vault" : "A key from your recovery phrase"}</span>
           </button>
-          {DEVICES.map((d) => (
+          {/* Ledger can't sign for vaults here yet. */}
+          {DEVICES.filter((d) => d.connect !== "ledger").map((d) => (
             <button key={d.id} className="device-card featured" onClick={() => setSource({ kind: "device", def: d })}>
               <DeviceIcon device={d.name} size={40} />
               <strong>{d.name}</strong>

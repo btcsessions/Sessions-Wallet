@@ -3,6 +3,7 @@ import type {
   LinkStatus,
   SyncStatus,
   PrivateQuote,
+  LedgerState,
   ConnectionTest,
   ChainStatus,
   SyncDirection,
@@ -186,6 +187,14 @@ export interface WalletApi {
   hardwareAddressIndex(account: string, address: string): Promise<number>;
   /** BitBox02 progress (status, pairing code, paired). Returns an unsubscribe. */
   onBitbox(cb: (e: BitboxEvent) => void): Promise<() => void>;
+  /** Ledger (USB or Bluetooth): descriptors for these account numbers. */
+  ledgerDescriptors(script: "wpkh" | "tr", accounts: number[]): Promise<string[]>;
+  /** Sign on the Ledger; returns the PSBT with its signatures. */
+  ledgerSign(psbt: string, account?: string): Promise<string>;
+  /** Show receive address `index` on the Ledger (checked against the wallet's). */
+  ledgerShowAddress(account: string, index: number): Promise<string>;
+  ledgerCancel(): Promise<void>;
+  onLedger(cb: (state: LedgerState) => void): Promise<() => void>;
   /** Jade over Bluetooth: one descriptor per account number, `wpkh([fp/84h/0h/{n}h]xpub…/<0;1>/*)` (`tr`/86h for Taproot, firmware 1.0.34+). Connects and unlocks first if needed. */
   jadeDescriptors(script: "wpkh" | "tr", accounts: number[]): Promise<string[]>;
   /** Sign an unsigned PSBT (base64) on Jade over Bluetooth; returns the signed PSBT for `resume`. */

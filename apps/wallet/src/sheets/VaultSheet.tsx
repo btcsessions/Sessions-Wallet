@@ -521,7 +521,7 @@ export function VaultSheet() {
   }
 
   if (step === "importReview" && preview) {
-    const deviceOptions = DEVICES.map((d) => d.name);
+    const deviceOptions = DEVICES.filter((d) => d.connect !== "ledger").map((d) => d.name);
     return (
       <Sheet
         title="Import vault"

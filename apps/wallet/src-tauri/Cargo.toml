@@ -49,6 +49,8 @@ tauri-plugin-marmot = { path = "plugins/tauri-plugin-marmot" }
 rand = "0.8"
 async-trait.workspace = true
 bitcoin.workspace = true
+# Ledger's Bitcoin app (2.1+): wallet policies, PSBT signing, address checks.
+ledger_bitcoin_client = "0.7"
 # BitBox02. USB (hidapi) on desktop only; Android goes through tauri-plugin-bitbox.
 bitbox-api = { version = "0.13", features = ["tokio", "multithreaded"] }
 # Push updates from mempool.space-style servers (new blocks, payments to

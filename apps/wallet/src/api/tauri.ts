@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WalletApi } from "./index";
-import type { Arrival, BackupStatus, BackupTest, BackupTestErrorCode, BackupTestMethod, BiometricErrorCode, JadeState, RestoreResult } from "./types";
+import type { LedgerState, Arrival, BackupStatus, BackupTest, BackupTestErrorCode, BackupTestMethod, BiometricErrorCode, JadeState, RestoreResult } from "./types";
 import { BackupTestError, BiometricError } from "./types";
 
 const BIOMETRIC_CODES: readonly string[] = [
@@ -126,6 +126,11 @@ export const tauriApi: WalletApi = {
   bitboxSign: (psbt, account) => invoke("bitbox_sign", { psbt, account: account ?? null }),
   bitboxShowAddress: (account, index) => invoke("bitbox_show_address", { account, index }),
   hardwareAddressIndex: (account, address) => invoke("hardware_address_index", { account, address }),
+  ledgerDescriptors: (script, accounts) => invoke("ledger_descriptors", { script, accounts }),
+  ledgerSign: (psbt, account) => invoke("ledger_sign", { psbt, account: account ?? null }),
+  ledgerShowAddress: (account, index) => invoke("ledger_show_address", { account, index }),
+  ledgerCancel: () => invoke("ledger_cancel"),
+  onLedger: async (cb) => listen<{ state: LedgerState }>("ledger://status", (e) => cb(e.payload.state)),
   onBitbox: async (cb) => {
     const offs = await Promise.all([
       listen<{ state: "connecting" | "unlock" | "confirm" }>("bitbox://status", (e) => cb({ kind: "status", state: e.payload.state })),

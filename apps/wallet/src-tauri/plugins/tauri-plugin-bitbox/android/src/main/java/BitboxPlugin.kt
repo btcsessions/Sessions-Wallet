@@ -35,6 +35,16 @@ private const val REPORT = 64
 /** A report goes out at once unless the device is gone. */
 private const val WRITE_TIMEOUT_MS = 5_000
 
+/** Which USB device to open: the BitBox02 by default; Ledger passes its vendor ID and any product. */
+@InvokeArg
+class OpenArgs {
+    var vendorId: Int = VENDOR_ID
+    /** -1: any product of this vendor. */
+    var productId: Int = PRODUCT_ID
+    /** Named in messages. */
+    var label: String = "BitBox02"
+}
+
 @InvokeArg
 class WriteArgs {
     var data: String = ""
@@ -73,16 +83,21 @@ class BitboxPlugin(private val activity: Activity) : Plugin(activity) {
     private val usbManager: UsbManager
         get() = activity.getSystemService(Context.USB_SERVICE) as UsbManager
 
+    /** Named in messages: the device of the last `open`. */
+    private var label = "BitBox02"
+
     @Command
     fun open(invoke: Invoke) {
         try {
+            val args = invoke.parseArgs(OpenArgs::class.java)
+            label = args.label
             val manager = usbManager
             val device = manager.deviceList.values.firstOrNull {
-                it.vendorId == VENDOR_ID && it.productId == PRODUCT_ID
+                it.vendorId == args.vendorId && (args.productId < 0 || it.productId == args.productId)
             }
             if (device == null) {
-                Log.d(TAG, "open: no BitBox02 among ${manager.deviceList.size} USB device(s)")
-                invoke.reject("No BitBox02 found", "NOT_FOUND")
+                Log.d(TAG, "open: no $label among ${manager.deviceList.size} USB device(s)")
+                invoke.reject("No $label found", "NOT_FOUND")
                 return
             }
             Log.d(TAG, "open: found ${device.deviceName} (${device.productName}), permission=${manager.hasPermission(device)}")
@@ -113,7 +128,7 @@ class BitboxPlugin(private val activity: Activity) : Plugin(activity) {
                     val sent = o.connection.bulkTransfer(o.epOut, report, REPORT, WRITE_TIMEOUT_MS)
                     if (sent < 0) {
                         Log.w(TAG, "write: bulkTransfer failed ($sent) at byte $at of ${bytes.size}")
-                        invoke.reject("Couldn't write to the BitBox02", "WRITE_FAILED")
+                        invoke.reject("Couldn't write to the $label", "WRITE_FAILED")
                         return@execute
                     }
                     at += n
@@ -146,10 +161,10 @@ class BitboxPlugin(private val activity: Activity) : Plugin(activity) {
                     // bulkTransfer says -1 for both; the clock tells them apart.
                     if (took >= timeout - 50) {
                         Log.w(TAG, "read: nothing within ${timeout}ms")
-                        invoke.reject("The BitBox02 didn't answer", "TIMEOUT")
+                        invoke.reject("The $label didn't answer", "TIMEOUT")
                     } else {
                         Log.w(TAG, "read: bulkTransfer failed ($got) after ${took}ms")
-                        invoke.reject("Couldn't read from the BitBox02", "READ_FAILED")
+                        invoke.reject("Couldn't read from the $label", "READ_FAILED")
                     }
                     return@execute
                 }
@@ -231,7 +246,7 @@ class BitboxPlugin(private val activity: Activity) : Plugin(activity) {
             val intf = hidInterface(device)
             if (intf == null) {
                 Log.w(TAG, "open: no HID interface among ${device.interfaceCount}")
-                invoke.reject("This BitBox02 has no HID interface", "OPEN_FAILED")
+                invoke.reject("This $label has no HID interface", "OPEN_FAILED")
                 return
             }
             var epIn: UsbEndpoint? = null
@@ -246,20 +261,20 @@ class BitboxPlugin(private val activity: Activity) : Plugin(activity) {
             }
             if (epIn == null || epOut == null) {
                 Log.w(TAG, "open: interface ${intf.id} has ${intf.endpointCount} endpoint(s), need IN and OUT")
-                invoke.reject("This BitBox02 has no HID endpoints", "OPEN_FAILED")
+                invoke.reject("This $label has no HID endpoints", "OPEN_FAILED")
                 return
             }
             val conn = manager.openDevice(device)
             if (conn == null) {
                 Log.w(TAG, "open: UsbManager.openDevice returned null")
-                invoke.reject("Android wouldn't open the BitBox02", "OPEN_FAILED")
+                invoke.reject("Android wouldn't open the $label", "OPEN_FAILED")
                 return
             }
             // force = true detaches the kernel's HID driver if it has the interface.
             if (!conn.claimInterface(intf, true)) {
                 Log.w(TAG, "open: couldn't claim interface ${intf.id}")
                 conn.close()
-                invoke.reject("The BitBox02 is in use by another app", "BUSY")
+                invoke.reject("The $label is in use by another app", "BUSY")
                 return
             }
             open = Open(conn, intf, epIn, epOut)
@@ -270,7 +285,7 @@ class BitboxPlugin(private val activity: Activity) : Plugin(activity) {
                 ),
             )
             val ret = JSObject()
-            ret.put("product", device.productName ?: "BitBox02")
+            ret.put("product", device.productName ?: label)
             invoke.resolve(ret)
         }
     }

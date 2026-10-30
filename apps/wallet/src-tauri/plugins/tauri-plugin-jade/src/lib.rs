@@ -15,7 +15,7 @@ use tauri::plugin::{Builder, TauriPlugin};
 use tauri::Runtime;
 
 #[cfg(target_os = "android")]
-pub use android::{BleError, BleEvent, ConnectOutcome, Connected, JadeBle, LinkFailure};
+pub use android::{BleError, BleEvent, BleProfile, ConnectOutcome, Connected, JadeBle, LinkFailure};
 
 /// Register with `tauri::Builder::plugin`.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
@@ -61,6 +61,18 @@ mod android {
     }
 
     /// A connected, bonded Jade with indications on.
+    /// Another device than Jade on the same plugin (Ledger): its GATT
+    /// services and, for each, the write and notify characteristics.
+    #[derive(Debug, Clone)]
+    pub struct BleProfile {
+        pub label: String,
+        pub services: Vec<String>,
+        pub writes: Vec<String>,
+        pub notifies: Vec<String>,
+        /// Paired devices named with one of these prefixes count as known.
+        pub names: Vec<String>,
+    }
+
     #[derive(Debug)]
     pub struct Connected {
         /// Advertised name, e.g. "Jade ABCDEF".
@@ -216,6 +228,21 @@ mod android {
         where
             F: Fn(BleEvent) + Send + Sync + 'static,
         {
+            self.connect_device(None, scan_ms, repair, on_event).await
+        }
+
+        /// [`connect`](Self::connect), for the device `profile` describes
+        /// (`None`: Jade).
+        pub async fn connect_device<F>(
+            &self,
+            profile: Option<&BleProfile>,
+            scan_ms: u64,
+            repair: bool,
+            on_event: F,
+        ) -> Result<ConnectOutcome, BleError>
+        where
+            F: Fn(BleEvent) + Send + Sync + 'static,
+        {
             let channel: Channel<serde_json::Value> = Channel::new(move |body| {
                 if let Some(e) = parse(body) {
                     on_event(e);
@@ -224,10 +251,17 @@ mod android {
             });
             let reply: ConnectReply = self
                 .0
-                .run_mobile_plugin_async(
-                    "connect",
-                    serde_json::json!({ "onData": channel, "scanMs": scan_ms, "repair": repair }),
-                )
+                .run_mobile_plugin_async("connect", {
+                    let mut args = serde_json::json!({ "onData": channel, "scanMs": scan_ms, "repair": repair });
+                    if let Some(p) = profile {
+                        args["label"] = p.label.clone().into();
+                        args["services"] = p.services.clone().into();
+                        args["writes"] = p.writes.clone().into();
+                        args["notifies"] = p.notifies.clone().into();
+                        args["names"] = p.names.clone().into();
+                    }
+                    args
+                })
                 .await
                 .map_err(map_err)?;
             match reply {

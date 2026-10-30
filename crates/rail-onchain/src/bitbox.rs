@@ -55,6 +55,15 @@ pub const JADE: Device = Device {
     needs_every_input: false,
 };
 
+pub const LEDGER: Device = Device {
+    name: "Ledger",
+    subject: "The Ledger",
+    use_right_one: "Connect the Ledger you added it with",
+    // The Bitcoin app checks SegWit v0 amounts against the previous transactions.
+    needs_prev_txs: true,
+    needs_every_input: true,
+};
+
 /// Single-sig address types the wallet adds from a BitBox02.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptKind {

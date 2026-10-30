@@ -334,6 +334,7 @@ function find(id: string) {
 }
 
 let linkStarted = 0;
+const ledgerListeners = new Set<(s: import("./types").LedgerState) => void>();
 let mockPrivate: import("./types").PrivateQuote | null = null;
 let mockDevices: import("./types").LinkedDevice[] = [{ id: "me", name: "Android phone", kind: "phone", seenAt: Math.floor(Date.now() / 1000), thisDevice: true }];
 
@@ -677,6 +678,31 @@ export const mockApi: WalletApi = {
     mockBitbox({ kind: "status", state: "confirm" });
     await sleep(1200);
     return "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+  },
+  async ledgerDescriptors(script, accounts) {
+    for (const s of ["connecting", "unlock", "open-app"] as const) {
+      ledgerListeners.forEach((l) => l(s));
+      await sleep(700);
+    }
+    const purpose = script === "tr" ? 86 : 84;
+    return accounts.map(
+      (n) => `${script}([73c5da0a/${purpose}h/0h/${n}h]xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V/<0;1>/*)`,
+    );
+  },
+  async ledgerSign(psbt) {
+    ledgerListeners.forEach((l) => l("confirm"));
+    await sleep(1500);
+    return psbt;
+  },
+  async ledgerShowAddress() {
+    ledgerListeners.forEach((l) => l("confirm"));
+    await sleep(1200);
+    return "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+  },
+  async ledgerCancel() {},
+  async onLedger(cb) {
+    ledgerListeners.add(cb);
+    return () => ledgerListeners.delete(cb);
   },
   async onBitbox(cb) {
     bitboxListeners.add(cb);

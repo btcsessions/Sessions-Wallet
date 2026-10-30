@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LedgerProgress, useLedgerProgress } from "../hw/LedgerProgress";
 import { api } from "../api";
 import type { Execution, FeePriority } from "../api/types";
 import { AnimatedPsbtQR } from "../components/AnimatedQR";
@@ -39,6 +40,8 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
   const quote = paused.awaitingSignature;
   const quoteAccount = accounts.find((a) => a.id === quote?.account);
   const isBitbox = quoteAccount?.custody.type === "hardware" && deviceFor(quoteAccount.custody.device).connect === "bitbox";
+  const isLedger = quoteAccount?.custody.type === "hardware" && deviceFor(quoteAccount.custody.device).connect === "ledger";
+  const ledger = useLedgerProgress(talking && isLedger);
   const ns = quote?.needsSignature;
   if (quote && ns && quoteAccount?.custody.type === "multisig") return <VaultSign account={quote.account} paused={paused} fee={fee} onDone={onDone} />;
   if (!quote || !ns) return null;
@@ -74,13 +77,13 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
       }
     });
 
-  const signDirect = (kind: "bitbox" | "jade") =>
+  const signDirect = (kind: "bitbox" | "jade" | "ledger") =>
     run(async () => {
       setError(null);
       setTalking(true);
       try {
         const a = await api();
-        const psbt = kind === "bitbox" ? await a.bitboxSign(ns.psbtBase64) : await a.jadeSign(ns.psbtBase64);
+        const psbt = kind === "bitbox" ? await a.bitboxSign(ns.psbtBase64) : kind === "ledger" ? await a.ledgerSign(ns.psbtBase64) : await a.jadeSign(ns.psbtBase64);
         await (await api()).resume(paused, psbt, fee);
         await refresh();
         onDone();
@@ -110,6 +113,14 @@ export function SignStep({ paused, fee, onDone }: { paused: Execution; fee: FeeP
           </p>
           <button className="btn primary block" disabled={busy} onClick={signWithTrezor}>
             {busy ? "Waiting for Trezor…" : "Sign with Trezor"}
+          </button>
+        </>
+      ) : isLedger ? (
+        <>
+          <p className="notice">Plug in your {name}, or turn it on with Bluetooth and keep it close. Unlock it, then check the amount and address on its screen and sign.</p>
+          <LedgerProgress step={ledger} signing />
+          <button className="btn primary block" disabled={busy} onClick={() => signDirect("ledger")}>
+            {busy ? "Waiting for Ledger…" : "Sign with Ledger"}
           </button>
         </>
       ) : isBitbox ? (

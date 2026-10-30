@@ -490,6 +490,7 @@ function VerifyOnDevice({ account, request, first = false, onSkip }: { account: 
       const index = await a.hardwareAddressIndex(account.id, address);
       let shown: string;
       if (device.connect === "bitbox") shown = await a.bitboxShowAddress(account.id, index);
+      else if (device.connect === "ledger") shown = await a.ledgerShowAddress(account.id, index);
       else if (device.connect === "jade") shown = await a.jadeShowAddress(account.id, index);
       else shown = await (await import("../hw/trezor")).trezorShowAddress(account.id, index);
       if (shown.toLowerCase() !== address.toLowerCase()) throw new Error("Your device showed a different address. Don't use this one");
