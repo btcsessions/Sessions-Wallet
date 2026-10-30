@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { homeCard } from "./sheets/AccountsSheet";
 import { api } from "./api";
 import { Icon } from "./components/Icon";
 import { InlineSheet } from "./components/ui";
@@ -58,8 +59,11 @@ function NavItem({ active, onClick, children, label }: { active: boolean; onClic
 }
 
 function Sidebar() {
-  const { accounts, page, showPage, open, unit, price, currency, syncing } = useWallet();
+  const { accounts, page, showPage, open, unit, price, currency, syncing, layout } = useWallet();
   const total = accounts.reduce((s, a) => s + held(a), 0);
+  // Only what's on the home screen (and the page open now); the rest is in Settings › All accounts.
+  const shown = accounts.filter((a) => homeCard(accounts, layout, a) || (page.kind === "account" && page.id === a.id));
+  const hidden = accounts.length - shown.length;
   const fmt = (sats: number) => {
     const p = amountParts(sats, unit, price, currency);
     return p.suffix ? `${p.value} ${p.suffix}` : p.value;
@@ -78,7 +82,7 @@ function Sidebar() {
 
       <p className="nav-label">Accounts</p>
       <div className="nav-list">
-        {accounts.map((a) => (
+        {shown.map((a) => (
           <NavItem key={a.id} active={page.kind === "account" && page.id === a.id} onClick={() => showPage({ kind: "account", id: a.id })}>
             <span className="nav-dot" style={{ background: accountColor(a) }} />
             <span className="grow nav-text">
@@ -88,6 +92,12 @@ function Sidebar() {
             <span className="nav-amount num">{fmt(held(a))}</span>
           </NavItem>
         ))}
+        {hidden > 0 && (
+          <button className="nav-item" onClick={() => open({ name: "accounts" })}>
+            <Icon name="eye" size={16} />
+            <span className="grow">{hidden} hidden</span>
+          </button>
+        )}
         <button className="nav-item add" onClick={() => open({ name: "gallery" })}>
           <Icon name="plus" size={16} />
           <span className="grow">Add account</span>
