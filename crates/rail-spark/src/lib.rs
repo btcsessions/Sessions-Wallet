@@ -9,6 +9,7 @@ pub mod chain;
 mod deposits;
 mod forward;
 mod map;
+mod recovery;
 pub mod nwc;
 
 use std::collections::HashMap;
@@ -34,6 +35,7 @@ pub use chain::{ElectrumChainService, SparkChain};
 pub use deposits::{ClaimResult, ClaimStatus, Deposit, DepositStatus, CONFIRMATIONS_NEEDED};
 pub use forward::{ForwardRecord, ForwardStatus, ForwardStore, SparkForwarder};
 pub use map::{PAYS, RECEIVES};
+pub use recovery::{RecoveryQuote, SpendingHealth};
 
 /// A claimed Lightning address.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -111,6 +113,8 @@ pub struct SparkAccount {
     /// Recent claim quotes, by deposit outpoint.
     #[allow(clippy::type_complexity)]
     deposit_quotes: Mutex<HashMap<(String, u32), (Instant, FetchClaimDepositQuoteResponse)>>,
+    /// The last priced recovery of funds that left the balance.
+    recovery: Mutex<Option<recovery::PreparedRecovery>>,
 }
 
 fn rail_err(e: SdkError) -> Error {
@@ -214,6 +218,7 @@ impl SparkAccount {
             electrum,
             storage_dir: config.storage_dir,
             deposit_quotes: Mutex::new(HashMap::new()),
+            recovery: Mutex::new(None),
         };
         if let (Some(e), Some(a)) = (&account.electrum, account.cached_deposit_address()) {
             let _ = e.prefer_address(&a);
@@ -658,6 +663,19 @@ impl Rail for SparkAccount {
                     .await
             }
             (Method::BitcoinAddress, InputType::BitcoinAddress(d)) => {
+                self.check_network(d.network)?;
+                self.prepare_generic(
+                    method,
+                    input,
+                    amount,
+                    policy,
+                    Some(map::confirmation_speed(req.fee)?),
+                    balance,
+                )
+                .await
+            }
+            // Paid like a bitcoin address; the SDK derives the output (BIP-352).
+            (Method::SilentPayment, InputType::SilentPaymentAddress(d)) => {
                 self.check_network(d.network)?;
                 self.prepare_generic(
                     method,

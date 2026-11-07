@@ -50,6 +50,10 @@ fn parse_bare(s: &str) -> Option<PaymentRequest> {
     if lower.starts_with("lnurl1") {
         return Some(PaymentRequest::Lnurl { lnurl: lower });
     }
+    // Before Spark addresses: both use the "sp" prefix.
+    if is_silent_payment(&lower) {
+        return Some(PaymentRequest::SilentPayment { address: lower });
+    }
     if is_spark_address(&lower) {
         return Some(PaymentRequest::SparkAddress { address: lower });
     }
@@ -78,6 +82,20 @@ fn is_bolt11(lower: &str) -> bool {
         .iter()
         .any(|p| lower.starts_with(p))
         && lower.len() > 20
+}
+
+/// BIP-352 silent payment address, version 0: `sp1q`/`tsp1q`/`sprt1q` and two
+/// 33-byte keys in bech32m (116 characters on mainnet). Spark addresses share
+/// the `sp` prefix but are shorter.
+fn is_silent_payment(lower: &str) -> bool {
+    const CHARSET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    let Some((hrp, data)) = lower.split_once('1') else {
+        return false;
+    };
+    matches!(hrp, "sp" | "tsp" | "sprt")
+        && data.starts_with('q')
+        && data.len() == 113
+        && data.chars().all(|c| CHARSET.contains(c))
 }
 
 fn is_spark_address(lower: &str) -> bool {
@@ -367,4 +385,15 @@ mod tests {
         assert_eq!(btc_to_sats(".00000001"), Some(1));
         assert_eq!(btc_to_sats("0.000000001"), None);
     }
+
+    #[test]
+    fn silent_payment_addresses_are_not_spark_addresses() {
+        let sp = "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv";
+        assert_eq!(
+            parse(sp).unwrap(),
+            PaymentRequest::SilentPayment { address: sp.into() }
+        );
+        assert_eq!(parse(sp).unwrap().method(), Some(crate::Method::SilentPayment));
+    }
+
 }

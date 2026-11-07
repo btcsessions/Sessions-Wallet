@@ -20,6 +20,7 @@ pub fn method_rank(m: Method) -> u8 {
         Method::CashuToken => 5,
         Method::LiquidAddress => 6,
         Method::BitcoinAddress => 7,
+        Method::SilentPayment => 8,
     }
 }
 

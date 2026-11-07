@@ -4,7 +4,7 @@
 import type { WalletApi } from "./index";
 import { BackupTestError, BiometricError } from "./types";
 import type { AlertsStatus, Arrival, BiometricStatus, KeySource, NwcConnection, Proposal, VaultKey } from "./types";
-import type { AccountInfo, BackupStatus, BackupTest, BitboxEvent, ClaimResult, Deposit, JadeEvent, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
+import type { AccountInfo, BackupStatus, BackupTest, BitboxEvent, ClaimResult, Deposit, JadeEvent, RecoveryQuote, SpendingHealth, Layout, Leg, LightningAddress, Method, Payment, PaymentRequest, Plan, Prefs, RestoreResult, Settings } from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bitboxListeners = new Set<(e: BitboxEvent) => void>();
@@ -197,6 +197,9 @@ function p(
 
 let mockLnAddress: LightningAddress | null = null;
 /** One deposit stuck over the automatic claim-fee limit, so the UI can be built. */
+/** Preview: funds that left Spending for the chain (?recoverable=1). */
+let mockRecoverable = typeof location !== "undefined" && /[?&]recoverable=1/.test(location.search) ? 41_250 : 0;
+
 let mockDeposits: Deposit[] = [
   {
     txid: "5e3b7c1f0a9d2e4b6c8a1f3e5d7b9c0a2e4f6a8c0e2d4b6a8c0e2f4a6c8e0d2b",
@@ -909,6 +912,22 @@ export const mockApi: WalletApi = {
     await sleep(500);
     mockLnAddress = { address: `${username.toLowerCase()}@breez.tips`, username: username.toLowerCase(), lnurl: "lnurl1dp68gurn8ghj7ctsdyhxgetkd9h8vmmfvdjjuer9wchxvef0wejk" };
     return mockLnAddress;
+  },
+  async spendingHealth(account): Promise<SpendingHealth> {
+    await sleep(100);
+    if (account !== "spending") throw new Error("Not a Spending account");
+    return { lastSyncedAt: Math.floor(Date.now() / 1000) - 40, syncError: null, recoverableSat: mockRecoverable };
+  },
+  async prepareSpendingRecovery(_account, address, feeRateSatVb): Promise<RecoveryQuote> {
+    await sleep(500);
+    if (!address) throw new Error("Pick where to send it");
+    const fee = Math.round(feeRateSatVb * 160);
+    return { valueSat: mockRecoverable, feeSat: fee, arrivesSat: Math.max(0, mockRecoverable - fee), leftOutSat: 0, needsExit: false };
+  },
+  async recoverSpending() {
+    await sleep(900);
+    mockRecoverable = 0;
+    return ["b7c1e0f2a9d34e5f8a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071"];
   },
   async spendingDeposits(account) {
     await sleep(200);

@@ -26,6 +26,7 @@ pub const PAYS: &[Method] = &[
     Method::LightningAddress,
     Method::Lnurl,
     Method::BitcoinAddress,
+    Method::SilentPayment,
 ];
 
 pub(crate) fn sdk_network(network: Network) -> Result<SdkNetwork> {
@@ -92,11 +93,35 @@ pub(crate) fn description(p: &SdkPayment) -> Option<String> {
             description,
             lnurl_pay_info,
             ..
-        }) => description.clone().filter(|d| !d.is_empty()).or_else(|| {
-            lnurl_pay_info
+        }) => {
+            let text = description.clone().filter(|d| !d.is_empty()).or_else(|| {
+                lnurl_pay_info
+                    .as_ref()
+                    .and_then(|i| i.extract_description())
+            });
+            // Paid to a Lightning address: say which, as the activity's "to".
+            let to = lnurl_pay_info
                 .as_ref()
-                .and_then(|i| i.extract_description())
-        }),
+                .and_then(|i| i.ln_address.clone())
+                .filter(|a| !a.is_empty());
+            match (to, text) {
+                (Some(to), Some(text)) if !text.contains(&to) => Some(format!("{to} · {text}")),
+                (Some(to), None) => Some(to),
+                (_, text) => text,
+            }
+        }
+        // An on-chain send: the address it went to.
+        Some(PaymentDetails::Withdraw {
+            destination_address,
+            ..
+        }) if !destination_address.is_empty() => {
+            let a = destination_address;
+            Some(if a.len() > 16 {
+                format!("To {}…{}", &a[..8], &a[a.len() - 6..])
+            } else {
+                format!("To {a}")
+            })
+        }
         Some(PaymentDetails::Spark {
             invoice_details: Some(d),
             ..
@@ -169,6 +194,7 @@ pub(crate) fn destination(req: &PaymentRequest) -> Result<(Method, String)> {
         PaymentRequest::SparkAddress { address } => address.clone(),
         PaymentRequest::LightningAddress { address } => address.clone(),
         PaymentRequest::Lnurl { lnurl } => lnurl.clone(),
+        PaymentRequest::SilentPayment { address } => address.clone(),
         PaymentRequest::Bolt12 { .. } => {
             return Err(Error::Unsupported(
                 "pay BOLT12 offers (not supported by the Spark SDK yet)".into(),
@@ -346,6 +372,15 @@ mod tests {
     fn descriptions() {
         let p = sdk_payment(Some(lightning(Some("coffee"), None)), SdkMethod::Lightning);
         assert_eq!(description(&p).as_deref(), Some("coffee"));
+
+        let paid_to = LnurlPayInfo {
+            ln_address: Some("ben@btcsessions.ca".into()),
+            ..Default::default()
+        };
+        let p = sdk_payment(Some(lightning(Some("coffee"), Some(paid_to.clone()))), SdkMethod::Lightning);
+        assert_eq!(description(&p).as_deref(), Some("ben@btcsessions.ca · coffee"));
+        let p = sdk_payment(Some(lightning(None, Some(paid_to))), SdkMethod::Lightning);
+        assert_eq!(description(&p).as_deref(), Some("ben@btcsessions.ca"));
 
         let info = LnurlPayInfo {
             metadata: Some(r#"[["text/plain","tip jar"]]"#.into()),

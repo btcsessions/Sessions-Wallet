@@ -1,5 +1,6 @@
 import { DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { ChainWarning } from "./components/NodeConnection";
+import { SpendingWarning } from "./components/SpendingHealth";
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useRef, useState } from "react";
@@ -180,6 +181,7 @@ export function Home({ title = "Sessions Wallet" }: { title?: string }) {
       ))}
 
       <ChainWarning />
+      {!editing && <SpendingWarning />}
       {!editing && layout.advanced && <SweepOffers />}
       {!editing && <CheckinReminder />}
 

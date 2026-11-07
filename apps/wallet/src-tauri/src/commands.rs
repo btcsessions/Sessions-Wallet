@@ -916,6 +916,40 @@ pub async fn refund_deposit(
         .await
 }
 
+/// Spending's health: when it last synced, why the last sync failed, and
+/// funds that left its balance and wait to be recovered on-chain.
+#[tauri::command]
+pub async fn spending_health(
+    state: State<'_, AppState>,
+    account: AccountId,
+) -> Result<rail_spark::SpendingHealth> {
+    spending(&state, &account).await?.health().await
+}
+
+/// Price recovering Spending's recoverable funds to `address` (Savings) at
+/// `fee_rate_sat_vb`.
+#[tauri::command]
+pub async fn prepare_spending_recovery(
+    state: State<'_, AppState>,
+    account: AccountId,
+    address: String,
+    fee_rate_sat_vb: u64,
+) -> Result<rail_spark::RecoveryQuote> {
+    spending(&state, &account)
+        .await?
+        .prepare_recovery(address.trim(), fee_rate_sat_vb)
+        .await
+}
+
+/// Recover what [`prepare_spending_recovery`] priced. Returns the txids.
+#[tauri::command]
+pub async fn recover_spending(
+    state: State<'_, AppState>,
+    account: AccountId,
+) -> Result<Vec<String>> {
+    spending(&state, &account).await?.recover().await
+}
+
 /// Remove an account that holds nothing. Spending can't be removed.
 /// Its keys still derive from the recovery phrase, so adding it back later
 /// recovers any funds that arrive in the meantime.

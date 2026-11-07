@@ -135,6 +135,9 @@ pub enum Method {
     SparkAddress,
     LiquidAddress,
     CashuToken,
+    /// BIP-352 silent payment address (`sp1q…`): a fresh on-chain address per
+    /// payment, worked out by the sender.
+    SilentPayment,
 }
 
 /// A decoded thing the user pasted or scanned.
@@ -171,6 +174,10 @@ pub enum PaymentRequest {
     CashuToken {
         token: String,
     },
+    /// BIP-352 silent payment address. Paid on-chain from Spending.
+    SilentPayment {
+        address: String,
+    },
     /// BIP21 with several options; the planner picks the best one.
     Unified {
         options: Vec<PaymentRequest>,
@@ -188,6 +195,7 @@ impl PaymentRequest {
             PaymentRequest::SparkAddress { .. } => Method::SparkAddress,
             PaymentRequest::LiquidAddress { .. } => Method::LiquidAddress,
             PaymentRequest::CashuToken { .. } => Method::CashuToken,
+            PaymentRequest::SilentPayment { .. } => Method::SilentPayment,
             PaymentRequest::Unified { .. } => return None,
         })
     }

@@ -104,6 +104,9 @@ export const tauriApi: WalletApi = {
     invoke("claim_deposit", { account, txid, vout, maxFeeSat, instant: instant ?? false }),
   refundDeposit: (account, txid, vout, address, feeRateSatVb) =>
     invoke("refund_deposit", { account, txid, vout, address, feeRateSatVb }),
+  spendingHealth: (account) => invoke("spending_health", { account }),
+  prepareSpendingRecovery: (account, address, feeRateSatVb) => invoke("prepare_spending_recovery", { account, address, feeRateSatVb }),
+  recoverSpending: (account) => invoke("recover_spending", { account }),
   listUtxos: (account) => invoke("list_utxos", { account }),
   setLabel: (account, kind, reference, label) => invoke("set_label", { account, kind, reference, label }),
   setFrozen: (account, outpoint, frozen) => invoke("set_frozen", { account, outpoint, frozen }),

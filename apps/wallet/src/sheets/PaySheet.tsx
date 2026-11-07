@@ -28,6 +28,8 @@ function describe(r: PaymentRequest): string {
       return r.address;
     case "liquidAddress":
       return `Liquid address ${r.address.slice(0, 8)}…${r.address.slice(-6)}`;
+    case "silentPayment":
+      return `Silent payment address ${r.address.slice(0, 8)}…${r.address.slice(-6)}`;
     default:
       return METHOD_LABEL[r.type];
   }
@@ -42,7 +44,7 @@ export function onchainAccountLeg(plan: Plan, accounts: AccountInfo[]): boolean 
 /** Leg on-chain? Then fee choice matters. */
 export function onchainLeg(l: Leg): boolean {
   return (
-    (l.type === "toExternal" && l.request.type === "bitcoinAddress") ||
+    (l.type === "toExternal" && (l.request.type === "bitcoinAddress" || l.request.type === "silentPayment")) ||
     (l.type === "toAccount" && l.method === "bitcoinAddress") ||
     (l.type === "viaSwap" && l.payMethod === "bitcoinAddress")
   );
@@ -366,7 +368,12 @@ export function PaySheet({ prefill, from: initialFrom }: { prefill?: string; fro
             {formatSats(amount ?? 0)} <span className="balance-unit">sats</span>
           </div>
           <div className="balance-sub">to {to(request)}</div>
-          {(request.type === "bitcoinAddress" || request.type === "liquidAddress") && (
+          {request.type === "silentPayment" && (
+            <p className="group-note" style={{ margin: "10px auto 0", maxWidth: 320, textAlign: "center" }}>
+              Sent from Spending to a one-time on-chain address only the recipient can recognise.
+            </p>
+          )}
+          {(request.type === "bitcoinAddress" || request.type === "liquidAddress" || request.type === "silentPayment") && (
             // The whole address, in groups of four, to check against where it came from.
             <p className="mono" aria-label="Full address" style={{ margin: "10px auto 0", maxWidth: 300, fontSize: 14, lineHeight: 1.6, wordSpacing: 4, textAlign: "center", color: "var(--label-2)" }}>
               {request.address.match(/.{1,4}/g)?.join(" ")}

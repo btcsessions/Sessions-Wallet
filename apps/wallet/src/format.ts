@@ -50,6 +50,7 @@ export const METHOD_LABEL: Record<Method, string> = {
   sparkAddress: "Spark",
   liquidAddress: "Liquid",
   cashuToken: "Ecash",
+  silentPayment: "Silent payment",
 };
 
 /** What an account holds, unconfirmed incoming included (it can be spent at 0-conf). */

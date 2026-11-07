@@ -10,7 +10,8 @@ export type Method =
   | "lnurl"
   | "sparkAddress"
   | "liquidAddress"
-  | "cashuToken";
+  | "cashuToken"
+  | "silentPayment";
 
 export type Custody =
   | { type: "hot" }
@@ -62,6 +63,7 @@ export type PaymentRequest =
   | { type: "sparkAddress"; address: string }
   | { type: "liquidAddress"; address: string; amountSat?: number | null }
   | { type: "cashuToken"; token: string }
+  | { type: "silentPayment"; address: string }
   | { type: "unified"; options: PaymentRequest[] };
 
 /** A decoded request plus the amount it asks for, if any. */
@@ -238,6 +240,21 @@ export interface LightningAddress {
 export type DepositStatus = "waiting" | "claiming" | "needsApproval" | "failed" | "refunding";
 
 /** An on-chain deposit to a Spending account that isn't in its balance yet. */
+export interface SpendingHealth {
+  /** Unix seconds of the last sync. */
+  lastSyncedAt: number | null;
+  syncError: string | null;
+  recoverableSat: number;
+}
+
+export interface RecoveryQuote {
+  valueSat: number;
+  feeSat: number;
+  arrivesSat: number;
+  leftOutSat: number;
+  needsExit: boolean;
+}
+
 export interface Deposit {
   txid: string;
   vout: number;

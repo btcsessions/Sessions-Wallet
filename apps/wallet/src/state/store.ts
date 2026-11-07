@@ -68,6 +68,8 @@ interface State {
   unavailable: { id: string; name?: string | null; reason: string }[];
   /** Can the wallet reach its chain server (checked every minute). */
   chain: import("../api/types").ChainStatus | null;
+  /** Spending's last sync and funds to recover (checked with `chain`). */
+  spendingHealth: import("../api/types").SpendingHealth | null;
   /** Alerts, contacts, auto-sweep, check-ins: saved in the wallet (and its backup). */
   synced: Synced;
   setSynced<K extends SyncedKey>(key: K, value: Synced[K]): void;
@@ -207,6 +209,7 @@ export const useWallet = create<State>((set, get) => {
     isMock: false,
     unavailable: [],
     chain: null,
+    spendingHealth: null,
     synced: Object.fromEntries(SYNCED_KEYS.map((k) => [k, normalize(k, loadPref(k, undefined))])) as unknown as Synced,
     setSynced(key, value) {
       savePref(key, value);

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { lockAfterMinutes } from "./state/autolock";
 import { refreshChainStatus } from "./components/NodeConnection";
+import { refreshSpendingHealth, resetSpendingHealth } from "./components/SpendingHealth";
 import { ConfirmHost } from "./components/Confirm";
 import { api } from "./api";
 import { DesktopShell, useDesktopLayout } from "./Desktop";
@@ -159,9 +160,11 @@ export function App() {
       useWallet.setState({ chain: null });
       return;
     }
-    void refreshChainStatus();
-    const t = setInterval(() => !document.hidden && void refreshChainStatus(), 60_000);
-    const onVis = () => !document.hidden && void refreshChainStatus();
+    resetSpendingHealth();
+    const check = () => void (refreshChainStatus(), refreshSpendingHealth());
+    check();
+    const t = setInterval(() => !document.hidden && check(), 60_000);
+    const onVis = () => !document.hidden && check();
     document.addEventListener("visibilitychange", onVis);
     return () => {
       clearInterval(t);

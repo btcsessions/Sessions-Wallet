@@ -26,6 +26,8 @@ import type {
   Layout,
   LightningAddress,
   Deposit,
+  SpendingHealth,
+  RecoveryQuote,
   ClaimResult,
   Method,
   NewAccount,
@@ -235,6 +237,12 @@ export interface WalletApi {
   registerLightningAddress(account: string, username: string): Promise<LightningAddress>;
   /** On-chain deposits to a Spending account not yet in its balance (usually none). */
   spendingDeposits(account: string): Promise<Deposit[]>;
+  /** Spending: last sync, its error, funds waiting to be recovered. */
+  spendingHealth(account: string): Promise<SpendingHealth>;
+  /** Price recovering Spending's recoverable funds to an on-chain address. */
+  prepareSpendingRecovery(account: string, address: string, feeRateSatVb: number): Promise<RecoveryQuote>;
+  /** Recover what was priced; returns the txids. */
+  recoverSpending(account: string): Promise<string[]>;
   /**
    * Claim a deposit, paying up to `maxFeeSat` from it. `instant`: claim before
    * it has its confirmations, for `instantFeeSat` (pass at least that); without
