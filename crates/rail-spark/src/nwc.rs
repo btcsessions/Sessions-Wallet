@@ -277,6 +277,7 @@ impl NwcWallet for SparkNwc {
         let resp = sdk
             .receive_payment(ReceivePaymentRequest {
                 payment_method: ReceivePaymentMethod::Bolt11Invoice {
+                    preimage: None,
                     description: req.description.clone().unwrap_or_default(),
                     amount_sats: (req.amount_msat > 0).then_some(req.amount_msat / 1000),
                     expiry_secs: Some(expiry),

@@ -19,7 +19,7 @@ bip39.workspace = true
 bitcoin.workspace = true
 # Pinned to the 0.26.1 release tag. `sqlite` gives the SDK's built-in file
 # storage under `storage_dir`.
-breez-sdk-spark = { git = "https://github.com/breez/spark-sdk", tag = "0.26.1", default-features = false, features = ["sqlite"] }
+breez-sdk-spark = { git = "https://github.com/breez/spark-sdk", tag = "0.28.0", default-features = false, features = ["sqlite"] }
 uuid = { version = "1", features = ["v4"] }
 # The Spending account behind Nostr Wallet Connect.
 sessions-nwc.workspace = true

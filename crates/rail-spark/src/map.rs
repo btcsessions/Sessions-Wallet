@@ -309,7 +309,11 @@ mod tests {
                 Method::SparkAddress,
             ),
             (
-                Some(PaymentDetails::Withdraw { tx_id: "t".into() }),
+                Some(PaymentDetails::Withdraw {
+                    tx_id: "t".into(),
+                    vout: 0,
+                    destination_address: "bc1qtest".into(),
+                }),
                 Method::BitcoinAddress,
             ),
             (

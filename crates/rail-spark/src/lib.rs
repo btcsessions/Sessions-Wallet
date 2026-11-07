@@ -146,8 +146,11 @@ impl SparkAccount {
         // The SDK's default only auto-claims deposits at <= 1 sat/vB, which would
         // leave Savings -> Spending moves stuck whenever fees are higher. Claim at
         // the network's recommended rate (+1 sat/vB) so moves complete on their own.
-        sdk_config.max_deposit_claim_fee = Some(breez_sdk_spark::MaxFee::NetworkRecommended {
-            leeway_sat_per_vbyte: 1,
+        sdk_config.max_deposit_claim_fee = Some(breez_sdk_spark::MaxFee {
+            onchain: breez_sdk_spark::MaxOnchainFee::NetworkRecommended {
+                leeway_sat_per_vbyte: 1,
+            },
+            proportional_ppm: None,
         });
 
         let mut builder = breez_sdk_spark::SdkBuilder::new(
@@ -533,6 +536,7 @@ impl Rail for SparkAccount {
                 },
             },
             Method::Bolt11 => ReceivePaymentMethod::Bolt11Invoice {
+                preimage: None,
                 description: req.description.clone().unwrap_or_default(),
                 amount_sats: req.amount_sat,
                 expiry_secs: None,
@@ -586,7 +590,11 @@ impl Rail for SparkAccount {
         Ok(target)
     }
 
-    async fn invoice_for(&self, request: &sessions_core::PaymentRequest, amount_sat: Sats) -> Result<String> {
+    async fn invoice_for(
+        &self,
+        request: &sessions_core::PaymentRequest,
+        amount_sat: Sats,
+    ) -> Result<String> {
         if let Some(inv) = request.options().into_iter().find_map(|o| match o {
             sessions_core::PaymentRequest::Bolt11 { invoice } => Some(invoice),
             _ => None,
@@ -597,7 +605,11 @@ impl Rail for SparkAccount {
         let pay_request = match self.sdk.parse(&input).await.map_err(rail_err)? {
             InputType::LightningAddress(d) => d.pay_request,
             InputType::LnurlPay(p) => p,
-            _ => return Err(Error::Unsupported("pay this privately (needs a Lightning invoice, address or LNURL)".into())),
+            _ => {
+                return Err(Error::Unsupported(
+                    "pay this privately (needs a Lightning invoice, address or LNURL)".into(),
+                ))
+            }
         };
         let response = self
             .sdk

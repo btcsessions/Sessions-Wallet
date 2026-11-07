@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use breez_sdk_spark::{
     ClaimDeferredReason, ClaimDepositOutcome, ClaimDepositRequest, DepositClaimError, DepositInfo,
     Fee, FetchClaimDepositQuoteRequest, FetchClaimDepositQuoteResponse, InstantClaimStatus,
-    ListUnclaimedDepositsRequest, MaxFee, RefundDepositRequest, RefundState, SdkError,
+    ListUnclaimedDepositsRequest, MaxFee, MaxOnchainFee, RefundDepositRequest, RefundState,
+    SdkError,
 };
 use serde::Serialize;
 use sessions_core::{Error, Payment, Result, Sats};
@@ -107,6 +108,9 @@ pub fn claim_error_text(e: &DepositClaimError) -> String {
             "Claiming it costs {required_fee_sats} sats in network fees right now, \
              more than the automatic limit. Approve the fee to claim it, or wait for fees to drop."
         ),
+        DepositClaimError::DepositTooSmall { .. } => "This deposit is too small to claim: \
+             the network fee to claim it is more than it's worth."
+            .to_string(),
         DepositClaimError::MissingUtxo { .. } => "The deposit transaction can't be found on the \
              bitcoin network. It may have been replaced or dropped."
             .to_string(),
@@ -393,8 +397,11 @@ impl SparkAccount {
             .claim_deposit(ClaimDepositRequest {
                 txid: txid.clone(),
                 vout,
-                max_fee: Some(MaxFee::Fixed {
-                    amount: max_fee_sat,
+                max_fee: Some(MaxFee {
+                    onchain: MaxOnchainFee::Fixed {
+                        amount: max_fee_sat,
+                    },
+                    proportional_ppm: None,
                 }),
             })
             .await;
@@ -527,9 +534,8 @@ mod tests {
             claim_error: Some(DepositClaimError::MaxDepositClaimFeeExceeded {
                 tx: "aa".repeat(32),
                 vout: 1,
-                max_fee: Some(Fee::Rate { sat_per_vbyte: 3 }),
+                max_fee_sats: Some(300),
                 required_fee_sats: 1_200,
-                required_fee_rate_sat_per_vbyte: 13,
             }),
             ..info()
         };
@@ -597,7 +603,7 @@ mod tests {
             confirmations_required: conf,
             credit_amount_sats: 50_000 - fee,
             fee_sats: fee,
-            fee_rate_sat_per_vbyte: fee.div_ceil(99),
+            max_fee_sats: None,
             is_estimate: estimate,
         }
     }

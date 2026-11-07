@@ -755,7 +755,9 @@ impl SwapProvider for SparkForwarder {
 fn sent_from(p: &breez_sdk_spark::Payment) -> Result<Sent> {
     Ok(Sent {
         txid: match &p.details {
-            Some(PaymentDetails::Withdraw { tx_id }) if !tx_id.is_empty() => Some(tx_id.clone()),
+            Some(PaymentDetails::Withdraw { tx_id, .. }) if !tx_id.is_empty() => {
+                Some(tx_id.clone())
+            }
             _ => None,
         },
         fee_sat: map::sats(p.fees)?,
@@ -821,6 +823,7 @@ impl ForwardBackend for SparkAccount {
             .sdk
             .receive_payment(ReceivePaymentRequest {
                 payment_method: ReceivePaymentMethod::Bolt11Invoice {
+                    preimage: None,
                     description: description.to_string(),
                     amount_sats: Some(amount),
                     expiry_secs: Some(expiry_secs),
