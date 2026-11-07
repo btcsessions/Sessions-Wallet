@@ -54,7 +54,7 @@ jobs:
     if: github.event_name != 'pull_request'
     # Only the web checks gate it, so a Rust test failure doesn't hold up the app.
     needs: [ui]
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
