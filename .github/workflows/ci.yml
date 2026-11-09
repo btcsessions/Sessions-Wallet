@@ -126,7 +126,10 @@ jobs:
         name: Group messaging library (MarmotKit)
         run: scripts/build-marmot-bridge.sh
       - working-directory: apps/wallet
-        run: npm ci && npm run tauri build
+        shell: bash
+        # Windows: the .msi only. The NSIS .exe fetches its tools from GitHub
+        # releases at bundle time, which keeps timing out on Windows runners.
+        run: npm ci && npm run tauri build -- ${{ runner.os == 'Windows' && '--bundles msi' || '' }}
         env:
           BREEZ_API_KEY: ${{ secrets.BREEZ_API_KEY }}
       - uses: actions/upload-artifact@v4
