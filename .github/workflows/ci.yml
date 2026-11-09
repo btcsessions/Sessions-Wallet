@@ -22,9 +22,16 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: protoc
+        shell: bash
+        # Package managers, not GitHub release downloads (those keep timing out).
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler ;;
+            macOS) brew install protobuf ;;
+            Windows) choco install protoc -y --no-progress ;;
+          esac
+          protoc --version
       - name: System libraries for Tauri
         run: |
           sudo apt-get update
@@ -65,9 +72,16 @@ jobs:
           workspaces: |
             .
             native/marmot-bridge
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: protoc
+        shell: bash
+        # Package managers, not GitHub release downloads (those keep timing out).
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler ;;
+            macOS) brew install protobuf ;;
+            Windows) choco install protoc -y --no-progress ;;
+          esac
+          protoc --version
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -108,13 +122,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - if: runner.os != 'Windows'
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - if: runner.os == 'Windows'
-        name: protoc (Chocolatey; the GitHub release download keeps timing out on Windows)
-        run: choco install protoc -y --no-progress
+      - name: protoc
+        shell: bash
+        # Package managers, not GitHub release downloads (those keep timing out).
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler ;;
+            macOS) brew install protobuf ;;
+            Windows) choco install protoc -y --no-progress ;;
+          esac
+          protoc --version
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -150,9 +167,16 @@ jobs:
         with:
           targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: protoc
+        shell: bash
+        # Package managers, not GitHub release downloads (those keep timing out).
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler ;;
+            macOS) brew install protobuf ;;
+            Windows) choco install protoc -y --no-progress ;;
+          esac
+          protoc --version
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
