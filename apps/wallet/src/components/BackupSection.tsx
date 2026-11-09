@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { PASSKEY_BACKUPS } from "../features";
 import { api } from "../api";
 import { isBackupTestError, type BackupStatus, type BackupTest, type BackupTestMethod } from "../api/types";
 import { errorText } from "../format";
@@ -120,7 +121,7 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
       {!status.phrase && status.seedOrigin === "phrase" && (
         <p className="notice">
           <Icon name="warn" size={16} /> You haven't confirmed writing down your recovery phrase.
-          {passkeys && !status.passkey ? " Add a passkey backup, or show the phrase below and write it down." : " Show it below and write it down."}
+          {passkeys && PASSKEY_BACKUPS && !status.passkey ? " Add a passkey backup, or show the phrase below and write it down." : " Show it below and write it down."}
         </p>
       )}
       <div style={{ display: "grid", gap: 10, marginBottom: 22 }}>
@@ -173,16 +174,18 @@ export function BackupSection({ onStatus }: { onStatus?: (s: BackupStatus) => vo
           </div>
         )}
         {advanced && passkeys && status.passkey && status.seedOrigin === "phrase" && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <button className="btn" disabled={!!busy} onClick={() => void swap("replace")}>
-              {busy === "replace" ? "Create it when asked…" : "Replace passkey"}
-            </button>
+          <div style={{ display: "grid", gridTemplateColumns: PASSKEY_BACKUPS ? "1fr 1fr" : "1fr", gap: 10 }}>
+            {PASSKEY_BACKUPS && (
+              <button className="btn" disabled={!!busy} onClick={() => void swap("replace")}>
+                {busy === "replace" ? "Create it when asked…" : "Replace passkey"}
+              </button>
+            )}
             <button className="btn" disabled={!!busy} onClick={() => void swap("remove")}>
               {busy === "remove" ? "Removing…" : "Remove passkey"}
             </button>
           </div>
         )}
-        {advanced && passkeys && !status.passkey && (
+        {advanced && passkeys && PASSKEY_BACKUPS && !status.passkey && (
           <button className="btn block" disabled={!!busy} onClick={() => void act("passkey")}>
             {busy === "passkey" ? "Create your passkey when asked…" : "Add a passkey backup"}
           </button>

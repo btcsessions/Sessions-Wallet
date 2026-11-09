@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { PASSKEY_BACKUPS } from "./features";
 import { api } from "./api";
 import { Icon } from "./components/Icon";
 import { CopyButton, QR, useBusy, useSecureScreen } from "./components/ui";
@@ -151,7 +152,7 @@ export function Onboarding() {
   const [mode, setMode] = useState<"create" | "restore" | "link">("create");
   const [restoreWith, setRestoreWith] = useState<"passkey" | "phrase">("passkey");
   const [advanced, setAdvanced] = useState(false);
-  const [backup, setBackup] = useState<Backup>("passkey");
+  const [backup, setBackup] = useState<Backup>(PASSKEY_BACKUPS ? "passkey" : "phrase");
   const [passkeys, setPasskeys] = useState<boolean | null>(null);
   const [restorePhrase, setRestorePhrase] = useState("");
   const [code, setCode] = useState("");
@@ -184,9 +185,11 @@ export function Onboarding() {
       .catch(() => setPasskeys(false));
   }, []);
 
+  /** New passkey backups (restoring with one only needs `passkeys`). */
+  const createPasskeys = PASSKEY_BACKUPS ? passkeys : false;
   const words = restorePhrase.trim().split(/\s+/).filter(Boolean);
   // Basic mode backs up with a passkey; without passkey support it falls back to words.
-  const plan: Backup = advanced ? backup : passkeys ? "passkey" : "phrase";
+  const plan: Backup = advanced ? backup : createPasskeys ? "passkey" : "phrase";
 
   /** Offer fingerprint / face unlock first (when the phone has it), then into the wallet. */
   const open = async (note?: string) => {
@@ -349,22 +352,22 @@ export function Onboarding() {
             badge="Recommended"
             selected={!advanced}
             onClick={() => setAdvanced(false)}
-            body={passkeys === false ? "The essentials, kept simple. You'll write down 12 words as your backup (passkeys aren't available on this device)." : "The essentials, kept simple. Backed up with a passkey: no words to write down."}
+            body={createPasskeys === false ? `The essentials, kept simple. You'll write down 12 words as your backup${PASSKEY_BACKUPS ? " (passkeys aren't available on this device)" : ""}.` : "The essentials, kept simple. Backed up with a passkey: no words to write down."}
           />
           <Choice
             title="Advanced"
             selected={advanced}
             onClick={() => setAdvanced(true)}
-            body="Every tool: coin control, vaults, custom fees, your own server. Back up with a recovery phrase, a passkey, or both."
+            body={`Every tool: coin control, vaults, custom fees, your own server. Back up with a recovery phrase${PASSKEY_BACKUPS ? ", a passkey, or both" : ""}.`}
           />
         </div>
-        {!advanced && passkeys && (
+        {!advanced && createPasskeys && (
           <p className="group-note">
             Your passkey is the key to this wallet. It lives in your password manager (Google or iCloud), so protect that account with two-step sign-in.
           </p>
         )}
         <p className="group-note">You can switch between Basic and Advanced any time in Settings.</p>
-        <button className="btn primary block" onClick={() => setStep(advanced ? "backup" : "passcode")}>
+        <button className="btn primary block" onClick={() => setStep(advanced && createPasskeys !== false ? "backup" : "passcode")}>
           Continue
         </button>
       </main>
@@ -382,7 +385,7 @@ export function Onboarding() {
         </h1>
         <div className="choice-list">
           <Choice title="Recovery phrase" selected={backup === "phrase"} onClick={() => setBackup("phrase")} body="12 words you write down on paper. Works with any bitcoin wallet, forever." />
-          {passkeys !== false && (
+          {createPasskeys !== false && (
             <>
               <Choice title="Passkey" selected={backup === "passkey"} onClick={() => setBackup("passkey")} body="Saved by your password manager and synced to your other devices. Restore with your fingerprint or face. Whoever controls that password manager account can restore it, so keep it locked down." />
               <Choice title="Both" badge="Most resilient" selected={backup === "both"} onClick={() => setBackup("both")} body="Write down the words, and also keep a passkey backup. Either one restores your wallet." />
