@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    Direction, Method, Payment, PaymentRequest, ReceiveQuote, ReceiveRequest, Sats, SendQuote,
+    Direction, Method, Payment, PaymentRequest, PaymentStatus, ReceiveQuote, ReceiveRequest, Sats, SendQuote,
     SendRequest,
 };
 use crate::{AccountId, Error, RailKind, Result, Wallet};
@@ -43,7 +43,13 @@ pub struct PrivatePay {
 }
 
 /// How long to wait for the mint to issue the ecash after leg 1.
-const MINT_WAIT: Duration = Duration::from_secs(90);
+const MINT_WAIT: Duration = Duration::from_secs(180);
+
+fn leg1_failed() -> Error {
+    Error::Invalid(
+        "The payment to the mint didn't go through, so nothing was paid. Your sats are still in your account".into(),
+    )
+}
 
 /// Melt fees aren't known until a quote; this is the first guess when
 /// forwarding a private receive (refined from the mint's answer).
@@ -143,16 +149,31 @@ impl Wallet {
         let mut first = payer.send(p.leg1, None).await?;
         first.direction = Direction::Internal;
 
+        if first.status == PaymentStatus::Failed {
+            return Err(leg1_failed());
+        }
+
         let started = std::time::Instant::now();
+        let mut round = 0u32;
         loop {
             match hub.check_incoming(&p.hub_quote).await {
                 Ok(true) => break,
                 Ok(false) => {}
                 Err(e) => tracing::debug!("private pay: mint not ready ({e})"),
             }
+            // Every 10 s: did the payment to the mint fail? Then the sats
+            // are back where they came from, and there's no point waiting.
+            round += 1;
+            if round.is_multiple_of(5) {
+                if let Ok(list) = payer.payments(30).await {
+                    if list.iter().any(|x| x.id == first.id && x.status == PaymentStatus::Failed) {
+                        return Err(leg1_failed());
+                    }
+                }
+            }
             if started.elapsed() > MINT_WAIT {
                 return Err(Error::Invalid(
-                    "The mint hasn't issued the ecash yet. Your sats are safe: they'll show up in your ecash account, and you can pay from there".into(),
+                    "The payment to the mint is still on its way, so the recipient hasn't been paid. Your sats are safe: if it goes through they show up in your ecash account (pay from there), and if it fails they go back where they came from".into(),
                 ));
             }
             tokio::time::sleep(Duration::from_secs(2)).await;

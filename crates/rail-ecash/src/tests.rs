@@ -591,3 +591,20 @@ async fn a_damaged_database_is_set_aside_and_rebuilt() {
         .any(|e| e.file_name().to_string_lossy().contains("damaged-"));
     assert!(aside, "the damaged file is kept");
 }
+
+/// Reopening an account while the previous handle is still alive (an unlock
+/// while something holds the old wallet) shares the database instead of
+/// failing "Database already open. Cannot acquire lock."
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reopening_while_still_open_shares_the_database() {
+    let dir = TempDir::new("reopen");
+    let mint = Arc::new(FakeMint::new(9));
+    let first = open(&dir, "e", MINT, PHRASE_A, &mint).await;
+    let second = open(&dir, "e", MINT, PHRASE_A, &mint).await;
+    assert_eq!(second.info().await.unwrap().balance.confirmed, 0);
+    drop(first);
+    drop(second);
+    // Once everything has let go, it opens afresh.
+    let third = open(&dir, "e", MINT, PHRASE_A, &mint).await;
+    assert_eq!(third.info().await.unwrap().balance.confirmed, 0);
+}

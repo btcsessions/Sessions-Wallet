@@ -132,8 +132,16 @@ impl EcashAccount {
         // off the async executor.
         let open_db = |db_path: std::path::PathBuf| {
             tokio::task::spawn_blocking(move || {
+                // Still open in this process (an earlier unlock whose account
+                // something hasn't let go of yet)? redb locks the file, so
+                // opening it again fails "Database already open": share it.
+                if let Some(db) = shared_db(&db_path) {
+                    return Ok(db);
+                }
                 ensure_redb_tables(&db_path)?;
-                WalletRedbDatabase::new(&db_path).map_err(|e| e.to_string())
+                let db = Arc::new(WalletRedbDatabase::new(&db_path).map_err(|e| e.to_string())?);
+                remember_db(&db_path, &db);
+                Ok(db)
             })
         };
         let db = match open_db(config.db_path.clone()).await {
@@ -162,7 +170,7 @@ impl EcashAccount {
         let mut builder = WalletBuilder::new()
             .mint_url(mint_url)
             .unit(CurrencyUnit::Sat)
-            .localstore(Arc::new(db))
+            .localstore(db)
             .seed(seed);
         seed.zeroize();
         if let Some(client) = client {
@@ -200,6 +208,24 @@ impl EcashAccount {
             rail_err(e)
         }
     }
+}
+
+/// Ecash databases open in this process, by path. redb allows one open
+/// handle per file per process; an account reopened (unlock, a settings
+/// change, a restore) while something still holds the previous one shares it.
+static OPEN_DBS: std::sync::Mutex<Vec<(PathBuf, std::sync::Weak<WalletRedbDatabase>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn shared_db(path: &std::path::Path) -> Option<Arc<WalletRedbDatabase>> {
+    let mut open = OPEN_DBS.lock().unwrap_or_else(|e| e.into_inner());
+    open.retain(|(_, w)| w.strong_count() > 0);
+    open.iter().find(|(p, _)| p == path).and_then(|(_, w)| w.upgrade())
+}
+
+fn remember_db(path: &std::path::Path, db: &Arc<WalletRedbDatabase>) {
+    let mut open = OPEN_DBS.lock().unwrap_or_else(|e| e.into_inner());
+    open.retain(|(p, w)| w.strong_count() > 0 && p != path);
+    open.push((path.to_path_buf(), Arc::downgrade(db)));
 }
 
 /// cdk-redb 0.18.2 creates every table at init except `wallet_sagas`, but
