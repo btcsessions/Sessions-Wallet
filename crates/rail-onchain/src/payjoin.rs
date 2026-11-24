@@ -304,7 +304,8 @@ async fn negotiate(
             .build_with_additional_fee(max_contrib, None, rate, true)
             .map_err(|e| format!("build v2 sender: {e}"))?
             .save(&persister)
-            .map_err(|e| e.to_string())?;
+            // The in-memory persister can't fail.
+            .unwrap_or_else(|e| match e {});
             let (req, ctx) = sender
                 .create_v2_post_request(relay)
                 .map_err(|e| format!("v2 request: {e}"))?;
