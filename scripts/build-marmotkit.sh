@@ -15,14 +15,16 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN="$HERE/apps/wallet/src-tauri/plugins/tauri-plugin-marmot/android/src/main"
 SRC="${1:-$HERE/target/mdk-src}"
 
-# Fetch just the pinned commit, with all its files. (A partial clone fetches
-# files lazily, which GitHub refuses once the commit is on no branch: "not
-# our ref".)
-if [[ ! -d "$SRC/.git" ]]; then
-  git init --quiet "$SRC"
-  git -C "$SRC" remote add origin "$MDK_REPO"
+# A full clone (no partial-clone filter): lazily fetched files are refused by
+# GitHub with "not our ref" on CI runners. Start over if a cached copy isn't
+# a complete clone.
+if [[ -d "$SRC/.git" ]] && git -C "$SRC" config --get remote.origin.promisor >/dev/null; then
+  rm -rf "$SRC"
 fi
-git -C "$SRC" fetch --quiet --depth=1 origin "$MDK_COMMIT"
+if [[ ! -d "$SRC/.git" ]]; then
+  git clone --quiet --no-checkout "$MDK_REPO" "$SRC"
+fi
+git -C "$SRC" cat-file -e "$MDK_COMMIT^{commit}" 2>/dev/null || git -C "$SRC" fetch --quiet origin
 git -C "$SRC" checkout --quiet -- Cargo.lock 2>/dev/null || true
 git -C "$SRC" -c advice.detachedHead=false checkout --quiet "$MDK_COMMIT"
 [[ "$(git -C "$SRC" rev-parse HEAD)" == "$MDK_COMMIT" ]] || { echo "MDK checkout isn't at $MDK_COMMIT" >&2; exit 1; }
