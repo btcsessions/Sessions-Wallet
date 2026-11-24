@@ -16,17 +16,18 @@ PLUGIN="$HERE/apps/wallet/src-tauri/plugins/tauri-plugin-marmot/android/src/main
 SRC="${1:-$HERE/target/mdk-src}"
 
 # A full clone (no partial-clone filter): lazily fetched files are refused by
-# GitHub with "not our ref" on CI runners. Start over if a cached copy isn't
-# a complete clone.
-if [[ -d "$SRC/.git" ]] && git -C "$SRC" config --get remote.origin.promisor >/dev/null; then
+# GitHub with "not our ref" on CI runners. A cached copy that can't check the
+# commit out (partial, shallow, damaged) is thrown away and cloned again.
+checkout_mdk() {
+  git -C "$SRC" cat-file -e "$MDK_COMMIT^{commit}" 2>/dev/null || git -C "$SRC" fetch --quiet origin || return 1
+  git -C "$SRC" checkout --quiet -- Cargo.lock 2>/dev/null || true
+  git -C "$SRC" -c advice.detachedHead=false checkout --quiet "$MDK_COMMIT"
+}
+if [[ ! -d "$SRC/.git" ]] || git -C "$SRC" config --get remote.origin.promisor >/dev/null || ! checkout_mdk 2>/dev/null; then
   rm -rf "$SRC"
-fi
-if [[ ! -d "$SRC/.git" ]]; then
   git clone --quiet --no-checkout "$MDK_REPO" "$SRC"
+  checkout_mdk
 fi
-git -C "$SRC" cat-file -e "$MDK_COMMIT^{commit}" 2>/dev/null || git -C "$SRC" fetch --quiet origin
-git -C "$SRC" checkout --quiet -- Cargo.lock 2>/dev/null || true
-git -C "$SRC" -c advice.detachedHead=false checkout --quiet "$MDK_COMMIT"
 [[ "$(git -C "$SRC" rev-parse HEAD)" == "$MDK_COMMIT" ]] || { echo "MDK checkout isn't at $MDK_COMMIT" >&2; exit 1; }
 
 # Security fixes the pinned lock predates: tokio (RUSTSEC-2026-0386) and lru.
