@@ -608,3 +608,25 @@ async fn reopening_while_still_open_shares_the_database() {
     let third = open(&dir, "e", MINT, PHRASE_A, &mint).await;
     assert_eq!(third.info().await.unwrap().balance.confirmed, 0);
 }
+
+/// Manual: how long a fresh account's first sync (the restore scan) takes
+/// against a real mint. `cargo test -p rail-ecash real_mint_first_sync -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn real_mint_first_sync_timing() {
+    let dir = TempDir::new("realmint");
+    let acct = EcashAccount::open(EcashConfig {
+        id: AccountId::from("e"),
+        name: "Ecash".into(),
+        mint_url: "https://mint.minibits.cash/Bitcoin".into(),
+        mnemonic: PHRASE_A.into(),
+        db_path: dir.0.join("e.redb"),
+    })
+    .await
+    .unwrap();
+    for round in 1..=2 {
+        let t = std::time::Instant::now();
+        let r = acct.sync().await;
+        eprintln!("sync {round}: {:?} in {:.1} s", r.map(|_| ()), t.elapsed().as_secs_f64());
+    }
+}
