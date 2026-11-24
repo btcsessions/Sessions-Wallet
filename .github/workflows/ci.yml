@@ -181,6 +181,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+          # Gradle's downloads cached between runs (Maven Central rate-limits).
+          cache: gradle
+          cache-dependency-path: apps/wallet/src-tauri/gen/android/**/*.gradle*
       - uses: android-actions/setup-android@v3
         with:
           # The default also asks for 'tools', which Google no longer ships.
@@ -206,7 +209,16 @@ jobs:
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
           BREEZ_API_KEY: ${{ secrets.BREEZ_API_KEY }}
-        run: npm ci && npx tauri android build --apk --target aarch64
+        # Retried: Maven Central sometimes answers 429 (too many requests).
+        # Later tries reuse the compiled Rust, so they're quick.
+        run: |
+          npm ci
+          for i in 1 2 3; do
+            npx tauri android build --apk --target aarch64 && exit 0
+            echo "Build attempt $i failed; retrying in 90 s"
+            sleep 90
+          done
+          exit 1
       - uses: actions/upload-artifact@v4
         with:
           name: sessions-wallet-android
