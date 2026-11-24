@@ -15,10 +15,14 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN="$HERE/apps/wallet/src-tauri/plugins/tauri-plugin-marmot/android/src/main"
 SRC="${1:-$HERE/target/mdk-src}"
 
+# Fetch just the pinned commit, with all its files. (A partial clone fetches
+# files lazily, which GitHub refuses once the commit is on no branch: "not
+# our ref".)
 if [[ ! -d "$SRC/.git" ]]; then
-  git clone --filter=blob:none "$MDK_REPO" "$SRC"
+  git init --quiet "$SRC"
+  git -C "$SRC" remote add origin "$MDK_REPO"
 fi
-git -C "$SRC" fetch --quiet origin "$MDK_COMMIT" || true
+git -C "$SRC" fetch --quiet --depth=1 origin "$MDK_COMMIT"
 git -C "$SRC" checkout --quiet -- Cargo.lock 2>/dev/null || true
 git -C "$SRC" -c advice.detachedHead=false checkout --quiet "$MDK_COMMIT"
 [[ "$(git -C "$SRC" rev-parse HEAD)" == "$MDK_COMMIT" ]] || { echo "MDK checkout isn't at $MDK_COMMIT" >&2; exit 1; }
