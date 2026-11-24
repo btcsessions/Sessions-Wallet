@@ -182,6 +182,9 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: android-actions/setup-android@v3
+        with:
+          # The default also asks for 'tools', which Google no longer ships.
+          packages: platform-tools
       - run: sdkmanager --install "ndk;28.2.13676358" "platforms;android-37.0" "build-tools;36.0.0"
       - name: Group messaging library (MarmotKit for Android)
         env:
