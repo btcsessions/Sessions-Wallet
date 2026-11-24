@@ -630,3 +630,29 @@ async fn real_mint_first_sync_timing() {
         eprintln!("sync {round}: {:?} in {:.1} s", r.map(|_| ()), t.elapsed().as_secs_f64());
     }
 }
+
+/// Manual: claiming someone else's paid quote against a real mint is refused
+/// (the key doesn't come from this phrase) and changes nothing.
+/// `cargo test -p rail-ecash real_mint_claim -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn real_mint_claim_foreign_quote_is_refused() {
+    let dir = TempDir::new("realclaim");
+    let acct = EcashAccount::open(EcashConfig {
+        id: AccountId::from("e"),
+        name: "Ecash".into(),
+        mint_url: "https://mint.minibits.cash/Bitcoin".into(),
+        mnemonic: PHRASE_A.into(),
+        db_path: dir.0.join("e.redb"),
+    })
+    .await
+    .unwrap();
+    acct.sync().await.unwrap();
+    let t = std::time::Instant::now();
+    let r = acct.claim_quote("01a20e5e-e71b-7720-9882-1e994c2c5393").await;
+    eprintln!("claim: {r:?} in {:.1} s", t.elapsed().as_secs_f64());
+    assert!(r.unwrap_err().to_string().contains("recovery phrase"));
+    let r = acct.claim_quote("not-a-quote").await;
+    eprintln!("bad id: {r:?}");
+    assert!(r.is_err());
+}

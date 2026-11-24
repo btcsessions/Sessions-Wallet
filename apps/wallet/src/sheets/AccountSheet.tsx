@@ -13,6 +13,7 @@ import { accountColor, accountKind, amountParts, errorText, formatFiat, held } f
 import { PendingClock } from "../components/PendingClock";
 import { SpendingDeposits } from "../components/SpendingDeposits";
 import { SpendingRecovery } from "../components/SpendingHealth";
+import { EcashClaim } from "../components/EcashClaim";
 import { SweepSetting } from "../components/Sweep";
 import { VaultPanel } from "./VaultPanel";
 import { useWallet } from "../state/store";
@@ -114,6 +115,7 @@ export function AccountSheet({ id }: { id: string }) {
       </div>
 
       {a.rail === "spark" && <SpendingRecovery account={a.id} />}
+      {a.rail === "ecash" && <EcashClaim account={a.id} />}
       {a.rail === "spark" && <SpendingDeposits account={a.id} />}
 
       {a.rail === "spark" && (

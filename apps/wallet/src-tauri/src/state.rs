@@ -69,6 +69,7 @@ pub struct Unlocked {
     pub config: Config,
     pub onchain: HashMap<AccountId, Arc<OnchainAccount>>,
     pub spark: HashMap<AccountId, Arc<SparkAccount>>,
+    pub ecash: HashMap<AccountId, Arc<EcashAccount>>,
     /// The Spending account that forwards Lightning payments to on-chain
     /// accounts, once one is open.
     pub forwarder: Option<AccountId>,
@@ -342,6 +343,7 @@ impl AppState {
         let wallet = Arc::new(Wallet::new());
         let mut onchain = HashMap::new();
         let mut spark = HashMap::new();
+        let mut ecash = HashMap::new();
         let mut forwarder = None;
         let mut unavailable = Vec::new();
 
@@ -353,7 +355,10 @@ impl AppState {
                     onchain.insert(spec.id().clone(), a.clone());
                     wallet.add_account(a).await;
                 }
-                Ok(Opened::Other(r)) => wallet.add_account(r).await,
+                Ok(Opened::Ecash(a)) => {
+                    ecash.insert(spec.id().clone(), a.clone());
+                    wallet.add_account(a).await;
+                }
                 Ok(Opened::Spark(a)) => {
                     spark.insert(spec.id().clone(), a.clone());
                     if forwarder.is_none() {
@@ -409,6 +414,7 @@ impl AppState {
             config,
             onchain,
             spark,
+            ecash,
             forwarder,
             unavailable,
             monitor,
@@ -587,7 +593,7 @@ impl AppState {
                     db_path: self.paths.ecash(id),
                 })
                 .await?;
-                Ok(Opened::Other(Arc::new(account)))
+                Ok(Opened::Ecash(Arc::new(account)))
             }
         }
     }
@@ -608,7 +614,10 @@ impl AppState {
                 u.wallet.add_account(a).await;
                 u.refresh_monitor();
             }
-            Opened::Other(r) => u.wallet.add_account(r).await,
+            Opened::Ecash(a) => {
+                u.ecash.insert(id.clone(), a.clone());
+                u.wallet.add_account(a).await;
+            }
             Opened::Spark(a) => {
                 u.spark.insert(id.clone(), a.clone());
                 if u.forwarder.is_none() {
@@ -788,7 +797,7 @@ fn watch_deposits(
 enum Opened {
     Onchain(Arc<OnchainAccount>),
     Spark(Arc<SparkAccount>),
-    Other(Arc<dyn sessions_core::Rail>),
+    Ecash(Arc<EcashAccount>),
 }
 
 #[cfg(test)]

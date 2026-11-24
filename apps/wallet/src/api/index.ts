@@ -239,6 +239,8 @@ export interface WalletApi {
   spendingDeposits(account: string): Promise<Deposit[]>;
   /** Spending: last sync, its error, funds waiting to be recovered. */
   spendingHealth(account: string): Promise<SpendingHealth>;
+  /** Ecash: collect a paid quote by ID (made on another device or before a reinstall). Returns sats. */
+  claimEcashQuote(account: string, quoteId: string): Promise<number>;
   /** Price recovering Spending's recoverable funds to an on-chain address. */
   prepareSpendingRecovery(account: string, address: string, feeRateSatVb: number): Promise<RecoveryQuote>;
   /** Recover what was priced; returns the txids. */

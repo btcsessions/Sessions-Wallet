@@ -79,6 +79,9 @@ pub struct EcashAccount {
     /// from the recovery phrase): the next sync scans the mint (NUT-09/13) for
     /// ecash this seed already owns. Stays set until a scan succeeds.
     needs_restore: std::sync::atomic::AtomicBool,
+    /// The mint, for questions CDK's wallet doesn't expose (what a quote has
+    /// really issued). Same connection the wallet uses.
+    client: Arc<dyn MintConnector + Send + Sync>,
 }
 
 impl std::fmt::Debug for EcashAccount {
@@ -127,7 +130,9 @@ impl EcashAccount {
         }
         // A brand-new database means we may be restoring from the phrase.
         // (The in-process test mint doesn't implement restore, so tests skip it.)
-        let mut fresh = !config.db_path.exists() && client.is_none();
+        // Every session also catches its counters up with the mint once, since
+        // linked devices share the phrase (see `repair`).
+        let mut fresh = client.is_none();
         // redb opens the file synchronously (and runs migrations); keep that
         // off the async executor.
         let open_db = |db_path: std::path::PathBuf| {
@@ -173,9 +178,14 @@ impl EcashAccount {
             .localstore(db)
             .seed(seed);
         seed.zeroize();
-        if let Some(client) = client {
-            builder = builder.shared_client(client);
-        }
+        let connector: Arc<dyn MintConnector + Send + Sync> = match client {
+            Some(c) => c,
+            None => Arc::new(cdk::HttpClient::new(
+                MintUrl::from_str(&config.mint_url).map_err(rail_err)?,
+                None,
+            )),
+        };
+        builder = builder.shared_client(connector.clone());
         let wallet = builder.build().map_err(rail_err)?;
 
         Ok(Self {
@@ -183,6 +193,7 @@ impl EcashAccount {
             name: std::sync::RwLock::new(config.name),
             wallet,
             needs_restore: std::sync::atomic::AtomicBool::new(fresh),
+            client: connector,
         })
     }
 
@@ -399,17 +410,20 @@ impl sessions_core::Rail for EcashAccount {
         // 0. First sync on a new database: recover ecash this seed already
         //    owns at this mint, so the recovery phrase alone restores it.
         if self.needs_restore.load(Ordering::SeqCst) {
-            let restored = self.wallet.restore().await.map_err(rail_err)?;
-            self.needs_restore.store(false, Ordering::SeqCst);
-            tracing::info!(account = %self.id, ?restored, "ecash: restore scan complete");
+            match self.catch_up_counters().await {
+                Ok(()) => self.needs_restore.store(false, Ordering::SeqCst),
+                Err(e) => tracing::warn!(account = %self.id, "ecash: restore scan: {e}"),
+            }
         }
 
         // 1. Finish or roll back anything interrupted (swap/send/receive/melt/mint).
-        let report = self
-            .wallet
-            .recover_incomplete_sagas()
-            .await
-            .map_err(rail_err)?;
+        let report = match self.wallet.recover_incomplete_sagas().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(account = %self.id, "ecash: recovering interrupted operations: {e}");
+                Default::default()
+            }
+        };
         if !report.is_empty() {
             tracing::info!(account = %self.id, ?report, "ecash: recovered incomplete operations");
         }
@@ -417,10 +431,14 @@ impl sessions_core::Rail for EcashAccount {
             tracing::warn!(account = %self.id, failed = report.failed, "ecash: some operations could not be recovered");
         }
 
-        // 2. Mint every quote the mint now reports as paid.
-        let minted = self.wallet.mint_unissued_quotes().await.map_err(rail_err)?;
-        if minted > Amount::ZERO {
-            tracing::info!(account = %self.id, sats = minted.to_u64(), "ecash: minted paid quotes");
+        // 2. Mint every quote the mint now reports as paid. Attempts stuck
+        //    after a collision with another device are released first.
+        if let Err(e) = self.release_failed_mints().await {
+            tracing::warn!(account = %self.id, "ecash: release stuck mints: {e}");
+        }
+        let minted = self.mint_paid_quotes().await?;
+        if minted > 0 {
+            tracing::info!(account = %self.id, sats = minted, "ecash: minted paid quotes");
         }
 
         // 3. Settle Lightning payments that were left pending.
@@ -722,5 +740,6 @@ impl sessions_core::Rail for EcashAccount {
 
 #[cfg(test)]
 mod fake_mint;
+mod repair;
 #[cfg(test)]
 mod tests;

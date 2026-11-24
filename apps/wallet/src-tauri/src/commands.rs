@@ -868,6 +868,25 @@ async fn spending(state: &AppState, id: &AccountId) -> Result<Arc<rail_spark::Sp
         .ok_or_else(|| Error::Unsupported("receive bitcoin deposits to claim".into()))
 }
 
+/// Collect a paid ecash quote by its ID (one this device lost track of: made
+/// on another device, or before a reinstall). Returns the sats collected.
+#[tauri::command]
+pub async fn claim_ecash_quote(
+    state: State<'_, AppState>,
+    account: AccountId,
+    quote_id: String,
+) -> Result<u64> {
+    let a = {
+        let guard = state.inner.lock().await;
+        let u = guard.as_ref().ok_or(Error::Locked)?;
+        u.ecash
+            .get(&account)
+            .cloned()
+            .ok_or_else(|| Error::Unsupported("collect ecash quotes".into()))?
+    };
+    a.claim_quote(&quote_id).await
+}
+
 /// On-chain deposits to a Spending account that aren't in its balance yet:
 /// waiting for confirmations, being claimed, or needing the user (a claim
 /// fee over the automatic limit, a failed claim). Empty most of the time.
@@ -973,6 +992,7 @@ pub async fn remove_account(state: State<'_, AppState>, id: AccountId) -> Result
     if u.onchain.remove(&id).is_some() {
         u.refresh_monitor();
     }
+    u.ecash.remove(&id);
     if u.spark.remove(&id).is_some() {
         if let Some(m) = &u.monitor {
             m.watcher().unwatch_external(&id);

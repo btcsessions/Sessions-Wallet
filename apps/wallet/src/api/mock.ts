@@ -913,6 +913,11 @@ export const mockApi: WalletApi = {
     mockLnAddress = { address: `${username.toLowerCase()}@breez.tips`, username: username.toLowerCase(), lnurl: "lnurl1dp68gurn8ghj7ctsdyhxgetkd9h8vmmfvdjjuer9wchxvef0wejk" };
     return mockLnAddress;
   },
+  async claimEcashQuote(_account, quoteId) {
+    await sleep(800);
+    if (!quoteId) throw new Error("Paste the quote ID");
+    return 500;
+  },
   async spendingHealth(account): Promise<SpendingHealth> {
     await sleep(100);
     if (account !== "spending") throw new Error("Not a Spending account");
