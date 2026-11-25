@@ -99,6 +99,11 @@ impl FakeMint {
     }
 
     /// Simulate the Lightning invoice behind a mint quote being paid.
+    /// Mark proofs spent, as if another wallet holding them had spent them.
+    pub fn spend_elsewhere(&self, ys: impl IntoIterator<Item = PublicKey>) {
+        self.state.lock().unwrap().spent.extend(ys);
+    }
+
     pub fn pay_mint_quote(&self, quote_id: &str) {
         let mut st = self.state.lock().unwrap();
         let q = st.mint_quotes.get_mut(quote_id).expect("known quote");

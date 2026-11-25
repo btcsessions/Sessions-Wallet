@@ -191,4 +191,38 @@ impl EcashAccount {
         self.mint_quote(quote_id).await?;
         Ok(mintable)
     }
+
+    /// Drop ecash the mint says is spent: another device on the same phrase
+    /// spent it (they hold the same ecash once both have caught up). Checked
+    /// at most every [`SPENT_CHECK_EVERY`]. Returns the sats dropped.
+    pub(crate) async fn drop_spent_elsewhere(&self) -> Result<u64> {
+        {
+            let mut last = self.last_spent_check.lock().unwrap_or_else(|e| e.into_inner());
+            if last.is_some_and(|t| t.elapsed() < SPENT_CHECK_EVERY) {
+                return Ok(0);
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        let proofs = self.wallet.get_unspent_proofs().await.map_err(rail_err)?;
+        let mut dropped = 0u64;
+        for chunk in proofs.chunks(100) {
+            let states = self
+                .wallet
+                .check_proofs_spent(chunk.to_vec())
+                .await
+                .map_err(rail_err)?;
+            for (p, st) in chunk.iter().zip(&states) {
+                if st.state == cdk::nuts::State::Spent {
+                    dropped += p.amount.to_u64();
+                }
+            }
+        }
+        if dropped > 0 {
+            tracing::info!(account = %self.id, sats = dropped, "ecash: dropped ecash spent on another device");
+        }
+        Ok(dropped)
+    }
 }
+
+/// How often to ask the mint whether this device's ecash was spent elsewhere.
+pub(crate) const SPENT_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(120);

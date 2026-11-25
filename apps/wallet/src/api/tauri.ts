@@ -192,6 +192,7 @@ export const tauriApi: WalletApi = {
   linkScan: (qr) => invoke("link_scan", { qr }),
   linkSend: (passcode) => invoke("link_send", { passcode }),
   syncStatus: () => invoke("sync_status"),
+  removeLinkedDevice: (id) => invoke("remove_linked_device", { id }),
   setSecureScreen: (on) => invoke("set_secure_screen", { on }),
   syncNow: (direction) => invoke("sync_now", { direction }),
   testConnection: (url) => invoke("test_connection", { url }),

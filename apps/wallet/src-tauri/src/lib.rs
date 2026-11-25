@@ -281,6 +281,7 @@ pub fn run() {
             multisig_hw::trezor_address_request,
             commands::set_secure_screen,
             commands::sync_status,
+            commands::remove_linked_device,
             commands::sync_now,
             node::test_connection,
             node::chain_status,

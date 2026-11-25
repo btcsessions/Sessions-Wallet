@@ -656,3 +656,26 @@ async fn real_mint_claim_foreign_quote_is_refused() {
     eprintln!("bad id: {r:?}");
     assert!(r.is_err());
 }
+
+/// Ecash another device on the same phrase spent drops out of this device's
+/// balance on its next sync (and only once the throttle allows a check).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ecash_spent_on_another_device_drops_out() {
+    let dir = TempDir::new("spentelsewhere");
+    let mint = Arc::new(FakeMint::new(11));
+    let a = open(&dir, "a", MINT, PHRASE_A, &mint).await;
+    let target = a
+        .receive(ReceiveRequest { method: Method::Bolt11, amount_sat: Some(100), description: None })
+        .await
+        .unwrap();
+    mint.pay_mint_quote(target.watch_id.as_deref().unwrap());
+    a.sync().await.unwrap();
+    assert_eq!(a.info().await.unwrap().balance.confirmed, 100);
+
+    // Another device spends all of it.
+    let proofs = a.wallet.get_unspent_proofs().await.unwrap();
+    mint.spend_elsewhere(proofs.iter().map(|p| p.y().unwrap()));
+    *a.last_spent_check.lock().unwrap() = None;
+    a.sync().await.unwrap();
+    assert_eq!(a.info().await.unwrap().balance.confirmed, 0);
+}

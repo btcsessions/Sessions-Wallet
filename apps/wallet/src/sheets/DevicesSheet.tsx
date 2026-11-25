@@ -16,6 +16,20 @@ export function DevicesSheet() {
   const [error, setError] = useState<string | null>(null);
   const { notify, refresh, loadPrefs } = useWallet();
 
+  /** Tidy away a device that's gone (reset, replaced, reinstalled). */
+  const remove = async (id: string, name: string) => {
+    const ok = await confirmDialog(
+      `Remove ${name} from this list? Use this for a device that's gone, like an old install. If it's still in use, it comes back on its own.`,
+      { ok: "Remove", danger: true },
+    );
+    if (!ok) return;
+    try {
+      setStatus(await (await api()).removeLinkedDevice(id));
+    } catch (e) {
+      notify("error", errorText(e));
+    }
+  };
+
   useEffect(() => {
     if (linking) return;
     void (async () => {
@@ -62,6 +76,11 @@ export function DevicesSheet() {
               {d.thisDevice ? " (this device)" : ""}
             </span>
             {!d.thisDevice && d.seenAt && <small className="muted">{relativeTime(d.seenAt)}</small>}
+            {!d.thisDevice && (
+              <button className="text-button" style={{ color: "var(--red)" }} disabled={busy} onClick={() => void remove(d.id, d.name)}>
+                Remove
+              </button>
+            )}
           </div>
         ))}
       </div>

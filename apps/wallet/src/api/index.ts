@@ -318,6 +318,8 @@ export interface WalletApi {
   /** Wallet device: codes match: send the wallet (checks the passcode). */
   linkSend(passcode: string): Promise<void>;
   syncStatus(): Promise<SyncStatus>;
+  /** Take a gone device off the linked list (tidies the list; doesn't revoke access). */
+  removeLinkedDevice(id: string): Promise<SyncStatus>;
   /** A secret is on screen: block screenshots, recording, previews and overlay taps. */
   setSecureScreen(on: boolean): Promise<void>;
   syncNow(direction: SyncDirection): Promise<SyncStatus>;

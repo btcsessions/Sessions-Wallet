@@ -117,6 +117,10 @@ struct Saved {
     /// When this device last pulled the other devices' changes (Unix secs).
     #[serde(default)]
     last_sync_at: Option<u64>,
+    /// Devices removed from the linked list here (id → when, Unix secs).
+    /// Kept until every device has the removal (see `removed_devices`).
+    #[serde(default)]
+    removed_devices: std::collections::BTreeMap<String, u64>,
 }
 
 type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
@@ -978,11 +982,14 @@ fn add_sync_fields(state: &AppState, config: &Config, data: &mut Value) {
     );
     let mut devices = from_base("devices");
     let today = now_secs() / 86_400 * 86_400;
+    let me = b.device_id();
     devices.insert(
-        b.device_id(),
+        me.clone(),
         serde_json::json!({ "name": crate::link::device_name(), "kind": DEVICE_KIND, "seenAt": today }),
     );
     devices.retain(|_, d| d["seenAt"].as_u64().is_some_and(|t| today.saturating_sub(t) < DEVICE_STALE_SECS));
+    let removed = removed_devices(b, base.as_ref());
+    devices.retain(|id, _| !removed.contains_key(id));
     let token = b.lock().send_token.clone().or_else(|| {
         base.as_ref()
             .and_then(|v| v.get("replaceToken"))
@@ -992,6 +999,10 @@ fn add_sync_fields(state: &AppState, config: &Config, data: &mut Value) {
     if let Some(o) = data.as_object_mut() {
         o.insert("layouts".into(), Value::Object(layouts));
         o.insert("devices".into(), Value::Object(devices));
+        o.insert(
+            "removedDevices".into(),
+            serde_json::to_value(&removed).unwrap_or_default(),
+        );
         if let Some(t) = token {
             o.insert("replaceToken".into(), Value::String(t));
         }
@@ -1130,14 +1141,50 @@ pub struct SyncStatus {
     pub last_sync_at: Option<u64>,
 }
 
+/// Devices removed from the linked list, here or on another device (id →
+/// when). Never this device: one still in use that was removed by mistake
+/// puts itself back. Removals are forgotten after the stale-device window,
+/// by when every device has them.
+fn removed_devices(b: &Backup, base: Option<&Value>) -> std::collections::BTreeMap<String, u64> {
+    let me = b.device_id();
+    let now = now_secs();
+    let mut removed: std::collections::BTreeMap<String, u64> = base
+        .and_then(|v| v.get("removedDevices"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    for (id, at) in &b.lock().saved.removed_devices {
+        removed.insert(id.clone(), *at);
+    }
+    removed.remove(&me);
+    removed.retain(|_, at| now.saturating_sub(*at) < DEVICE_STALE_SECS);
+    removed
+}
+
+/// Take a device off the linked list (one that's gone: reset, replaced or
+/// reinstalled). It only tidies the list: any device with the recovery
+/// phrase can still use the wallet, and one still in use reappears.
+pub fn remove_device(state: &AppState, id: &str) -> Result<()> {
+    let b = &state.backup;
+    if id == b.device_id() {
+        return Err(Error::Invalid("That's this device".into()));
+    }
+    b.update_saved(|s| {
+        s.removed_devices.insert(id.to_string(), now_secs());
+    });
+    b.touch();
+    Ok(())
+}
+
 pub fn sync_status(state: &AppState) -> SyncStatus {
     let b = &state.backup;
     let me = b.device_id();
-    let mut devices: Vec<LinkedDevice> = b
-        .base()
+    let base = b.base();
+    let removed = removed_devices(b, base.as_ref());
+    let mut devices: Vec<LinkedDevice> = base
         .and_then(|v| v.get("devices").and_then(Value::as_object).cloned())
         .unwrap_or_default()
         .into_iter()
+        .filter(|(id, _)| !removed.contains_key(id))
         .map(|(id, d)| LinkedDevice {
             this_device: id == me,
             name: d["name"].as_str().unwrap_or("Device").to_string(),
@@ -1349,6 +1396,39 @@ mod tests {
         // The label is back on the reopened account.
         let restored = std::fs::read_to_string(b.paths.labels(&savings)).unwrap();
         assert!(restored.contains("rent") && restored.contains(TXID));
+    }
+
+    /// A gone device comes off the list here, and the removal travels with
+    /// the backup so the other devices drop it too. This device can't be
+    /// removed, and a removal naming this device is ignored.
+    #[tokio::test]
+    async fn removed_devices_leave_the_list_everywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = AppState::new(dir.path().to_path_buf(), None);
+        a.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();
+        let me = a.backup.device_id();
+        let today = now_secs() / 86_400 * 86_400;
+        a.backup.set_base(&serde_json::json!({
+            "devices": {
+                me.clone(): { "name": "Mac", "kind": "desktop", "seenAt": today },
+                "old-phone": { "name": "Phone", "kind": "mobile", "seenAt": today },
+            },
+            "removedDevices": { me.clone(): now_secs() },
+        }));
+        assert_eq!(sync_status(&a).devices.len(), 2);
+        assert!(remove_device(&a, &me).is_err());
+        remove_device(&a, "old-phone").unwrap();
+        let st = sync_status(&a);
+        assert_eq!(st.devices.len(), 1);
+        assert!(st.devices[0].this_device);
+
+        let config = a.inner.lock().await.as_ref().unwrap().config.clone();
+        let mut data = serde_json::json!({});
+        add_sync_fields(&a, &config, &mut data);
+        let devices = data["devices"].as_object().unwrap();
+        assert!(devices.contains_key(&me) && !devices.contains_key("old-phone"));
+        let removed = data["removedDevices"].as_object().unwrap();
+        assert!(removed.contains_key("old-phone") && !removed.contains_key(&me));
     }
 
     #[test]

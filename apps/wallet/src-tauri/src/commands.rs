@@ -1393,6 +1393,13 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<backup::SyncStatu
     Ok(backup::sync_status(&state))
 }
 
+/// Take a gone device (reset, replaced, reinstalled) off the linked list.
+#[tauri::command]
+pub async fn remove_linked_device(state: State<'_, AppState>, id: String) -> Result<backup::SyncStatus> {
+    backup::remove_device(&state, &id)?;
+    Ok(backup::sync_status(&state))
+}
+
 /// Sync with the other linked devices now (`both`), or replace one side's
 /// setup with the other's (`sendMine`, `takeTheirs`).
 #[tauri::command]

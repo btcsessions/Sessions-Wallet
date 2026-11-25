@@ -82,6 +82,8 @@ pub struct EcashAccount {
     /// The mint, for questions CDK's wallet doesn't expose (what a quote has
     /// really issued). Same connection the wallet uses.
     client: Arc<dyn MintConnector + Send + Sync>,
+    /// When `drop_spent_elsewhere` last asked the mint.
+    last_spent_check: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl std::fmt::Debug for EcashAccount {
@@ -194,6 +196,7 @@ impl EcashAccount {
             wallet,
             needs_restore: std::sync::atomic::AtomicBool::new(fresh),
             client: connector,
+            last_spent_check: std::sync::Mutex::new(None),
         })
     }
 
@@ -456,6 +459,11 @@ impl sessions_core::Rail for EcashAccount {
             if let Err(e) = self.wallet.check_send_status(op).await {
                 tracing::warn!(account = %self.id, %op, "ecash: could not check token status: {e}");
             }
+        }
+
+        // 5. Drop ecash another device on this phrase has spent.
+        if let Err(e) = self.drop_spent_elsewhere().await {
+            tracing::warn!(account = %self.id, "ecash: checking for ecash spent elsewhere: {e}");
         }
         Ok(())
     }

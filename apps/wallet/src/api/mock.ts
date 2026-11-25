@@ -1176,6 +1176,11 @@ export const mockApi: WalletApi = {
   async syncStatus() {
     return { devices: mockDevices, lastSyncAt: Math.floor(Date.now() / 1000) - 60 };
   },
+  async removeLinkedDevice(id) {
+    await sleep(300);
+    mockDevices = mockDevices.filter((d) => d.id !== id || d.thisDevice);
+    return { devices: mockDevices, lastSyncAt: Math.floor(Date.now() / 1000) };
+  },
   async syncNow() {
     await sleep(800);
     return { devices: mockDevices, lastSyncAt: Math.floor(Date.now() / 1000) };
