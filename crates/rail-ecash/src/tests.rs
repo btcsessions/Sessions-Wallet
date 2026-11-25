@@ -864,3 +864,29 @@ async fn mint_contact_tracks_connection_errors_only() {
     let c = a.mint_contact();
     assert!(c.error.is_none() && c.last_ok_at.is_some());
 }
+
+/// A mint this device can't reach is reported as unreachable after a sync,
+/// stays reported on the next syncs (even ones that don't need the mint),
+/// and clears once a request gets through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unreachable_mint_is_reported_until_it_answers() {
+    let dir = TempDir::new("offline");
+    let mint = Arc::new(FakeMint::new(28));
+    let a = open(&dir, "a", MINT, PHRASE_A, &mint).await;
+    receive_paid(&a, &mint, 100).await;
+    assert!(a.mint_contact().error.is_none());
+
+    mint.offline.store(true, std::sync::atomic::Ordering::SeqCst);
+    *a.last_spent_check.lock().unwrap() = None;
+    let _ = a.sync().await;
+    assert!(a.mint_contact().error.is_some(), "reported after the first sync");
+    for _ in 0..3 {
+        let _ = a.sync().await;
+        assert!(a.mint_contact().error.is_some(), "still reported on later syncs");
+    }
+
+    mint.offline.store(false, std::sync::atomic::Ordering::SeqCst);
+    *a.last_spent_check.lock().unwrap() = None;
+    a.sync().await.unwrap();
+    assert!(a.mint_contact().error.is_none());
+}

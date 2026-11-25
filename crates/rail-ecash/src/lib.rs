@@ -451,9 +451,7 @@ impl sessions_core::Rail for EcashAccount {
         if due {
             // Routine: a few requests from where the last scan got to (a
             // keyset never scanned gets a deep one).
-            let r = self.catch_up(false).await;
-            self.note_contact(&r);
-            match r.map(|_| ()) {
+            match self.catch_up(false).await.map(|_| ()) {
                 Ok(()) => {
                     self.needs_restore.store(false, Ordering::SeqCst);
                     *self.last_catch_up.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -483,9 +481,7 @@ impl sessions_core::Rail for EcashAccount {
         if let Err(e) = self.release_failed_mints().await {
             tracing::warn!(account = %self.id, "ecash: release stuck mints: {e}");
         }
-        let minted = self.mint_paid_quotes().await;
-        self.note_contact(&minted);
-        let minted = minted?;
+        let minted = self.mint_paid_quotes().await?;
         if minted > 0 {
             tracing::info!(account = %self.id, sats = minted, "ecash: minted paid quotes");
         }
@@ -508,9 +504,7 @@ impl sessions_core::Rail for EcashAccount {
         }
 
         // 5. Drop ecash another device on this phrase has spent.
-        let dropped = self.drop_spent_elsewhere().await;
-        self.note_contact(&dropped);
-        if let Err(e) = dropped {
+        if let Err(e) = self.drop_spent_elsewhere().await {
             tracing::warn!(account = %self.id, "ecash: checking for ecash spent elsewhere: {e}");
         }
         Ok(())

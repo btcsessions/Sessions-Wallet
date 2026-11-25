@@ -66,6 +66,9 @@ pub struct FakeMint {
     /// Refuse a reused output the way Minibits (cdk-mintd 0.18.3) does:
     /// 20006 "already paid" instead of 10002 "already signed".
     pub collisions_like_minibits: std::sync::atomic::AtomicBool,
+    /// Unreachable, like a mint that blocks this connection: every request
+    /// fails the way a refused connection does.
+    pub offline: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for FakeMint {
@@ -103,6 +106,7 @@ impl FakeMint {
             paid_invoices: Mutex::new(vec![]),
             signed: Mutex::new(HashMap::new()),
             collisions_like_minibits: std::sync::atomic::AtomicBool::new(false),
+            offline: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -134,6 +138,16 @@ impl FakeMint {
     fn next_id(st: &mut State_, prefix: &str) -> String {
         st.counter += 1;
         format!("{prefix}-{}", st.counter)
+    }
+
+    fn check_online(&self) -> Result<(), Error> {
+        if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Error::HttpError(
+                None,
+                "Http transport error None: No route to host (os error 65)".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn sign(&self, outputs: &[BlindedMessage]) -> Result<Vec<BlindSignature>, Error> {
@@ -258,10 +272,12 @@ impl MintConnector for FakeMint {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
+        self.check_online()?;
         Ok(vec![self.keyset.clone()])
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        self.check_online()?;
         if keyset_id == self.keyset.id {
             Ok(self.keyset.clone())
         } else {
@@ -270,6 +286,7 @@ impl MintConnector for FakeMint {
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        self.check_online()?;
         Ok(KeysetResponse {
             keysets: vec![KeySetInfo {
                 id: self.keyset.id,
@@ -285,6 +302,7 @@ impl MintConnector for FakeMint {
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
+        self.check_online()?;
         let MintQuoteRequest::Bolt11(req) = request else {
             return Err(Error::UnsupportedPaymentMethod);
         };
@@ -307,6 +325,7 @@ impl MintConnector for FakeMint {
         _method: &PaymentMethod,
         request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
+        self.check_online()?;
         let mut st = self.state.lock().unwrap();
         let q = st
             .mint_quotes
@@ -331,6 +350,7 @@ impl MintConnector for FakeMint {
         _method: &PaymentMethod,
         _request: BatchCheckMintQuoteRequest<String>,
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        self.check_online()?;
         Err(Error::UnsupportedPaymentMethod) // NUT-29 not advertised
     }
 
@@ -339,6 +359,7 @@ impl MintConnector for FakeMint {
         _method: &PaymentMethod,
         _request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error> {
+        self.check_online()?;
         Err(Error::UnsupportedPaymentMethod)
     }
 
@@ -346,6 +367,7 @@ impl MintConnector for FakeMint {
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
+        self.check_online()?;
         let MeltQuoteRequest::Bolt11(req) = request else {
             return Err(Error::UnsupportedPaymentMethod);
         };
@@ -370,6 +392,7 @@ impl MintConnector for FakeMint {
         _method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
+        self.check_online()?;
         let st = self.state.lock().unwrap();
         let q = st.mint_quotes.get(quote_id).ok_or(Error::UnknownQuote)?;
         Ok(MintQuoteResponse::Bolt11(Self::mint_quote_response(
@@ -382,6 +405,7 @@ impl MintConnector for FakeMint {
         _method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
+        self.check_online()?;
         let st = self.state.lock().unwrap();
         let q = st.melt_quotes.get(quote_id).ok_or(Error::UnknownQuote)?;
         Ok(MeltQuoteResponse::Bolt11(Self::melt_quote_response(
@@ -394,6 +418,7 @@ impl MintConnector for FakeMint {
         _method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
+        self.check_online()?;
         let mut st = self.state.lock().unwrap();
         let (amount, invoice) = {
             let q = st
@@ -438,6 +463,7 @@ impl MintConnector for FakeMint {
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
+        self.check_online()?;
         let mut st = self.state.lock().unwrap();
         let (total, ys) = self.verify_inputs(&st, request.inputs())?;
         let out: u64 = request.outputs().iter().map(|o| o.amount.to_u64()).sum();
@@ -450,6 +476,7 @@ impl MintConnector for FakeMint {
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+        self.check_online()?;
         let mint_settings = MintMethodSettings {
             method: PaymentMethod::BOLT11,
             unit: CurrencyUnit::Sat,
@@ -479,6 +506,7 @@ impl MintConnector for FakeMint {
         &self,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
+        self.check_online()?;
         let st = self.state.lock().unwrap();
         Ok(CheckStateResponse {
             states: request
@@ -498,6 +526,7 @@ impl MintConnector for FakeMint {
     }
 
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        self.check_online()?;
         let signed = self.signed.lock().unwrap();
         let (outputs, signatures) = request
             .outputs

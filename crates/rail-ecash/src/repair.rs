@@ -55,7 +55,9 @@ impl EcashAccount {
             .client
             .get_mint_quote_status(bolt11(), quote_id)
             .await
-            .map_err(rail_err)?;
+            .map_err(rail_err);
+        self.note_contact(&r);
+        let r = r?;
         match r {
             MintQuoteResponse::Bolt11(r) => Ok((r.amount_paid, r.amount_issued)),
             _ => Err(Error::Invalid("not a Lightning quote".into())),
@@ -158,7 +160,9 @@ impl EcashAccount {
                         outputs: outputs.clone(),
                     })
                 })
-                .await?;
+                .await;
+                self.note_contact(&resp);
+                let resp = resp?;
                 let sigs: HashMap<PublicKey, BlindSignature> = resp
                     .outputs
                     .iter()
@@ -310,9 +314,9 @@ impl EcashAccount {
             return Ok(0);
         }
         let ys: Vec<PublicKey> = new.iter().map(|n| n.0).collect();
-        let states = retry(|| self.client.post_check_state(CheckStateRequest { ys: ys.clone() }))
-            .await?
-            .states;
+        let states = retry(|| self.client.post_check_state(CheckStateRequest { ys: ys.clone() })).await;
+        self.note_contact(&states);
+        let states = states?.states;
         let mut infos = Vec::new();
         let mut sats = 0;
         for ((_, p, counter), st) in new.into_iter().zip(states) {
@@ -448,7 +452,9 @@ impl EcashAccount {
                 .wallet
                 .check_proofs_spent(chunk.to_vec())
                 .await
-                .map_err(rail_err)?;
+                .map_err(rail_err);
+            self.note_contact(&states);
+            let states = states?;
             for (p, st) in chunk.iter().zip(&states) {
                 if st.state == cdk::nuts::State::Spent {
                     dropped += p.amount.to_u64();
