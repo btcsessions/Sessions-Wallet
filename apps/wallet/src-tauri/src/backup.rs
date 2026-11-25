@@ -148,6 +148,9 @@ pub struct Backup {
     emit: OnceLock<Emit>,
     relays: Relays,
     origin: tokio::time::Instant,
+    /// This device's ecash counters (keyset id → next counter), shared with
+    /// the other linked devices so their scans reach this device's ecash.
+    ecash_counters: SyncMutex<std::collections::BTreeMap<String, u32>>,
     /// One restore at a time (the UI and the loop may both try).
     restoring: tokio::sync::Mutex<()>,
     /// False in tests: never touch the network.
@@ -188,6 +191,7 @@ impl Backup {
             relays: Relays::default(),
             origin: tokio::time::Instant::now(),
             restoring: tokio::sync::Mutex::new(()),
+            ecash_counters: SyncMutex::new(Default::default()),
             online,
         }
     }
@@ -1003,6 +1007,10 @@ fn add_sync_fields(state: &AppState, config: &Config, data: &mut Value) {
             "removedDevices".into(),
             serde_json::to_value(&removed).unwrap_or_default(),
         );
+        o.insert(
+            "ecashCounters".into(),
+            serde_json::to_value(b.peer_ecash_counters()).unwrap_or_default(),
+        );
         if let Some(t) = token {
             o.insert("replaceToken".into(), Value::String(t));
         }
@@ -1139,6 +1147,44 @@ pub struct LinkedDevice {
 pub struct SyncStatus {
     pub devices: Vec<LinkedDevice>,
     pub last_sync_at: Option<u64>,
+}
+
+/// Ecash counters every linked device has published (keyset id → highest).
+fn published_ecash_counters(base: Option<&Value>) -> std::collections::BTreeMap<String, u32> {
+    base.and_then(|v| v.get("ecashCounters"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+impl Backup {
+    /// How far the linked devices' ecash counters have got (for scans).
+    pub fn peer_ecash_counters(&self) -> std::collections::BTreeMap<String, u32> {
+        let mut m = published_ecash_counters(self.base().as_ref());
+        for (k, v) in self.ecash_counters.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            let e = m.entry(k.clone()).or_default();
+            *e = (*e).max(*v);
+        }
+        m
+    }
+
+    /// Note this device's ecash counters. Uploads soon if one is well past
+    /// what the other devices last saw (they'd need it to find new ecash).
+    pub fn note_ecash_counters(&self, counters: std::collections::BTreeMap<String, u32>) {
+        let published = published_ecash_counters(self.base().as_ref());
+        let far_ahead = counters
+            .iter()
+            .any(|(k, v)| *v > published.get(k).copied().unwrap_or(0) + 300);
+        {
+            let mut mine = self.ecash_counters.lock().unwrap_or_else(|e| e.into_inner());
+            for (k, v) in counters {
+                let e = mine.entry(k).or_default();
+                *e = (*e).max(v);
+            }
+        }
+        if far_ahead {
+            self.touch();
+        }
+    }
 }
 
 /// Devices removed from the linked list, here or on another device (id →
@@ -1429,6 +1475,23 @@ mod tests {
         assert!(devices.contains_key(&me) && !devices.contains_key("old-phone"));
         let removed = data["removedDevices"].as_object().unwrap();
         assert!(removed.contains_key("old-phone") && !removed.contains_key(&me));
+    }
+
+    /// Ecash counters travel with the backup: the highest each device has
+    /// reached, merged with what the other devices published.
+    #[tokio::test]
+    async fn ecash_counters_are_shared_as_the_highest_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = AppState::new(dir.path().to_path_buf(), None);
+        a.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();
+        a.backup.set_base(&serde_json::json!({ "ecashCounters": { "k1": 3000, "k2": 5 } }));
+        a.backup.note_ecash_counters([("k1".to_string(), 40), ("k2".to_string(), 90)].into());
+        let peers = a.backup.peer_ecash_counters();
+        assert_eq!((peers["k1"], peers["k2"]), (3000, 90));
+        let config = a.inner.lock().await.as_ref().unwrap().config.clone();
+        let mut data = serde_json::json!({});
+        add_sync_fields(&a, &config, &mut data);
+        assert_eq!(data["ecashCounters"], serde_json::json!({ "k1": 3000, "k2": 90 }));
     }
 
     #[test]

@@ -89,6 +89,15 @@ pub struct EcashAccount {
     client: Arc<dyn MintConnector + Send + Sync>,
     /// When `drop_spent_elsewhere` last asked the mint.
     last_spent_check: std::sync::Mutex<Option<std::time::Instant>>,
+    /// The NUT-13 seed, for scanning the mint (see `repair::catch_up`).
+    scan_seed: zeroize::Zeroizing<[u8; 64]>,
+    /// How far each keyset has been scanned (`<db>.scan.json`).
+    scan_path: PathBuf,
+    /// One scan at a time.
+    scan_lock: tokio::sync::Mutex<()>,
+    /// Counters other linked devices have reached, per keyset (from the
+    /// synced backup): scans go at least this far.
+    peer_counters: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
 }
 
 impl std::fmt::Debug for EcashAccount {
@@ -184,6 +193,7 @@ impl EcashAccount {
             .unit(CurrencyUnit::Sat)
             .localstore(db)
             .seed(seed);
+        let scan_seed = zeroize::Zeroizing::new(seed);
         seed.zeroize();
         let connector: Arc<dyn MintConnector + Send + Sync> = match client {
             Some(c) => c,
@@ -204,6 +214,10 @@ impl EcashAccount {
             last_catch_up: std::sync::Mutex::new(None),
             client: connector,
             last_spent_check: std::sync::Mutex::new(None),
+            scan_seed,
+            scan_path: config.db_path.with_extension("scan.json"),
+            scan_lock: tokio::sync::Mutex::new(()),
+            peer_counters: Default::default(),
         })
     }
 
@@ -432,7 +446,8 @@ impl sessions_core::Rail for EcashAccount {
                     .is_none_or(|t| t.elapsed() >= every)
             });
         if due {
-            match self.catch_up_counters().await {
+            let deep = self.needs_restore.load(Ordering::SeqCst);
+            match self.catch_up(deep).await.map(|_| ()) {
                 Ok(()) => {
                     self.needs_restore.store(false, Ordering::SeqCst);
                     *self.last_catch_up.lock().unwrap_or_else(|e| e.into_inner()) =

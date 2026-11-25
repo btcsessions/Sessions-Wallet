@@ -679,3 +679,123 @@ async fn ecash_spent_on_another_device_drops_out() {
     a.sync().await.unwrap();
     assert_eq!(a.info().await.unwrap().balance.confirmed, 0);
 }
+
+async fn receive_paid(acct: &EcashAccount, mint: &FakeMint, sats: u64) {
+    let t = acct
+        .receive(ReceiveRequest { method: Method::Bolt11, amount_sat: Some(sats), description: None })
+        .await
+        .unwrap();
+    mint.pay_mint_quote(t.watch_id.as_deref().unwrap());
+    acct.sync().await.unwrap();
+}
+
+async fn counter(acct: &EcashAccount) -> u32 {
+    let ks = acct.wallet.keysets(Default::default()).await.unwrap();
+    acct.wallet.localstore.increment_keyset_counter(&ks[0].id, 0).await.unwrap()
+}
+
+/// Two linked devices on one phrase: ecash one receives shows up on the
+/// other after a catch-up, catching up again never jumps the counter, and
+/// the next receive on either side doesn't collide.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn linked_devices_find_each_others_ecash_without_jumping_counters() {
+    let dir = TempDir::new("twodev");
+    let mint = Arc::new(FakeMint::new(21));
+    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
+    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+
+    receive_paid(&desk, &mint, 100).await;
+    assert_eq!(desk.info().await.unwrap().balance.confirmed, 100);
+    let c = counter(&desk).await;
+    // Catching up twice leaves the counter where it is (CDK's restore adds).
+    desk.catch_up(true).await.unwrap();
+    desk.catch_up(true).await.unwrap();
+    assert_eq!(counter(&desk).await, c);
+
+    assert_eq!(phone.catch_up(true).await.unwrap(), 100);
+    assert_eq!(phone.info().await.unwrap().balance.confirmed, 100);
+    assert_eq!(counter(&phone).await, c);
+    // Nothing new: finds nothing, stores nothing twice.
+    assert_eq!(phone.catch_up(false).await.unwrap(), 0);
+    assert_eq!(phone.info().await.unwrap().balance.confirmed, 100);
+
+    // Each receives more; a routine scan picks up the other's.
+    receive_paid(&phone, &mint, 50).await;
+    assert_eq!(desk.catch_up(false).await.unwrap(), 50);
+    receive_paid(&desk, &mint, 25).await;
+    assert_eq!(phone.catch_up(false).await.unwrap(), 25);
+    assert_eq!(desk.info().await.unwrap().balance.confirmed, 175);
+    assert_eq!(phone.info().await.unwrap().balance.confirmed, 175);
+}
+
+/// A device that fell behind collides with outputs the other already used:
+/// it catches up and retries, and the receive still lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_behind_recovers_from_a_collision() {
+    let dir = TempDir::new("collide");
+    let mint = Arc::new(FakeMint::new(22));
+    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
+    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+    receive_paid(&desk, &mint, 100).await;
+    // The phone hasn't caught up: its counter starts where the desk's did.
+    receive_paid(&phone, &mint, 40).await;
+    assert_eq!(phone.info().await.unwrap().balance.confirmed, 140);
+    assert_eq!(phone.info().await.unwrap().balance.pending_in, 0);
+}
+
+/// Older versions jumped counters far ahead, leaving long unsigned gaps. A
+/// deep scan looks past them; the counter ends just past the last output.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deep_scan_finds_ecash_past_a_jumped_counter() {
+    let dir = TempDir::new("gap");
+    let mint = Arc::new(FakeMint::new(23));
+    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
+    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+    receive_paid(&desk, &mint, 10).await;
+    let ks = desk.wallet.keysets(Default::default()).await.unwrap();
+    desk.wallet.localstore.increment_keyset_counter(&ks[0].id, 2_500).await.unwrap();
+    receive_paid(&desk, &mint, 177).await;
+
+    assert_eq!(phone.catch_up(true).await.unwrap(), 187);
+    assert_eq!(phone.info().await.unwrap().balance.confirmed, 187);
+    assert_eq!(counter(&phone).await, counter(&desk).await);
+}
+
+/// The same, against a mint that answers a reused output with 20006 "already
+/// paid" (Minibits): CDK files the attempt as ambiguous; the wallet confirms
+/// with the mint that nothing was issued, releases it, catches up, retries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_behind_recovers_when_the_mint_says_already_paid() {
+    let dir = TempDir::new("collide20006");
+    let mint = Arc::new(FakeMint::new(24));
+    mint.collisions_like_minibits.store(true, std::sync::atomic::Ordering::SeqCst);
+    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
+    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+    receive_paid(&desk, &mint, 100).await;
+    receive_paid(&phone, &mint, 40).await;
+    let info = phone.info().await.unwrap();
+    assert_eq!((info.balance.confirmed, info.balance.pending_in), (140, 0));
+    // And nothing is left stuck for the next sync.
+    phone.sync().await.unwrap();
+    assert_eq!(phone.info().await.unwrap().balance.confirmed, 140);
+}
+
+/// With the other device's counter known (shared through the backup), a
+/// routine scan reaches its ecash however far ahead an old version pushed it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_counters_carry_a_routine_scan_past_any_gap() {
+    let dir = TempDir::new("peer");
+    let mint = Arc::new(FakeMint::new(25));
+    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
+    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+    receive_paid(&desk, &mint, 10).await;
+    assert_eq!(phone.catch_up(true).await.unwrap(), 10);
+    let ks = desk.wallet.keysets(Default::default()).await.unwrap();
+    desk.wallet.localstore.increment_keyset_counter(&ks[0].id, 9_000).await.unwrap();
+    receive_paid(&desk, &mint, 177).await;
+    // Without the hint, a routine scan stops at the gap.
+    assert_eq!(phone.catch_up(false).await.unwrap(), 0);
+    phone.set_peer_counters(&desk.counters().await.unwrap());
+    assert_eq!(phone.catch_up(false).await.unwrap(), 177);
+    assert_eq!(phone.info().await.unwrap().balance.confirmed, 187);
+}

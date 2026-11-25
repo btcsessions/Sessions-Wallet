@@ -60,6 +60,12 @@ pub struct FakeMint {
     state: Mutex<State_>,
     /// Lightning invoices this mint "paid", for assertions.
     pub paid_invoices: Mutex<Vec<String>>,
+    /// Every blinded message signed, for NUT-09 restore (and to refuse
+    /// signing one twice, like a real mint).
+    signed: Mutex<HashMap<PublicKey, BlindSignature>>,
+    /// Refuse a reused output the way Minibits (cdk-mintd 0.18.3) does:
+    /// 20006 "already paid" instead of 10002 "already signed".
+    pub collisions_like_minibits: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for FakeMint {
@@ -95,6 +101,8 @@ impl FakeMint {
             keyset,
             state: Mutex::new(State_::default()),
             paid_invoices: Mutex::new(vec![]),
+            signed: Mutex::new(HashMap::new()),
+            collisions_like_minibits: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -129,7 +137,14 @@ impl FakeMint {
     }
 
     fn sign(&self, outputs: &[BlindedMessage]) -> Result<Vec<BlindSignature>, Error> {
-        outputs
+        let mut signed = self.signed.lock().unwrap();
+        if outputs.iter().any(|o| signed.contains_key(&o.blinded_secret)) {
+            if self.collisions_like_minibits.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(Error::RequestAlreadyPaid);
+            }
+            return Err(Error::BlindedMessageAlreadySigned);
+        }
+        let sigs = outputs
             .iter()
             .map(|o| {
                 if o.keyset_id != self.keyset.id {
@@ -143,7 +158,11 @@ impl FakeMint {
                     dleq: None,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, Error>>()?;
+        for (o, s) in outputs.iter().zip(&sigs) {
+            signed.insert(o.blinded_secret, s.clone());
+        }
+        Ok(sigs)
     }
 
     /// Verify signatures and that no input is spent; returns (total, Ys).
@@ -478,11 +497,14 @@ impl MintConnector for FakeMint {
         })
     }
 
-    async fn post_restore(&self, _request: RestoreRequest) -> Result<RestoreResponse, Error> {
-        Ok(RestoreResponse {
-            outputs: vec![],
-            signatures: vec![],
-        })
+    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        let signed = self.signed.lock().unwrap();
+        let (outputs, signatures) = request
+            .outputs
+            .into_iter()
+            .filter_map(|o| signed.get(&o.blinded_secret).cloned().map(|s| (o, s)))
+            .unzip();
+        Ok(RestoreResponse { outputs, signatures })
     }
 
     async fn get_auth_wallet(&self) -> Option<AuthWallet> {

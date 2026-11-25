@@ -17,6 +17,16 @@ use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::PaymentMethod;
 use cdk::wallet::types::{IssueSagaState, WalletSagaState};
 use cdk::{Amount, MintQuoteResponse};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
+
+use cdk::dhke::construct_proofs;
+use cdk::nuts::{
+    BlindSignature, CheckStateRequest, CurrencyUnit, KeySet, PreMint, PreMintSecrets, PublicKey,
+    RestoreRequest, State,
+};
+use cdk::wallet::types::ProofInfo;
+use serde::{Deserialize, Serialize};
 use sessions_core::{Error, Result, Sats};
 
 use crate::{rail_err, EcashAccount};
@@ -89,13 +99,205 @@ impl EcashAccount {
         Ok(released)
     }
 
-    /// Catch this device's counters up with the mint, so it doesn't reuse
-    /// secrets another device on the same phrase already used. Also picks up
-    /// any of this phrase's ecash the database doesn't know about.
-    pub(crate) async fn catch_up_counters(&self) -> Result<()> {
-        let restored = self.wallet.restore().await.map_err(rail_err)?;
-        tracing::info!(account = %self.id, ?restored, "ecash: counters caught up with the mint");
-        Ok(())
+    /// Catch up with the mint: find ecash made from this phrase that this
+    /// device doesn't hold (restored from the phrase, or received on another
+    /// linked device) and move this device's counters past every output the
+    /// mint has signed, so it never reuses one. Returns the sats found.
+    ///
+    /// CDK's `restore` is for a brand-new database: it *adds* the highest
+    /// counter found to the current one, so running it on a wallet in use
+    /// jumps the counter far ahead, leaving gaps other devices' scans stop
+    /// at. This scan never jumps (counter = highest signed + 1 at most), keeps
+    /// how far it got per keyset, and with `deep` looks past long gaps
+    /// (which older versions created).
+    pub(crate) async fn catch_up(&self, deep: bool) -> Result<u64> {
+        let _one_at_a_time = self.scan_lock.lock().await;
+        let mut scan = load_scan(&self.scan_path);
+        let keysets = self.wallet.keysets(Default::default()).await.map_err(rail_err)?;
+        let db = &self.wallet.localstore;
+        let known: HashSet<PublicKey> = db
+            .get_proofs(Some(self.wallet.mint_url.clone()), None, None, None)
+            .await
+            .map_err(rail_err)?
+            .into_iter()
+            .map(|p| p.y)
+            .collect();
+        let mut found = 0u64;
+        for ks in keysets.iter().filter(|k| k.unit == CurrencyUnit::Sat) {
+            let key = ks.id.to_string();
+            let mut entry = scan.get(&key).copied().unwrap_or_default();
+            let inactive = ks.active == Some(false);
+            if inactive && entry.done {
+                continue; // an inactive keyset signs nothing new
+            }
+            let gap = if deep || entry.next == 0 { DEEP_GAP } else { LIGHT_GAP };
+            // Another device got this far: scan at least that far.
+            let peer = self
+                .peer_counters
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key)
+                .copied()
+                .unwrap_or(0);
+            // Resume a long stretch toward another device's counter where an
+            // earlier (time-limited) scan left off.
+            let mut start = if entry.scanned > entry.next && entry.scanned <= peer {
+                entry.scanned
+            } else {
+                entry.next
+            };
+            let mut empty = 0;
+            while empty < gap || start < peer {
+                let end = start.saturating_add(BATCH);
+                let pre = PreMintSecrets::restore_batch(ks.id, &self.scan_seed, start, end)
+                    .map_err(rail_err)?;
+                let resp = self
+                    .client
+                    .post_restore(RestoreRequest {
+                        outputs: pre.blinded_messages(),
+                    })
+                    .await
+                    .map_err(rail_err)?;
+                let sigs: HashMap<PublicKey, BlindSignature> = resp
+                    .outputs
+                    .iter()
+                    .zip(resp.signatures)
+                    .map(|(o, s)| (o.blinded_secret, s))
+                    .collect();
+                let matched: Vec<(u32, &PreMint, BlindSignature)> = pre
+                    .secrets
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| {
+                        sigs.get(&p.blinded_message.blinded_secret)
+                            .map(|s| (start + i as u32, p, s.clone()))
+                    })
+                    .collect();
+                if matched.is_empty() {
+                    empty += 1;
+                    start = end;
+                    if start <= peer {
+                        // Nobody mints below another device's counter (each
+                        // moves its own past it), so this stretch stays empty.
+                        entry.scanned = start;
+                        scan.insert(key.clone(), entry);
+                        save_scan(&self.scan_path, &scan);
+                    }
+                    continue;
+                }
+                empty = 0;
+                found += self.store_found(ks, &matched, &known).await?;
+                if let Some(h) = matched.last().map(|m| m.0) {
+                    entry.next = entry.next.max(h + 1);
+                }
+                entry.scanned = entry.scanned.max(end);
+                scan.insert(key.clone(), entry);
+                save_scan(&self.scan_path, &scan);
+                start = end;
+            }
+            if inactive {
+                entry.done = true;
+            }
+            scan.insert(key.clone(), entry);
+            save_scan(&self.scan_path, &scan);
+            // Past everything signed and every other device's counter, so
+            // this device never reuses an output or mints inside a gap.
+            let target = entry.next.max(peer);
+            let current = db.increment_keyset_counter(&ks.id, 0).await.map_err(rail_err)?;
+            if target > current {
+                db.increment_keyset_counter(&ks.id, target - current)
+                    .await
+                    .map_err(rail_err)?;
+            }
+        }
+        tracing::info!(account = %self.id, sats = found, deep, "ecash: caught up with the mint");
+        Ok(found)
+    }
+
+    /// Counters other linked devices have reached (keyset id → counter).
+    pub fn set_peer_counters(&self, counters: &BTreeMap<String, u32>) {
+        *self.peer_counters.lock().unwrap_or_else(|e| e.into_inner()) = counters.clone();
+    }
+
+    /// This device's counters (keyset id → next counter), to share with the
+    /// other linked devices.
+    pub async fn counters(&self) -> Result<BTreeMap<String, u32>> {
+        let keysets = self.wallet.keysets(Default::default()).await.map_err(rail_err)?;
+        let mut out = BTreeMap::new();
+        for ks in keysets.iter().filter(|k| k.unit == CurrencyUnit::Sat) {
+            let c = self
+                .wallet
+                .localstore
+                .increment_keyset_counter(&ks.id, 0)
+                .await
+                .map_err(rail_err)?;
+            if c > 0 {
+                out.insert(ks.id.to_string(), c);
+            }
+        }
+        Ok(out)
+    }
+
+    /// "Check the mint": a deep catch-up the person asked for, with no time
+    /// limit. Returns the sats found.
+    pub async fn check_mint(&self) -> Result<Sats> {
+        self.catch_up(true).await
+    }
+
+    /// Keep the found outputs this database doesn't already hold and the mint
+    /// says aren't spent. Returns their sats.
+    async fn store_found(
+        &self,
+        ks: &KeySet,
+        matched: &[(u32, &PreMint, BlindSignature)],
+        known: &HashSet<PublicKey>,
+    ) -> Result<u64> {
+        let proofs = construct_proofs(
+            matched.iter().map(|m| m.2.clone()).collect(),
+            matched.iter().map(|m| m.1.r.clone()).collect(),
+            matched.iter().map(|m| m.1.secret.clone()).collect(),
+            &ks.keys,
+        )
+        .map_err(rail_err)?;
+        let mut new = Vec::new();
+        for (p, m) in proofs.into_iter().zip(matched) {
+            let y = p.y().map_err(rail_err)?;
+            if !known.contains(&y) {
+                new.push((y, p, m.0));
+            }
+        }
+        if new.is_empty() {
+            return Ok(0);
+        }
+        let states = self
+            .client
+            .post_check_state(CheckStateRequest {
+                ys: new.iter().map(|n| n.0).collect(),
+            })
+            .await
+            .map_err(rail_err)?
+            .states;
+        let mut infos = Vec::new();
+        let mut sats = 0;
+        for ((_, p, counter), st) in new.into_iter().zip(states) {
+            if st.state == State::Spent {
+                continue;
+            }
+            if st.state == State::Unspent {
+                sats += p.amount.to_u64();
+            }
+            infos.push(
+                ProofInfo::new(p, self.wallet.mint_url.clone(), st.state, ks.unit.clone())
+                    .map_err(rail_err)?
+                    .with_derivation_index(counter),
+            );
+        }
+        self.wallet
+            .localstore
+            .update_proofs(infos, vec![])
+            .await
+            .map_err(rail_err)?;
+        Ok(sats)
     }
 
     /// Mint one paid quote. On a collision: release the failed attempt, catch
@@ -106,7 +308,7 @@ impl EcashAccount {
             Err(e) if is_collision(&e) => {
                 tracing::warn!(account = %self.id, "ecash: mint collided ({e}); catching up and retrying");
                 self.release_failed_mints().await?;
-                self.catch_up_counters().await?;
+                self.catch_up(true).await?;
                 self.wallet
                     .mint(quote_id, Default::default(), None)
                     .await
@@ -187,7 +389,7 @@ impl EcashAccount {
             ));
         }
         self.release_failed_mints().await?;
-        self.catch_up_counters().await?;
+        self.catch_up(true).await?;
         self.mint_quote(quote_id).await?;
         Ok(mintable)
     }
@@ -226,3 +428,39 @@ impl EcashAccount {
 
 /// How often to ask the mint whether this device's ecash was spent elsewhere.
 pub(crate) const SPENT_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Outputs per restore request.
+const BATCH: u32 = 100;
+/// Empty batches before a routine scan stops.
+const LIGHT_GAP: u32 = 3;
+/// Empty batches before a deep scan stops: looks past the gaps that
+/// versions before 0.1.50 left by jumping counters ahead.
+const DEEP_GAP: u32 = 40;
+
+/// How far a keyset has been scanned.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+struct KeysetScan {
+    /// One past the highest counter the mint has signed (that we've seen).
+    next: u32,
+    /// An inactive keyset, scanned to the end.
+    done: bool,
+    /// How far a stretch toward another device's counter has been scanned.
+    #[serde(default)]
+    scanned: u32,
+}
+
+fn load_scan(path: &Path) -> BTreeMap<String, KeysetScan> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_scan(path: &Path, scan: &BTreeMap<String, KeysetScan>) {
+    if let Ok(bytes) = serde_json::to_vec(scan) {
+        let tmp = path.with_extension("scan.json.tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}

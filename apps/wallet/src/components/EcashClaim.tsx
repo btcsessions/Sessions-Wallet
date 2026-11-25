@@ -12,6 +12,28 @@ export function EcashClaim({ account }: { account: string }) {
   const [open, setOpen] = useState(false);
   const [id, setId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
+
+  /** Find ecash received on a linked device (or before a reinstall). */
+  const check = async () => {
+    setChecking(true);
+    try {
+      const sats = await (await api()).checkEcashMint(account);
+      notify("ok", sats > 0 ? `Found ${formatSats(sats)} sats` : "Up to date: nothing missing");
+      void useWallet.getState().refresh();
+    } catch (e) {
+      notify("error", errorText(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+  const checkButton = (
+    <p style={{ textAlign: "center", margin: "4px 0 6px" }}>
+      <button className="text-button subtle" disabled={checking} onClick={() => void check()}>
+        {checking ? "Checking the mint…" : "Missing ecash? Check the mint"}
+      </button>
+    </p>
+  );
 
   const claim = async () => {
     setBusy(true);
@@ -30,11 +52,14 @@ export function EcashClaim({ account }: { account: string }) {
 
   if (!open) {
     return (
-      <p style={{ textAlign: "center", margin: "4px 0 10px" }}>
-        <button className="text-button subtle" onClick={() => setOpen(true)}>
-          Collect a payment by quote ID
-        </button>
-      </p>
+      <>
+        {checkButton}
+        <p style={{ textAlign: "center", margin: "0 0 10px" }}>
+          <button className="text-button subtle" onClick={() => setOpen(true)}>
+            Collect a payment by quote ID
+          </button>
+        </p>
+      </>
     );
   }
   return (

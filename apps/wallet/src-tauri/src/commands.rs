@@ -452,7 +452,24 @@ pub async fn cosigner_key(state: State<'_, AppState>) -> Result<String> {
 
 #[tauri::command]
 pub async fn sync(state: State<'_, AppState>) -> Result<()> {
+    // Ecash: scans reach as far as the other linked devices' counters.
+    let ecash: Vec<_> = {
+        let guard = state.inner.lock().await;
+        guard
+            .as_ref()
+            .map(|u| u.ecash.values().cloned().collect())
+            .unwrap_or_default()
+    };
+    let peers = state.backup.peer_ecash_counters();
+    for a in &ecash {
+        a.set_peer_counters(&peers);
+    }
     let results = wallet(&state).await?.sync_all().await;
+    for a in &ecash {
+        if let Ok(c) = a.counters().await {
+            state.backup.note_ecash_counters(c);
+        }
+    }
     // Report the first real failure but don't hide progress made on other
     // accounts. A slow server isn't a failure: it finishes next time.
     match results
@@ -885,6 +902,26 @@ pub async fn claim_ecash_quote(
             .ok_or_else(|| Error::Unsupported("collect ecash quotes".into()))?
     };
     a.claim_quote(&quote_id).await
+}
+
+/// Ecash: look for ecash this phrase owns that this device doesn't show
+/// (received on a linked device, or before a reinstall). Returns sats found.
+#[tauri::command]
+pub async fn check_ecash_mint(state: State<'_, AppState>, account: AccountId) -> Result<u64> {
+    let a = {
+        let guard = state.inner.lock().await;
+        let u = guard.as_ref().ok_or(Error::Locked)?;
+        u.ecash
+            .get(&account)
+            .cloned()
+            .ok_or_else(|| Error::Unsupported("check the mint".into()))?
+    };
+    a.set_peer_counters(&state.backup.peer_ecash_counters());
+    let found = a.check_mint().await?;
+    if let Ok(c) = a.counters().await {
+        state.backup.note_ecash_counters(c);
+    }
+    Ok(found)
 }
 
 /// On-chain deposits to a Spending account that aren't in its balance yet:

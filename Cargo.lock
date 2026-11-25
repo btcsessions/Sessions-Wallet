@@ -5538,6 +5538,8 @@ dependencies = [
  "cdk",
  "cdk-redb",
  "redb",
+ "serde",
+ "serde_json",
  "sessions-core",
  "tokio",
  "tracing",
