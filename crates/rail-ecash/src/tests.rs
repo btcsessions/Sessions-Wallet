@@ -743,8 +743,9 @@ async fn a_device_behind_recovers_from_a_collision() {
     assert_eq!(phone.info().await.unwrap().balance.pending_in, 0);
 }
 
-/// Older versions jumped counters far ahead, leaving long unsigned gaps. A
-/// deep scan looks past them; the counter ends just past the last output.
+/// A deep scan looks past a gap of several hundred unsigned outputs (failed
+/// attempts); the counter ends just past the last output. Longer gaps are
+/// crossed with shared counters (see the peer test).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deep_scan_finds_ecash_past_a_jumped_counter() {
     let dir = TempDir::new("gap");
@@ -753,7 +754,7 @@ async fn deep_scan_finds_ecash_past_a_jumped_counter() {
     let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
     receive_paid(&desk, &mint, 10).await;
     let ks = desk.wallet.keysets(Default::default()).await.unwrap();
-    desk.wallet.localstore.increment_keyset_counter(&ks[0].id, 2_500).await.unwrap();
+    desk.wallet.localstore.increment_keyset_counter(&ks[0].id, 800).await.unwrap();
     receive_paid(&desk, &mint, 177).await;
 
     assert_eq!(phone.catch_up(true).await.unwrap(), 187);
@@ -798,4 +799,30 @@ async fn peer_counters_carry_a_routine_scan_past_any_gap() {
     phone.set_peer_counters(&desk.counters().await.unwrap());
     assert_eq!(phone.catch_up(false).await.unwrap(), 177);
     assert_eq!(phone.info().await.unwrap().balance.confirmed, 187);
+}
+
+/// Manual: the catch-up scan ("Check the mint") against a real mint.
+/// `cargo test -p rail-ecash real_mint_check -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn real_mint_check_the_mint() {
+    let dir = TempDir::new("realcheck");
+    let acct = EcashAccount::open(EcashConfig {
+        id: AccountId::from("e"),
+        name: "Ecash".into(),
+        mint_url: "https://mint.minibits.cash/Bitcoin".into(),
+        mnemonic: PHRASE_A.into(),
+        db_path: dir.0.join("e.redb"),
+    })
+    .await
+    .unwrap();
+    for deep in [true, false, true] {
+        let t = std::time::Instant::now();
+        let r = acct.catch_up(deep).await;
+        eprintln!("catch_up(deep={deep}): {r:?} in {:.1} s", t.elapsed().as_secs_f64());
+        r.unwrap();
+    }
+    let r = acct.check_mint().await;
+    eprintln!("check_mint: {r:?}");
+    r.unwrap();
 }

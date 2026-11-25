@@ -446,8 +446,9 @@ impl sessions_core::Rail for EcashAccount {
                     .is_none_or(|t| t.elapsed() >= every)
             });
         if due {
-            let deep = self.needs_restore.load(Ordering::SeqCst);
-            match self.catch_up(deep).await.map(|_| ()) {
+            // Routine: a few requests from where the last scan got to (a
+            // keyset never scanned gets a deep one).
+            match self.catch_up(false).await.map(|_| ()) {
                 Ok(()) => {
                     self.needs_restore.store(false, Ordering::SeqCst);
                     *self.last_catch_up.lock().unwrap_or_else(|e| e.into_inner()) =

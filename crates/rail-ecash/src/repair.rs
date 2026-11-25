@@ -151,6 +151,7 @@ impl EcashAccount {
                 let end = start.saturating_add(BATCH);
                 let pre = PreMintSecrets::restore_batch(ks.id, &self.scan_seed, start, end)
                     .map_err(rail_err)?;
+                tokio::time::sleep(SCAN_PACE).await;
                 let outputs = pre.blinded_messages();
                 let resp = retry(|| {
                     self.client.post_restore(RestoreRequest {
@@ -429,9 +430,12 @@ pub(crate) const SPENT_CHECK_EVERY: std::time::Duration = std::time::Duration::f
 const BATCH: u32 = 100;
 /// Empty batches before a routine scan stops.
 const LIGHT_GAP: u32 = 3;
-/// Empty batches before a deep scan stops: looks past the gaps that
-/// versions before 0.1.50 left by jumping counters ahead.
-const DEEP_GAP: u32 = 40;
+/// Empty batches before a deep scan stops: a little past small gaps. Long
+/// gaps (old versions jumped counters) are crossed with the other devices'
+/// shared counters instead, which costs nothing when there's no gap.
+const DEEP_GAP: u32 = 10;
+/// Pause between scan requests, so a scan never floods the mint.
+const SCAN_PACE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// How far a keyset has been scanned.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
