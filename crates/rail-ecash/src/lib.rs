@@ -79,6 +79,11 @@ pub struct EcashAccount {
     /// from the recovery phrase): the next sync scans the mint (NUT-09/13) for
     /// ecash this seed already owns. Stays set until a scan succeeds.
     needs_restore: std::sync::atomic::AtomicBool,
+    /// Catch up with the mint again this often (another device on the same
+    /// phrase may have added ecash). None in tests.
+    catch_up_every: Option<std::time::Duration>,
+    /// When the last catch-up finished.
+    last_catch_up: std::sync::Mutex<Option<std::time::Instant>>,
     /// The mint, for questions CDK's wallet doesn't expose (what a quote has
     /// really issued). Same connection the wallet uses.
     client: Arc<dyn MintConnector + Send + Sync>,
@@ -195,6 +200,8 @@ impl EcashAccount {
             name: std::sync::RwLock::new(config.name),
             wallet,
             needs_restore: std::sync::atomic::AtomicBool::new(fresh),
+            catch_up_every: fresh.then_some(CATCH_UP_EVERY),
+            last_catch_up: std::sync::Mutex::new(None),
             client: connector,
             last_spent_check: std::sync::Mutex::new(None),
         })
@@ -241,6 +248,9 @@ fn remember_db(path: &std::path::Path, db: &Arc<WalletRedbDatabase>) {
     open.retain(|(p, w)| w.strong_count() > 0 && p != path);
     open.push((path.to_path_buf(), Arc::downgrade(db)));
 }
+
+/// How often each device catches up with the mint (see `sync`).
+const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// cdk-redb 0.18.2 creates every table at init except `wallet_sagas`, but
 /// reads it in `get_incomplete_sagas` (called by `recover_incomplete_sagas`,
@@ -410,11 +420,24 @@ impl sessions_core::Rail for EcashAccount {
 
     async fn sync(&self) -> Result<()> {
         use std::sync::atomic::Ordering;
-        // 0. First sync on a new database: recover ecash this seed already
-        //    owns at this mint, so the recovery phrase alone restores it.
-        if self.needs_restore.load(Ordering::SeqCst) {
+        // 0. Catch up with the mint: at the first sync, then every
+        //    `CATCH_UP_EVERY`. Picks up ecash this phrase owns that this
+        //    device doesn't know about (a restore, or another linked device
+        //    receiving), and moves the counters past what others used.
+        let due = self.needs_restore.load(Ordering::SeqCst)
+            || self.catch_up_every.is_some_and(|every| {
+                self.last_catch_up
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_none_or(|t| t.elapsed() >= every)
+            });
+        if due {
             match self.catch_up_counters().await {
-                Ok(()) => self.needs_restore.store(false, Ordering::SeqCst),
+                Ok(()) => {
+                    self.needs_restore.store(false, Ordering::SeqCst);
+                    *self.last_catch_up.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(std::time::Instant::now());
+                }
                 Err(e) => tracing::warn!(account = %self.id, "ecash: restore scan: {e}"),
             }
         }
