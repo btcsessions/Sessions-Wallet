@@ -27,6 +27,7 @@ import type {
   LightningAddress,
   Deposit,
   SpendingHealth,
+  MintContact,
   RecoveryQuote,
   ClaimResult,
   Method,
@@ -243,6 +244,8 @@ export interface WalletApi {
   claimEcashQuote(account: string, quoteId: string): Promise<number>;
   /** Ecash: find ecash this phrase owns that this device doesn't show. Returns sats found. */
   checkEcashMint(account: string): Promise<number>;
+  /** Ecash accounts and whether their mint answered lately (no requests made). */
+  ecashContact(): Promise<Record<string, MintContact>>;
   /** Price recovering Spending's recoverable funds to an on-chain address. */
   prepareSpendingRecovery(account: string, address: string, feeRateSatVb: number): Promise<RecoveryQuote>;
   /** Recover what was priced; returns the txids. */

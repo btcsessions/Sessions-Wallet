@@ -240,6 +240,12 @@ export interface LightningAddress {
 export type DepositStatus = "waiting" | "claiming" | "needsApproval" | "failed" | "refunding";
 
 /** An on-chain deposit to a Spending account that isn't in its balance yet. */
+/** Whether this device can reach an ecash mint (from its last requests). */
+export interface MintContact {
+  lastOkAt: number | null;
+  error: string | null;
+}
+
 export interface SpendingHealth {
   /** Unix seconds of the last sync. */
   lastSyncedAt: number | null;

@@ -98,6 +98,8 @@ pub struct EcashAccount {
     /// Counters other linked devices have reached, per keyset (from the
     /// synced backup): scans go at least this far.
     peer_counters: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
+    /// Whether the mint answered lately (see `mint_contact`).
+    contact: std::sync::Mutex<repair::MintContact>,
 }
 
 impl std::fmt::Debug for EcashAccount {
@@ -218,6 +220,7 @@ impl EcashAccount {
             scan_path: config.db_path.with_extension("scan.json"),
             scan_lock: tokio::sync::Mutex::new(()),
             peer_counters: Default::default(),
+            contact: Default::default(),
         })
     }
 
@@ -448,7 +451,9 @@ impl sessions_core::Rail for EcashAccount {
         if due {
             // Routine: a few requests from where the last scan got to (a
             // keyset never scanned gets a deep one).
-            match self.catch_up(false).await.map(|_| ()) {
+            let r = self.catch_up(false).await;
+            self.note_contact(&r);
+            match r.map(|_| ()) {
                 Ok(()) => {
                     self.needs_restore.store(false, Ordering::SeqCst);
                     *self.last_catch_up.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -478,7 +483,9 @@ impl sessions_core::Rail for EcashAccount {
         if let Err(e) = self.release_failed_mints().await {
             tracing::warn!(account = %self.id, "ecash: release stuck mints: {e}");
         }
-        let minted = self.mint_paid_quotes().await?;
+        let minted = self.mint_paid_quotes().await;
+        self.note_contact(&minted);
+        let minted = minted?;
         if minted > 0 {
             tracing::info!(account = %self.id, sats = minted, "ecash: minted paid quotes");
         }
@@ -501,7 +508,9 @@ impl sessions_core::Rail for EcashAccount {
         }
 
         // 5. Drop ecash another device on this phrase has spent.
-        if let Err(e) = self.drop_spent_elsewhere().await {
+        let dropped = self.drop_spent_elsewhere().await;
+        self.note_contact(&dropped);
+        if let Err(e) = dropped {
             tracing::warn!(account = %self.id, "ecash: checking for ecash spent elsewhere: {e}");
         }
         Ok(())
@@ -788,5 +797,6 @@ impl sessions_core::Rail for EcashAccount {
 #[cfg(test)]
 mod fake_mint;
 mod repair;
+pub use repair::MintContact;
 #[cfg(test)]
 mod tests;

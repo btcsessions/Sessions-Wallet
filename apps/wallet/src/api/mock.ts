@@ -171,6 +171,10 @@ function seedDemo() {
       accountIndex: 1,
     },
   ];
+  // Preview (?mintdown=1): an ecash account whose mint can't be reached.
+  if (typeof location !== "undefined" && /[?&]mintdown=1/.test(location.search)) {
+    accounts.push({ ...accounts[0], id: "ecash", name: "Ecash", rail: "ecash", custody: { type: "mint", url: "https://mint.minibits.cash/Bitcoin" }, receives: ["bolt11"], pays: ["bolt11"] });
+  }
   const t = now();
   activity = [
     p("a1", "spending", "outgoing", 4_800, 0, "bolt11", t - 3_600, "Coffee at Analog"),
@@ -350,7 +354,7 @@ export const mockApi: WalletApi = {
     await sleep(400);
     seedDemo();
     // A new wallet starts with Spending only.
-    accounts = accounts.filter((a) => a.rail === "spark");
+    accounts = accounts.filter((a) => a.rail === "spark" || (a.rail === "ecash" && /mintdown=1/.test(location.search)));
     accounts.forEach((a) => (a.balance = { confirmed: 0, pendingIn: 0, pendingOut: 0 }));
     activity = [];
     status = "unlocked";
@@ -372,7 +376,7 @@ export const mockApi: WalletApi = {
     if (passcode.length < 6) throw "Use a passcode of at least 6 digits";
     await sleep(900);
     seedDemo();
-    accounts = accounts.filter((a) => a.rail === "spark");
+    accounts = accounts.filter((a) => a.rail === "spark" || (a.rail === "ecash" && /mintdown=1/.test(location.search)));
     accounts.forEach((a) => (a.balance = { confirmed: 0, pendingIn: 0, pendingOut: 0 }));
     activity = [];
     status = "unlocked";
@@ -912,6 +916,13 @@ export const mockApi: WalletApi = {
     await sleep(500);
     mockLnAddress = { address: `${username.toLowerCase()}@breez.tips`, username: username.toLowerCase(), lnurl: "lnurl1dp68gurn8ghj7ctsdyhxgetkd9h8vmmfvdjjuer9wchxvef0wejk" };
     return mockLnAddress;
+  },
+  async ecashContact() {
+    const down = typeof location !== "undefined" && /[?&]mintdown=1/.test(location.search);
+    const now = Math.floor(Date.now() / 1000);
+    return Object.fromEntries(
+      accounts.filter((a) => a.rail === "ecash").map((a) => [a.id, { lastOkAt: now - 3600, error: down ? "No route to host (os error 65)" : null }]),
+    );
   },
   async checkEcashMint() {
     await sleep(1200);

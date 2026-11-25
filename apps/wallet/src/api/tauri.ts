@@ -107,6 +107,7 @@ export const tauriApi: WalletApi = {
   spendingHealth: (account) => invoke("spending_health", { account }),
   claimEcashQuote: (account, quoteId) => invoke("claim_ecash_quote", { account, quoteId }),
   checkEcashMint: (account) => invoke("check_ecash_mint", { account }),
+  ecashContact: () => invoke("ecash_contact"),
   prepareSpendingRecovery: (account, address, feeRateSatVb) => invoke("prepare_spending_recovery", { account, address, feeRateSatVb }),
   recoverSpending: (account) => invoke("recover_spending", { account }),
   listUtxos: (account) => invoke("list_utxos", { account }),

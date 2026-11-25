@@ -826,3 +826,41 @@ async fn real_mint_check_the_mint() {
     eprintln!("check_mint: {r:?}");
     r.unwrap();
 }
+
+/// The NUT-20 quote-lock counter travels with the shared counters, so the
+/// next quote on the other device locks with a fresh key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quote_lock_counter_is_shared_between_devices() {
+    let dir = TempDir::new("quotectr");
+    let mint = Arc::new(FakeMint::new(26));
+    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
+    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+    receive_paid(&desk, &mint, 10).await;
+    receive_paid(&desk, &mint, 20).await;
+    let desk_counters = desk.counters().await.unwrap();
+    let key = format!("nut20_quote:{}", desk.wallet.mint_url);
+    assert_eq!(desk_counters[&key], 2);
+    phone.set_peer_counters(&desk_counters);
+    phone.catch_up(false).await.unwrap();
+    assert_eq!(phone.counters().await.unwrap()[&key], 2);
+    // And the phone's next quote doesn't reuse the desk's lock keys.
+    receive_paid(&phone, &mint, 5).await;
+    assert_eq!(phone.counters().await.unwrap()[&key], 3);
+}
+
+/// Reachability comes from how requests went: a connection error marks the
+/// mint unreachable, any answer (even a refusal) clears it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mint_contact_tracks_connection_errors_only() {
+    let dir = TempDir::new("contact");
+    let mint = Arc::new(FakeMint::new(27));
+    let a = open(&dir, "a", MINT, PHRASE_A, &mint).await;
+    assert!(a.mint_contact().error.is_none());
+    a.note_contact::<()>(&Err(sessions_core::Error::Network(
+        "ecash error: Http transport error None: No route to host (os error 65)".into(),
+    )));
+    assert!(a.mint_contact().error.unwrap().contains("No route"));
+    a.note_contact::<()>(&Err(sessions_core::Error::Invalid("Token already spent".into())));
+    let c = a.mint_contact();
+    assert!(c.error.is_none() && c.last_ok_at.is_some());
+}

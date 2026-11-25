@@ -904,6 +904,20 @@ pub async fn claim_ecash_quote(
     a.claim_quote(&quote_id).await
 }
 
+/// Ecash accounts whose mint this device can't reach right now (account →
+/// what happened). Costs no requests: it reports the accounts' last ones.
+#[tauri::command]
+pub async fn ecash_contact(
+    state: State<'_, AppState>,
+) -> Result<std::collections::BTreeMap<String, rail_ecash::MintContact>> {
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or(Error::Locked)?;
+    Ok(u.ecash
+        .iter()
+        .map(|(id, a)| (id.to_string(), a.mint_contact()))
+        .collect())
+}
+
 /// Ecash: look for ecash this phrase owns that this device doesn't show
 /// (received on a linked device, or before a reinstall). Returns sats found.
 #[tauri::command]

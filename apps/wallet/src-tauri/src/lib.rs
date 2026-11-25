@@ -202,6 +202,7 @@ pub fn run() {
             commands::remove_account,
             commands::claim_ecash_quote,
             commands::check_ecash_mint,
+            commands::ecash_contact,
             commands::payjoin_receive,
             commands::set_payjoin_receive,
             commands::inspect_descriptor,

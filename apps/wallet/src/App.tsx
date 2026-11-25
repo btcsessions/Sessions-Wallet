@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { lockAfterMinutes } from "./state/autolock";
 import { refreshChainStatus } from "./components/NodeConnection";
 import { refreshSpendingHealth, resetSpendingHealth } from "./components/SpendingHealth";
+import { refreshEcashContact } from "./components/EcashContact";
 import { ConfirmHost } from "./components/Confirm";
 import { api } from "./api";
 import { DesktopShell, useDesktopLayout } from "./Desktop";
@@ -161,7 +162,7 @@ export function App() {
       return;
     }
     resetSpendingHealth();
-    const check = () => void (refreshChainStatus(), refreshSpendingHealth());
+    const check = () => void (refreshChainStatus(), refreshSpendingHealth(), refreshEcashContact());
     check();
     const t = setInterval(() => !document.hidden && check(), 60_000);
     const onVis = () => !document.hidden && check();

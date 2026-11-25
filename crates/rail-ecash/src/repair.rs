@@ -211,6 +211,7 @@ impl EcashAccount {
                     .map_err(rail_err)?;
             }
         }
+        self.catch_up_quote_counter().await?;
         tracing::info!(account = %self.id, sats = found, deep, "ecash: caught up with the mint");
         Ok(found)
     }
@@ -236,7 +237,45 @@ impl EcashAccount {
                 out.insert(ks.id.to_string(), c);
             }
         }
+        let q = self
+            .wallet
+            .localstore
+            .increment_derivation_counter(QUOTE_COUNTER, 0)
+            .await
+            .map_err(rail_err)?;
+        if q > 0 {
+            out.insert(self.quote_counter_key(), q);
+        }
         Ok(out)
+    }
+
+    /// Shared-counter key for this account's NUT-20 quote-lock counter.
+    fn quote_counter_key(&self) -> String {
+        format!("{QUOTE_COUNTER}:{}", self.wallet.mint_url)
+    }
+
+    /// Move the NUT-20 quote-lock counter past the other devices', so two
+    /// devices don't lock their quotes with the same key (which would let
+    /// the mint link them).
+    async fn catch_up_quote_counter(&self) -> Result<()> {
+        let peer = self
+            .peer_counters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&self.quote_counter_key())
+            .copied()
+            .unwrap_or(0);
+        let db = &self.wallet.localstore;
+        let current = db
+            .increment_derivation_counter(QUOTE_COUNTER, 0)
+            .await
+            .map_err(rail_err)?;
+        if peer > current {
+            db.increment_derivation_counter(QUOTE_COUNTER, peer - current)
+                .await
+                .map_err(rail_err)?;
+        }
+        Ok(())
     }
 
     /// "Check the mint": a deep catch-up the person asked for, with no time
@@ -426,6 +465,9 @@ impl EcashAccount {
 /// How often to ask the mint whether this device's ecash was spent elsewhere.
 pub(crate) const SPENT_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// CDK's derivation-counter namespace for NUT-20 quote-lock keys.
+const QUOTE_COUNTER: &str = "nut20_quote";
+
 /// Outputs per restore request.
 const BATCH: u32 = 100;
 /// Empty batches before a routine scan stops.
@@ -490,6 +532,56 @@ where
 fn is_transient(e: &cdk::Error) -> bool {
     let m = e.to_string().to_ascii_lowercase();
     ["transport", "unreachable", "timed out", "timeout", "connection", "dns", "reset", "temporarily"]
+        .iter()
+        .any(|w| m.contains(w))
+}
+
+/// Whether this device can reach the mint, from what its last requests did.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MintContact {
+    /// Unix seconds of the last request the mint answered.
+    pub last_ok_at: Option<u64>,
+    /// Why the latest attempt couldn't reach it; None once one gets through.
+    pub error: Option<String>,
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+impl EcashAccount {
+    /// Can this device reach the mint? (No request of its own: it reports
+    /// what the account's last requests found.)
+    pub fn mint_contact(&self) -> MintContact {
+        self.contact.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Record how a request to the mint went: an answer (even a refusal)
+    /// means it's reachable; a connection error means it isn't.
+    pub(crate) fn note_contact<T>(&self, r: &Result<T>) {
+        let mut c = self.contact.lock().unwrap_or_else(|e| e.into_inner());
+        match r {
+            Ok(_) => {
+                c.last_ok_at = Some(now_secs());
+                c.error = None;
+            }
+            Err(e) if is_unreachable(&e.to_string()) => c.error = Some(e.to_string()),
+            Err(_) => {
+                c.last_ok_at = Some(now_secs());
+                c.error = None;
+            }
+        }
+    }
+}
+
+/// A connection that never reached the mint (as opposed to the mint
+/// answering with an error).
+fn is_unreachable(m: &str) -> bool {
+    let m = m.to_ascii_lowercase();
+    ["transport", "unreachable", "no route", "timed out", "timeout", "connection refused", "connection reset", "dns", "failed to lookup"]
         .iter()
         .any(|w| m.contains(w))
 }

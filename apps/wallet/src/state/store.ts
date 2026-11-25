@@ -70,6 +70,8 @@ interface State {
   chain: import("../api/types").ChainStatus | null;
   /** Spending's last sync and funds to recover (checked with `chain`). */
   spendingHealth: import("../api/types").SpendingHealth | null;
+  /** Ecash accounts whose mint this device can reach, or not (checked with `chain`). */
+  ecashContact: Record<string, import("../api/types").MintContact>;
   /** Alerts, contacts, auto-sweep, check-ins: saved in the wallet (and its backup). */
   synced: Synced;
   setSynced<K extends SyncedKey>(key: K, value: Synced[K]): void;
@@ -210,6 +212,7 @@ export const useWallet = create<State>((set, get) => {
     unavailable: [],
     chain: null,
     spendingHealth: null,
+    ecashContact: {},
     synced: Object.fromEntries(SYNCED_KEYS.map((k) => [k, normalize(k, loadPref(k, undefined))])) as unknown as Synced,
     setSynced(key, value) {
       savePref(key, value);
