@@ -151,13 +151,13 @@ impl EcashAccount {
                 let end = start.saturating_add(BATCH);
                 let pre = PreMintSecrets::restore_batch(ks.id, &self.scan_seed, start, end)
                     .map_err(rail_err)?;
-                let resp = self
-                    .client
-                    .post_restore(RestoreRequest {
-                        outputs: pre.blinded_messages(),
+                let outputs = pre.blinded_messages();
+                let resp = retry(|| {
+                    self.client.post_restore(RestoreRequest {
+                        outputs: outputs.clone(),
                     })
-                    .await
-                    .map_err(rail_err)?;
+                })
+                .await?;
                 let sigs: HashMap<PublicKey, BlindSignature> = resp
                     .outputs
                     .iter()
@@ -269,13 +269,9 @@ impl EcashAccount {
         if new.is_empty() {
             return Ok(0);
         }
-        let states = self
-            .client
-            .post_check_state(CheckStateRequest {
-                ys: new.iter().map(|n| n.0).collect(),
-            })
-            .await
-            .map_err(rail_err)?
+        let ys: Vec<PublicKey> = new.iter().map(|n| n.0).collect();
+        let states = retry(|| self.client.post_check_state(CheckStateRequest { ys: ys.clone() }))
+            .await?
             .states;
         let mut infos = Vec::new();
         let mut sats = 0;
@@ -463,4 +459,33 @@ fn save_scan(path: &Path, scan: &BTreeMap<String, KeysetScan>) {
             let _ = std::fs::rename(&tmp, path);
         }
     }
+}
+
+/// A scan makes many requests; one dropped by a flaky connection (a phone
+/// switching networks) shouldn't end it. Up to 4 tries, waiting 1, 3, 6 s.
+async fn retry<T, F, Fut>(mut call: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, cdk::Error>>,
+{
+    let mut tries = 0;
+    loop {
+        match call().await {
+            Ok(v) => return Ok(v),
+            Err(e) if tries < 3 && is_transient(&e) => {
+                tries += 1;
+                tracing::info!("ecash: mint request failed ({e}); retrying");
+                tokio::time::sleep(std::time::Duration::from_secs([1, 3, 6][tries - 1])).await;
+            }
+            Err(e) => return Err(rail_err(e)),
+        }
+    }
+}
+
+/// Connection trouble, not a refusal from the mint.
+fn is_transient(e: &cdk::Error) -> bool {
+    let m = e.to_string().to_ascii_lowercase();
+    ["transport", "unreachable", "timed out", "timeout", "connection", "dns", "reset", "temporarily"]
+        .iter()
+        .any(|w| m.contains(w))
 }
