@@ -237,6 +237,8 @@ async fn mint_token_redeem_melt_end_to_end() {
     assert_eq!(alice.info().await.unwrap().balance.confirmed, 0);
 
     mint.pay_mint_quote(&quote_id);
+    // The websocket says so (without it, the next check comes a minute on).
+    alice.live.mark_paid(&quote_id);
     alice.sync().await.unwrap();
     assert_eq!(alice.info().await.unwrap().balance.confirmed, 100);
 
@@ -559,6 +561,7 @@ async fn private_send_and_receive_hop_through_ecash() {
         .unwrap()
         .is_none());
     mint.pay_mint_quote(&quote);
+    hub.live.mark_paid(&quote);
     let fwd = w
         .forward_private_receive(&"hub".into(), &quote, &"spending".into(), 5_000)
         .await
@@ -694,42 +697,154 @@ async fn counter(acct: &EcashAccount) -> u32 {
     acct.wallet.localstore.increment_keyset_counter(&ks[0].id, 0).await.unwrap()
 }
 
-/// Two linked devices on one phrase: ecash one receives shows up on the
-/// other after a catch-up, catching up again never jumps the counter, and
-/// the next receive on either side doesn't collide.
+/// What the app does with shared counters: the highest per key, everyone's.
+fn merged(all: &[std::collections::BTreeMap<String, u32>]) -> std::collections::BTreeMap<String, u32> {
+    let mut out = std::collections::BTreeMap::new();
+    for m in all {
+        for (k, v) in m {
+            let e = out.entry(k.clone()).or_insert(0);
+            *e = (*e).max(*v);
+        }
+    }
+    out
+}
+
+/// Two linked devices in their own ranges: each sees the other's ecash
+/// through the shared counters, never collides, and stays in its range.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn linked_devices_find_each_others_ecash_without_jumping_counters() {
+async fn linked_devices_share_ecash_through_counters() {
     let dir = TempDir::new("twodev");
     let mint = Arc::new(FakeMint::new(21));
     let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
     let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+    desk.set_slot(1);
+    phone.set_slot(2);
 
     receive_paid(&desk, &mint, 100).await;
-    assert_eq!(desk.info().await.unwrap().balance.confirmed, 100);
     let c = counter(&desk).await;
-    // Catching up twice leaves the counter where it is (CDK's restore adds).
-    desk.catch_up(true).await.unwrap();
-    desk.catch_up(true).await.unwrap();
-    assert_eq!(counter(&desk).await, c);
+    assert!((repair::SLOT..2 * repair::SLOT).contains(&c), "desk in its range: {c}");
 
-    assert_eq!(phone.catch_up(true).await.unwrap(), 100);
+    phone.set_peer_counters(&desk.counters().await.unwrap());
+    phone.sync().await.unwrap();
     assert_eq!(phone.info().await.unwrap().balance.confirmed, 100);
-    assert_eq!(counter(&phone).await, c);
-    // Nothing new: finds nothing, stores nothing twice.
-    assert_eq!(phone.catch_up(false).await.unwrap(), 0);
-    assert_eq!(phone.info().await.unwrap().balance.confirmed, 100);
+    assert!(counter(&phone).await >= 2 * repair::SLOT, "phone in its range");
 
-    // Each receives more; a routine scan picks up the other's.
     receive_paid(&phone, &mint, 50).await;
-    assert_eq!(desk.catch_up(false).await.unwrap(), 50);
+    let shared = merged(&[desk.counters().await.unwrap(), phone.counters().await.unwrap()]);
+    desk.set_peer_counters(&shared);
+    phone.set_peer_counters(&shared);
+    desk.sync().await.unwrap();
+    phone.sync().await.unwrap();
     receive_paid(&desk, &mint, 25).await;
-    assert_eq!(phone.catch_up(false).await.unwrap(), 25);
+    let shared = merged(&[desk.counters().await.unwrap(), phone.counters().await.unwrap()]);
+    phone.set_peer_counters(&shared);
+    phone.sync().await.unwrap();
     assert_eq!(desk.info().await.unwrap().balance.confirmed, 175);
     assert_eq!(phone.info().await.unwrap().balance.confirmed, 175);
 }
 
-/// A device that fell behind collides with outputs the other already used:
-/// it catches up and retries, and the receive still lands.
+/// Following another device asks the mint for just its new outputs: one
+/// request for a receive, none when it hasn't added anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn following_a_device_asks_only_for_its_new_outputs() {
+    let dir = TempDir::new("follow");
+    let mint = Arc::new(FakeMint::new(25));
+    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
+    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+    desk.set_slot(1);
+    phone.set_slot(2);
+    receive_paid(&desk, &mint, 177).await;
+    phone.set_peer_counters(&desk.counters().await.unwrap());
+
+    let before = mint.count("post_restore");
+    assert_eq!(phone.follow_peers().await.unwrap(), 177);
+    assert_eq!(mint.count("post_restore") - before, 1);
+    let before = mint.total();
+    assert_eq!(phone.follow_peers().await.unwrap(), 0);
+    assert_eq!(mint.total(), before, "nothing new, no requests");
+}
+
+/// A new database finds ecash in the shared range and in every device's
+/// range, without being told which ranges are in use.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restore_finds_ecash_in_every_range() {
+    let dir = TempDir::new("restore");
+    let mint = Arc::new(FakeMint::new(23));
+    let old = open(&dir, "old", MINT, PHRASE_A, &mint).await; // an older version
+    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
+    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
+    desk.set_slot(1);
+    phone.set_slot(3);
+    receive_paid(&old, &mint, 10).await;
+    receive_paid(&desk, &mint, 20).await;
+    receive_paid(&phone, &mint, 40).await;
+    // A gap inside a range (a skip after a collision) is crossed.
+    phone.skip_ahead().await.unwrap();
+    receive_paid(&phone, &mint, 80).await;
+
+    let fresh = open(&dir, "fresh", MINT, PHRASE_A, &mint).await;
+    fresh.set_slot(2);
+    assert_eq!(fresh.restore_scan().await.unwrap(), 150);
+    assert_eq!(fresh.info().await.unwrap().balance.confirmed, 150);
+    // It then mints in its own range, past nothing of anyone else's.
+    fresh.ensure_slot().await.unwrap();
+    receive_paid(&fresh, &mint, 5).await;
+    assert_eq!(fresh.info().await.unwrap().balance.confirmed, 155);
+}
+
+/// Once caught up, more syncs ask the mint nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn syncing_again_asks_the_mint_nothing() {
+    let dir = TempDir::new("quiet");
+    let mint = Arc::new(FakeMint::new(29));
+    let a = open(&dir, "a", MINT, PHRASE_A, &mint).await;
+    a.set_slot(1);
+    receive_paid(&a, &mint, 100).await;
+    // An invoice that's never paid, too.
+    a.receive(ReceiveRequest { method: Method::Bolt11, amount_sat: Some(7), description: None })
+        .await
+        .unwrap();
+    a.sync().await.unwrap();
+    let before = mint.total();
+    for _ in 0..5 {
+        a.sync().await.unwrap();
+    }
+    let made: Vec<_> = mint.requests.lock().unwrap()[before..].to_vec();
+    assert!(made.is_empty(), "requests: {made:?}");
+}
+
+/// An expired invoice nobody paid gets one last look, then is forgotten.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_unpaid_quotes_are_forgotten() {
+    let dir = TempDir::new("expired");
+    let mint = Arc::new(FakeMint::new(30));
+    let a = open(&dir, "a", MINT, PHRASE_A, &mint).await;
+    mint.expired_quotes.store(true, std::sync::atomic::Ordering::SeqCst);
+    a.receive(ReceiveRequest { method: Method::Bolt11, amount_sat: Some(7), description: None })
+        .await
+        .unwrap();
+    assert_eq!(a.wallet.get_unissued_mint_quotes().await.unwrap().len(), 1);
+    a.sync().await.unwrap();
+    assert!(a.wallet.get_unissued_mint_quotes().await.unwrap().is_empty());
+}
+
+/// "Check the mint" can't be pressed over and over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn check_the_mint_is_rate_limited() {
+    let dir = TempDir::new("checkrate");
+    let mint = Arc::new(FakeMint::new(31));
+    let a = open(&dir, "a", MINT, PHRASE_A, &mint).await;
+    a.set_slot(1);
+    a.check_mint().await.unwrap();
+    let before = mint.total();
+    let e = a.check_mint().await.unwrap_err().to_string();
+    assert!(e.contains("try again"), "{e}");
+    assert_eq!(mint.total(), before);
+}
+
+/// Two devices still in the shared range (an older version on one): one
+/// collides with outputs the other used, skips ahead and retries, and the
+/// receive still lands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_behind_recovers_from_a_collision() {
     let dir = TempDir::new("collide");
@@ -739,32 +854,17 @@ async fn a_device_behind_recovers_from_a_collision() {
     receive_paid(&desk, &mint, 100).await;
     // The phone hasn't caught up: its counter starts where the desk's did.
     receive_paid(&phone, &mint, 40).await;
+    let info = phone.info().await.unwrap();
+    assert_eq!((info.balance.confirmed, info.balance.pending_in), (40, 0));
+    // The desk's ecash arrives through its counter, as usual.
+    phone.set_peer_counters(&desk.counters().await.unwrap());
+    phone.sync().await.unwrap();
     assert_eq!(phone.info().await.unwrap().balance.confirmed, 140);
-    assert_eq!(phone.info().await.unwrap().balance.pending_in, 0);
-}
-
-/// A deep scan looks past a gap of several hundred unsigned outputs (failed
-/// attempts); the counter ends just past the last output. Longer gaps are
-/// crossed with shared counters (see the peer test).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deep_scan_finds_ecash_past_a_jumped_counter() {
-    let dir = TempDir::new("gap");
-    let mint = Arc::new(FakeMint::new(23));
-    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
-    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
-    receive_paid(&desk, &mint, 10).await;
-    let ks = desk.wallet.keysets(Default::default()).await.unwrap();
-    desk.wallet.localstore.increment_keyset_counter(&ks[0].id, 800).await.unwrap();
-    receive_paid(&desk, &mint, 177).await;
-
-    assert_eq!(phone.catch_up(true).await.unwrap(), 187);
-    assert_eq!(phone.info().await.unwrap().balance.confirmed, 187);
-    assert_eq!(counter(&phone).await, counter(&desk).await);
 }
 
 /// The same, against a mint that answers a reused output with 20006 "already
 /// paid" (Minibits): CDK files the attempt as ambiguous; the wallet confirms
-/// with the mint that nothing was issued, releases it, catches up, retries.
+/// with the mint that nothing was issued, releases it, skips ahead, retries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_behind_recovers_when_the_mint_says_already_paid() {
     let dir = TempDir::new("collide20006");
@@ -775,33 +875,14 @@ async fn a_device_behind_recovers_when_the_mint_says_already_paid() {
     receive_paid(&desk, &mint, 100).await;
     receive_paid(&phone, &mint, 40).await;
     let info = phone.info().await.unwrap();
-    assert_eq!((info.balance.confirmed, info.balance.pending_in), (140, 0));
+    assert_eq!((info.balance.confirmed, info.balance.pending_in), (40, 0));
     // And nothing is left stuck for the next sync.
+    phone.set_peer_counters(&desk.counters().await.unwrap());
     phone.sync().await.unwrap();
     assert_eq!(phone.info().await.unwrap().balance.confirmed, 140);
 }
 
-/// With the other device's counter known (shared through the backup), a
-/// routine scan reaches its ecash however far ahead an old version pushed it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn peer_counters_carry_a_routine_scan_past_any_gap() {
-    let dir = TempDir::new("peer");
-    let mint = Arc::new(FakeMint::new(25));
-    let desk = open(&dir, "desk", MINT, PHRASE_A, &mint).await;
-    let phone = open(&dir, "phone", MINT, PHRASE_A, &mint).await;
-    receive_paid(&desk, &mint, 10).await;
-    assert_eq!(phone.catch_up(true).await.unwrap(), 10);
-    let ks = desk.wallet.keysets(Default::default()).await.unwrap();
-    desk.wallet.localstore.increment_keyset_counter(&ks[0].id, 9_000).await.unwrap();
-    receive_paid(&desk, &mint, 177).await;
-    // Without the hint, a routine scan stops at the gap.
-    assert_eq!(phone.catch_up(false).await.unwrap(), 0);
-    phone.set_peer_counters(&desk.counters().await.unwrap());
-    assert_eq!(phone.catch_up(false).await.unwrap(), 177);
-    assert_eq!(phone.info().await.unwrap().balance.confirmed, 187);
-}
-
-/// Manual: the catch-up scan ("Check the mint") against a real mint.
+/// Manual: a restore scan and "Check the mint" against a real mint.
 /// `cargo test -p rail-ecash real_mint_check -- --ignored --nocapture`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -816,12 +897,10 @@ async fn real_mint_check_the_mint() {
     })
     .await
     .unwrap();
-    for deep in [true, false, true] {
-        let t = std::time::Instant::now();
-        let r = acct.catch_up(deep).await;
-        eprintln!("catch_up(deep={deep}): {r:?} in {:.1} s", t.elapsed().as_secs_f64());
-        r.unwrap();
-    }
+    let t = std::time::Instant::now();
+    let r = acct.restore_scan().await;
+    eprintln!("restore_scan: {r:?} in {:.1} s", t.elapsed().as_secs_f64());
+    r.unwrap();
     let r = acct.check_mint().await;
     eprintln!("check_mint: {r:?}");
     r.unwrap();
@@ -841,7 +920,7 @@ async fn quote_lock_counter_is_shared_between_devices() {
     let key = format!("nut20_quote:{}", desk.wallet.mint_url);
     assert_eq!(desk_counters[&key], 2);
     phone.set_peer_counters(&desk_counters);
-    phone.catch_up(false).await.unwrap();
+    phone.follow_peers().await.unwrap();
     assert_eq!(phone.counters().await.unwrap()[&key], 2);
     // And the phone's next quote doesn't reuse the desk's lock keys.
     receive_paid(&phone, &mint, 5).await;
@@ -889,4 +968,130 @@ async fn unreachable_mint_is_reported_until_it_answers() {
     *a.last_spent_check.lock().unwrap() = None;
     a.sync().await.unwrap();
     assert!(a.mint_contact().error.is_none());
+}
+
+/// A stand-in for the mint's websocket: records what's subscribed, sends
+/// what the test hands it.
+struct FakeWs {
+    url: String,
+    subscribed: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    send: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+async fn fake_ws() -> FakeWs {
+    use futures_util::{SinkExt, StreamExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let subscribed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (send, mut outbox) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let subs = subscribed.clone();
+    tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        loop {
+            tokio::select! {
+                m = ws.next() => match m {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) => {
+                        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                        let id = v["id"].clone();
+                        let sub = v["params"]["subId"].clone();
+                        subs.lock().unwrap().push(v);
+                        let ok = serde_json::json!({"jsonrpc": "2.0", "result": {"status": "OK", "subId": sub}, "id": id});
+                        ws.send(tokio_tungstenite::tungstenite::Message::text(ok.to_string())).await.unwrap();
+                    }
+                    Some(Ok(_)) => {}
+                    _ => return,
+                },
+                out = outbox.recv() => match out {
+                    Some(t) => ws.send(tokio_tungstenite::tungstenite::Message::text(t)).await.unwrap(),
+                    None => return,
+                },
+            }
+        }
+    });
+    FakeWs { url, subscribed, send }
+}
+
+impl FakeWs {
+    /// Filters subscribed for `kind`.
+    fn filters(&self, kind: &str) -> Vec<String> {
+        self.subscribed
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| v["params"]["kind"] == kind)
+            .flat_map(|v| v["params"]["filters"].as_array().cloned().unwrap_or_default())
+            .filter_map(|f| f.as_str().map(String::from))
+            .collect()
+    }
+
+    fn notify(&self, payload: serde_json::Value) {
+        let m = serde_json::json!({"jsonrpc": "2.0", "method": "subscribe", "params": {"subId": "s", "payload": payload}});
+        self.send.send(m.to_string()).unwrap();
+    }
+}
+
+async fn eventually(what: &str, mut f: impl AsyncFnMut() -> bool) {
+    for _ in 0..100 {
+        if f().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("never happened: {what}");
+}
+
+/// The mint's websocket: spent ecash drops out and a paid quote is
+/// collected as the mint says so, with no polling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_websocket_reports_spent_ecash_and_paid_quotes() {
+    let dir = TempDir::new("ws");
+    let mint = Arc::new(FakeMint::new(32));
+    let ws = fake_ws().await;
+    let a = Arc::new(open(&dir, "a", MINT, PHRASE_A, &mint).await);
+    a.set_slot(1);
+    receive_paid(&a, &mint, 100).await;
+    a.set_ws_url(&ws.url);
+    a.start_live();
+
+    // Every proof gets watched.
+    let proofs = a.wallet.get_unspent_proofs().await.unwrap();
+    let ys: Vec<String> = proofs.iter().map(|p| p.y().unwrap().to_hex()).collect();
+    eventually("proofs subscribed", async || {
+        let f = ws.filters("proof_state");
+        ys.iter().all(|y| f.contains(y))
+    })
+    .await;
+    assert!(a.live.connected() && a.live.covering());
+
+    // Another device spends one: it drops out, without asking the mint.
+    let before = mint.total();
+    let gone = proofs[0].amount.to_u64();
+    ws.notify(serde_json::json!({"Y": ys[0], "state": "SPENT", "witness": null}));
+    eventually("spent ecash dropped", async || {
+        a.info().await.unwrap().balance.confirmed == 100 - gone
+    })
+    .await;
+    assert_eq!(mint.total(), before, "no requests");
+
+    // A new invoice is watched; waiting on it doesn't poll.
+    let t = a
+        .receive(ReceiveRequest { method: Method::Bolt11, amount_sat: Some(30), description: None })
+        .await
+        .unwrap();
+    let quote = t.watch_id.unwrap();
+    eventually("quote subscribed", async || ws.filters("bolt11_mint_quote").contains(&quote)).await;
+    assert!(!a.check_incoming(&quote).await.unwrap()); // asks once
+    let before = mint.total();
+    for _ in 0..5 {
+        assert!(!a.check_incoming(&quote).await.unwrap());
+    }
+    assert_eq!(mint.total(), before, "waiting doesn't poll");
+
+    // Paid: the mint says so, and the next check collects it.
+    mint.pay_mint_quote(&quote);
+    ws.notify(serde_json::json!({"quote": quote, "state": "PAID", "amount_paid": 30, "amount_issued": 0}));
+    eventually("paid notice", async || a.live.paid(&quote)).await;
+    assert!(a.check_incoming(&quote).await.unwrap());
+    assert_eq!(a.info().await.unwrap().balance.confirmed, 130 - gone);
 }

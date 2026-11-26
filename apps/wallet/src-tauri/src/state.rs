@@ -593,7 +593,11 @@ impl AppState {
                     db_path: self.paths.ecash(id),
                 })
                 .await?;
-                Ok(Opened::Ecash(Arc::new(account)))
+                let account = Arc::new(account);
+                crate::commands::prepare_ecash(self, &account);
+                // The mint's websocket: spent ecash and paid invoices, pushed.
+                account.start_live();
+                Ok(Opened::Ecash(account))
             }
         }
     }

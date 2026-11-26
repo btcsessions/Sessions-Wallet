@@ -450,9 +450,15 @@ pub async fn cosigner_key(state: State<'_, AppState>) -> Result<String> {
     descriptors::multisig_cosigner_key(&master, u.config.network, u.config.next_multisig_account)
 }
 
+/// Ecash: this device's counter range, and how far the other linked
+/// devices have got (what to fetch from the mint to show their ecash).
+pub fn prepare_ecash(state: &AppState, a: &rail_ecash::EcashAccount) {
+    a.set_peer_counters(&state.backup.peer_ecash_counters());
+    a.set_slot(state.backup.ecash_slot());
+}
+
 #[tauri::command]
 pub async fn sync(state: State<'_, AppState>) -> Result<()> {
-    // Ecash: scans reach as far as the other linked devices' counters.
     let ecash: Vec<_> = {
         let guard = state.inner.lock().await;
         guard
@@ -460,9 +466,8 @@ pub async fn sync(state: State<'_, AppState>) -> Result<()> {
             .map(|u| u.ecash.values().cloned().collect())
             .unwrap_or_default()
     };
-    let peers = state.backup.peer_ecash_counters();
     for a in &ecash {
-        a.set_peer_counters(&peers);
+        prepare_ecash(&state, a);
     }
     let results = wallet(&state).await?.sync_all().await;
     for a in &ecash {
@@ -930,7 +935,7 @@ pub async fn check_ecash_mint(state: State<'_, AppState>, account: AccountId) ->
             .cloned()
             .ok_or_else(|| Error::Unsupported("check the mint".into()))?
     };
-    a.set_peer_counters(&state.backup.peer_ecash_counters());
+    prepare_ecash(&state, &a);
     let found = a.check_mint().await?;
     if let Ok(c) = a.counters().await {
         state.backup.note_ecash_counters(c);

@@ -5537,12 +5537,16 @@ dependencies = [
  "bitcoin",
  "cdk",
  "cdk-redb",
+ "futures-util",
  "redb",
+ "rustls",
  "serde",
  "serde_json",
  "sessions-core",
  "tokio",
+ "tokio-tungstenite 0.28.0",
  "tracing",
+ "webpki-roots 1.0.11",
  "zeroize",
 ]
 

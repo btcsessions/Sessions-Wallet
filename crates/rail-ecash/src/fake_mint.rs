@@ -38,6 +38,7 @@ struct MintQ {
     request: String,
     state: MintQuoteState,
     pubkey: Option<PublicKey>,
+    expiry: u64,
 }
 
 struct MeltQ {
@@ -69,6 +70,10 @@ pub struct FakeMint {
     /// Unreachable, like a mint that blocks this connection: every request
     /// fails the way a refused connection does.
     pub offline: std::sync::atomic::AtomicBool,
+    /// Every request made, by endpoint, in order.
+    pub requests: Mutex<Vec<&'static str>>,
+    /// New mint quotes come out already expired.
+    pub expired_quotes: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for FakeMint {
@@ -107,6 +112,8 @@ impl FakeMint {
             signed: Mutex::new(HashMap::new()),
             collisions_like_minibits: std::sync::atomic::AtomicBool::new(false),
             offline: std::sync::atomic::AtomicBool::new(false),
+            requests: Mutex::new(Vec::new()),
+            expired_quotes: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -135,12 +142,23 @@ impl FakeMint {
         }
     }
 
+    /// Requests made to `endpoint` so far.
+    pub fn count(&self, endpoint: &str) -> usize {
+        self.requests.lock().unwrap().iter().filter(|r| **r == endpoint).count()
+    }
+
+    /// Requests made so far, all endpoints.
+    pub fn total(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+
     fn next_id(st: &mut State_, prefix: &str) -> String {
         st.counter += 1;
         format!("{prefix}-{}", st.counter)
     }
 
-    fn check_online(&self) -> Result<(), Error> {
+    fn check_online(&self, what: &'static str) -> Result<(), Error> {
+        self.requests.lock().unwrap().push(what);
         if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(Error::HttpError(
                 None,
@@ -216,7 +234,7 @@ impl FakeMint {
             amount_issued: Amount::from(issued),
             updated_at: unix_time(),
             state: q.state,
-            expiry: Some(unix_time() + 3600),
+            expiry: Some(q.expiry),
             pubkey: q.pubkey,
         }
     }
@@ -272,12 +290,12 @@ impl MintConnector for FakeMint {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
-        self.check_online()?;
+        self.check_online("get_mint_keys")?;
         Ok(vec![self.keyset.clone()])
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
-        self.check_online()?;
+        self.check_online("get_mint_keyset")?;
         if keyset_id == self.keyset.id {
             Ok(self.keyset.clone())
         } else {
@@ -286,7 +304,7 @@ impl MintConnector for FakeMint {
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
-        self.check_online()?;
+        self.check_online("get_mint_keysets")?;
         Ok(KeysetResponse {
             keysets: vec![KeySetInfo {
                 id: self.keyset.id,
@@ -302,7 +320,7 @@ impl MintConnector for FakeMint {
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        self.check_online()?;
+        self.check_online("post_mint_quote")?;
         let MintQuoteRequest::Bolt11(req) = request else {
             return Err(Error::UnsupportedPaymentMethod);
         };
@@ -314,6 +332,11 @@ impl MintConnector for FakeMint {
             request: fake_invoice(req.amount.to_u64(), 1_000_000 + counter),
             state: MintQuoteState::Unpaid,
             pubkey: req.pubkey,
+            expiry: if self.expired_quotes.load(std::sync::atomic::Ordering::SeqCst) {
+                unix_time() - 1000
+            } else {
+                unix_time() + 3600
+            },
         };
         let resp = Self::mint_quote_response(&id, &q);
         st.mint_quotes.insert(id, q);
@@ -325,7 +348,7 @@ impl MintConnector for FakeMint {
         _method: &PaymentMethod,
         request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        self.check_online()?;
+        self.check_online("post_mint")?;
         let mut st = self.state.lock().unwrap();
         let q = st
             .mint_quotes
@@ -350,7 +373,7 @@ impl MintConnector for FakeMint {
         _method: &PaymentMethod,
         _request: BatchCheckMintQuoteRequest<String>,
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
-        self.check_online()?;
+        self.check_online("post_batch_check_mint_quote_status")?;
         Err(Error::UnsupportedPaymentMethod) // NUT-29 not advertised
     }
 
@@ -359,7 +382,7 @@ impl MintConnector for FakeMint {
         _method: &PaymentMethod,
         _request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        self.check_online()?;
+        self.check_online("post_batch_mint")?;
         Err(Error::UnsupportedPaymentMethod)
     }
 
@@ -367,7 +390,7 @@ impl MintConnector for FakeMint {
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        self.check_online()?;
+        self.check_online("post_melt_quote")?;
         let MeltQuoteRequest::Bolt11(req) = request else {
             return Err(Error::UnsupportedPaymentMethod);
         };
@@ -392,7 +415,7 @@ impl MintConnector for FakeMint {
         _method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        self.check_online()?;
+        self.check_online("get_mint_quote_status")?;
         let st = self.state.lock().unwrap();
         let q = st.mint_quotes.get(quote_id).ok_or(Error::UnknownQuote)?;
         Ok(MintQuoteResponse::Bolt11(Self::mint_quote_response(
@@ -405,7 +428,7 @@ impl MintConnector for FakeMint {
         _method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        self.check_online()?;
+        self.check_online("get_melt_quote_status")?;
         let st = self.state.lock().unwrap();
         let q = st.melt_quotes.get(quote_id).ok_or(Error::UnknownQuote)?;
         Ok(MeltQuoteResponse::Bolt11(Self::melt_quote_response(
@@ -418,7 +441,7 @@ impl MintConnector for FakeMint {
         _method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        self.check_online()?;
+        self.check_online("post_melt")?;
         let mut st = self.state.lock().unwrap();
         let (amount, invoice) = {
             let q = st
@@ -463,7 +486,7 @@ impl MintConnector for FakeMint {
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
-        self.check_online()?;
+        self.check_online("post_swap")?;
         let mut st = self.state.lock().unwrap();
         let (total, ys) = self.verify_inputs(&st, request.inputs())?;
         let out: u64 = request.outputs().iter().map(|o| o.amount.to_u64()).sum();
@@ -476,7 +499,7 @@ impl MintConnector for FakeMint {
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        self.check_online()?;
+        self.check_online("get_mint_info")?;
         let mint_settings = MintMethodSettings {
             method: PaymentMethod::BOLT11,
             unit: CurrencyUnit::Sat,
@@ -498,7 +521,8 @@ impl MintConnector for FakeMint {
                 .nut04(NUT04Settings::new(vec![mint_settings], false))
                 .nut05(NUT05Settings::new(vec![melt_settings], false))
                 .nut07(true)
-                .nut08(true),
+                .nut08(true)
+                .nut17(vec![cdk::nuts::nut17::SupportedMethods::default_bolt11(CurrencyUnit::Sat)]),
         ))
     }
 
@@ -506,7 +530,7 @@ impl MintConnector for FakeMint {
         &self,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        self.check_online()?;
+        self.check_online("post_check_state")?;
         let st = self.state.lock().unwrap();
         Ok(CheckStateResponse {
             states: request
@@ -526,7 +550,7 @@ impl MintConnector for FakeMint {
     }
 
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
-        self.check_online()?;
+        self.check_online("post_restore")?;
         let signed = self.signed.lock().unwrap();
         let (outputs, signatures) = request
             .outputs

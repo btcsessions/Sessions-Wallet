@@ -181,7 +181,11 @@ export function ReceiveSheet({ account: initial }: { account?: string }) {
     let alive = true;
     let busy = false;
     let tick = 0;
-    const address = target.method === "bitcoinAddress" && !swap && target.watchId ? target.watchId : null;
+    // Watched with a quick check instead of a full sync every few seconds: an
+    // on-chain address, or an ecash invoice (the mint's websocket says when
+    // it's paid, so the check doesn't even ask the mint each time).
+    const quick = (target.method === "bitcoinAddress" || (account.rail === "ecash" && !hubId)) && !swap;
+    const address = quick && target.watchId ? target.watchId : null;
     const watched = hubId ? [account.id, hubId] : swap && spendingId ? [account.id, spendingId] : [account.id];
     const t = setInterval(async () => {
       if (busy) return;

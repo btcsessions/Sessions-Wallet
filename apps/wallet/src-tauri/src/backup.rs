@@ -121,6 +121,9 @@ struct Saved {
     /// Kept until every device has the removal (see `removed_devices`).
     #[serde(default)]
     removed_devices: std::collections::BTreeMap<String, u64>,
+    /// This device's ecash counter range (see `ecash_slot`).
+    #[serde(default)]
+    ecash_slot: Option<u32>,
 }
 
 type Emit = Arc<dyn Fn(&str, Value) + Send + Sync>;
@@ -1011,6 +1014,10 @@ fn add_sync_fields(state: &AppState, config: &Config, data: &mut Value) {
             "ecashCounters".into(),
             serde_json::to_value(b.peer_ecash_counters()).unwrap_or_default(),
         );
+        o.insert(
+            "ecashSlots".into(),
+            serde_json::to_value(ecash_slots(b, base.as_ref())).unwrap_or_default(),
+        );
         if let Some(t) = token {
             o.insert("replaceToken".into(), Value::String(t));
         }
@@ -1167,13 +1174,14 @@ impl Backup {
         m
     }
 
-    /// Note this device's ecash counters. Uploads soon if one is well past
-    /// what the other devices last saw (they'd need it to find new ecash).
+    /// Note this device's ecash counters. Uploads soon if one moved past
+    /// what the other devices last saw: that's how they learn which ecash
+    /// to fetch (they don't scan the mint for it).
     pub fn note_ecash_counters(&self, counters: std::collections::BTreeMap<String, u32>) {
         let published = published_ecash_counters(self.base().as_ref());
         let far_ahead = counters
             .iter()
-            .any(|(k, v)| *v > published.get(k).copied().unwrap_or(0) + 300);
+            .any(|(k, v)| *v > published.get(k).copied().unwrap_or(0));
         {
             let mut mine = self.ecash_counters.lock().unwrap_or_else(|e| e.into_inner());
             for (k, v) in counters {
@@ -1184,6 +1192,100 @@ impl Backup {
         if far_ahead {
             self.touch();
         }
+    }
+}
+
+/// Ecash counter ranges the linked devices have taken (device id → slot):
+/// the current devices' from the last snapshot, and this device's own.
+fn ecash_slots(b: &Backup, base: Option<&Value>) -> std::collections::BTreeMap<String, u32> {
+    let current = current_devices(b, base);
+    let mut slots: std::collections::BTreeMap<String, u32> = base
+        .and_then(|v| v.get("ecashSlots"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    slots.retain(|id, _| current.contains(id));
+    let me = b.device_id();
+    match b.lock().saved.ecash_slot {
+        Some(s) => slots.insert(me, s),
+        None => slots.remove(&me),
+    };
+    slots
+}
+
+/// Linked devices still in use (seen lately, not removed), and this one.
+fn current_devices(b: &Backup, base: Option<&Value>) -> BTreeSet<String> {
+    let removed = removed_devices(b, base);
+    let today = now_secs() / 86_400 * 86_400;
+    let mut ids: BTreeSet<String> = base
+        .and_then(|v| v.get("devices").and_then(Value::as_object))
+        .map(|d| {
+            d.iter()
+                .filter(|(id, d)| {
+                    !removed.contains_key(*id)
+                        && d["seenAt"].as_u64().is_some_and(|t| today.saturating_sub(t) < DEVICE_STALE_SECS)
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.insert(b.device_id());
+    ids
+}
+
+impl Backup {
+    /// This device's ecash counter range ("slot"): linked devices share the
+    /// recovery phrase, so each takes its own range of ecash counters and
+    /// they never use the same outputs. The lowest slot no other device in
+    /// use has; kept once taken, unless another device took the same one
+    /// first (the lower device id keeps it), then the next free one up
+    /// (counters only go up). 0 until this device has seen the linked
+    /// devices' list (its first backup or pull), so it never picks blind:
+    /// 0 is the shared range older versions use.
+    pub fn ecash_slot(&self) -> u32 {
+        let Some(base) = self.base() else { return 0 };
+        let me = self.device_id();
+        let current = current_devices(self, Some(&base));
+        let theirs: std::collections::BTreeMap<String, u32> = base
+            .get("ecashSlots")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        // Slot → the lowest other device id holding it.
+        let mut taken: std::collections::BTreeMap<u32, String> = Default::default();
+        for (id, slot) in theirs {
+            if id != me && current.contains(&id) {
+                let holder = taken.entry(slot).or_insert_with(|| id.clone());
+                if id < *holder {
+                    *holder = id;
+                }
+            }
+        }
+        let mine = self.lock().saved.ecash_slot;
+        let keep = mine.filter(|m| *m >= 1 && taken.get(m).is_none_or(|holder| me < *holder));
+        // Devices that update together pick together: leave the first free
+        // slots to the ones without a slot yet that sort before this one,
+        // which every device works out the same way.
+        let ahead = if mine.is_none() {
+            let holders: BTreeSet<&String> = taken.values().collect();
+            current
+                .iter()
+                .filter(|id| **id < me && !holders.contains(id))
+                .count()
+        } else {
+            0
+        };
+        let slot = keep.unwrap_or_else(|| {
+            let floor = mine.unwrap_or(0);
+            (floor + 1..=rail_ecash::MAX_SLOT)
+                .filter(|s| !taken.contains_key(s))
+                .nth(ahead)
+                .unwrap_or(floor.max(1))
+        });
+        if mine != Some(slot) {
+            tracing::info!(slot, "ecash: this device's counter range");
+            self.update_saved(|s| s.ecash_slot = Some(slot));
+            self.touch();
+        }
+        slot
     }
 }
 
@@ -1492,6 +1594,57 @@ mod tests {
         let mut data = serde_json::json!({});
         add_sync_fields(&a, &config, &mut data);
         assert_eq!(data["ecashCounters"], serde_json::json!({ "k1": 3000, "k2": 90 }));
+    }
+
+    /// Each linked device takes its own ecash counter range: none before it
+    /// has seen the device list, then the lowest free one, kept; on a clash
+    /// the lower device id keeps it and the other moves up.
+    #[tokio::test]
+    async fn linked_devices_take_their_own_ecash_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = AppState::new(dir.path().to_path_buf(), None);
+        a.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();
+        let b = &a.backup;
+        assert_eq!(b.ecash_slot(), 0, "not before the device list");
+        let me = b.device_id();
+        let today = now_secs() / 86_400 * 86_400;
+        let seen = serde_json::json!({ "seenAt": today });
+        // Another device holds slot 1.
+        let other = if me.as_str() > "0" { "0".to_string() } else { "z".to_string() };
+        b.set_base(&serde_json::json!({
+            "devices": { other.clone(): seen, me.clone(): seen },
+            "ecashSlots": { other.clone(): 1 },
+        }));
+        assert_eq!(b.ecash_slot(), 2);
+        assert_eq!(b.ecash_slot(), 2, "kept");
+        let config = a.inner.lock().await.as_ref().unwrap().config.clone();
+        let mut data = serde_json::json!({});
+        add_sync_fields(&a, &config, &mut data);
+        assert_eq!(data["ecashSlots"][&me], 2);
+        assert_eq!(data["ecashSlots"][&other], 1);
+
+        // Both on 2 (they picked at once): the lower id keeps it.
+        b.set_base(&serde_json::json!({
+            "devices": { other.clone(): seen, me.clone(): seen },
+            "ecashSlots": { other.clone(): 2, me.clone(): 2 },
+        }));
+        let expect = if me < other { 2 } else { 3 };
+        assert_eq!(b.ecash_slot(), expect);
+        // A device that's gone frees its slot for others, never moving this
+        // one down.
+        b.set_base(&serde_json::json!({ "devices": { me.clone(): seen }, "ecashSlots": {} }));
+        assert_eq!(b.ecash_slot(), expect);
+
+        // Two devices updating at once, neither with a slot yet: they pick
+        // different ones without having to see each other's pick.
+        for (other, expect) in [("0", 2), ("z", 1)] {
+            let dir = tempfile::tempdir().unwrap();
+            let a = AppState::new(dir.path().to_path_buf(), None);
+            a.create(Seed::from_phrase(ABANDON).unwrap(), "123456").await.unwrap();
+            let me = a.backup.device_id();
+            a.backup.set_base(&serde_json::json!({ "devices": { other: seen, me: seen } }));
+            assert_eq!(a.backup.ecash_slot(), expect, "other device {other}");
+        }
     }
 
     #[test]

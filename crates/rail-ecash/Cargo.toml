@@ -24,8 +24,16 @@ cdk-redb = { version = "=0.18.2", default-features = false, features = ["wallet"
 # Same major as cdk-redb's own redb; used only to pre-create a table cdk-redb
 # 0.18.2 forgets to create (see `ensure_redb_tables`).
 redb = "3.1"
+# NUT-17 websocket (spent ecash and paid quotes pushed by the mint instead of
+# polled). Same TLS stack as the rest of the app: rustls (ring) + web roots.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+futures-util = "0.3"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
+# A local NUT-17 server for the websocket tests.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
 # Only for building fake BOLT11 invoices in tests.
 bitcoin.workspace = true

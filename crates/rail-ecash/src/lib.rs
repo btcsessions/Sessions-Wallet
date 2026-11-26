@@ -79,11 +79,13 @@ pub struct EcashAccount {
     /// from the recovery phrase): the next sync scans the mint (NUT-09/13) for
     /// ecash this seed already owns. Stays set until a scan succeeds.
     needs_restore: std::sync::atomic::AtomicBool,
-    /// Catch up with the mint again this often (another device on the same
-    /// phrase may have added ecash). None in tests.
-    catch_up_every: Option<std::time::Duration>,
-    /// When the last catch-up finished.
-    last_catch_up: std::sync::Mutex<Option<std::time::Instant>>,
+    /// This device's range of counters (see `repair`): 0 until the app has
+    /// picked one, which keeps the old shared range.
+    slot: std::sync::atomic::AtomicU32,
+    /// When requests that don't need repeating every sync last went out.
+    throttle: std::sync::Mutex<repair::Throttle>,
+    /// The mint's websocket (NUT-17): spent ecash and paid quotes, pushed.
+    live: Arc<live::Live>,
     /// The mint, for questions CDK's wallet doesn't expose (what a quote has
     /// really issued). Same connection the wallet uses.
     client: Arc<dyn MintConnector + Send + Sync>,
@@ -146,11 +148,11 @@ impl EcashAccount {
                 std::fs::create_dir_all(parent).map_err(|e| Error::Storage(e.to_string()))?;
             }
         }
-        // A brand-new database means we may be restoring from the phrase.
-        // (The in-process test mint doesn't implement restore, so tests skip it.)
-        // Every session also catches its counters up with the mint once, since
-        // linked devices share the phrase (see `repair`).
-        let mut fresh = client.is_none();
+        // A brand-new database means we may be restoring from the phrase:
+        // scan the mint once for ecash it owns. So does one that has never
+        // been scanned (made before scanning existed). Tests opt in.
+        let scan_path = config.db_path.with_extension("scan.json");
+        let mut fresh = client.is_none() && (!config.db_path.exists() || !scan_path.exists());
         // redb opens the file synchronously (and runs migrations); keep that
         // off the async executor.
         let open_db = |db_path: std::path::PathBuf| {
@@ -181,7 +183,7 @@ impl EcashAccount {
                     aside.display()
                 );
                 std::fs::rename(&config.db_path, &aside).map_err(|e| Error::Storage(e.to_string()))?;
-                fresh = client.is_none();
+                fresh = true;
                 open_db(config.db_path.clone())
                     .await
                     .map_err(|e| Error::Storage(e.to_string()))?
@@ -212,12 +214,13 @@ impl EcashAccount {
             name: std::sync::RwLock::new(config.name),
             wallet,
             needs_restore: std::sync::atomic::AtomicBool::new(fresh),
-            catch_up_every: fresh.then_some(CATCH_UP_EVERY),
-            last_catch_up: std::sync::Mutex::new(None),
+            slot: Default::default(),
+            throttle: Default::default(),
+            live: Default::default(),
             client: connector,
             last_spent_check: std::sync::Mutex::new(None),
             scan_seed,
-            scan_path: config.db_path.with_extension("scan.json"),
+            scan_path,
             scan_lock: tokio::sync::Mutex::new(()),
             peer_counters: Default::default(),
             contact: Default::default(),
@@ -265,9 +268,6 @@ fn remember_db(path: &std::path::Path, db: &Arc<WalletRedbDatabase>) {
     open.retain(|(p, w)| w.strong_count() > 0 && p != path);
     open.push((path.to_path_buf(), Arc::downgrade(db)));
 }
-
-/// How often each device catches up with the mint (see `sync`).
-const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// cdk-redb 0.18.2 creates every table at init except `wallet_sagas`, but
 /// reads it in `get_incomplete_sagas` (called by `recover_incomplete_sagas`,
@@ -437,28 +437,20 @@ impl sessions_core::Rail for EcashAccount {
 
     async fn sync(&self) -> Result<()> {
         use std::sync::atomic::Ordering;
-        // 0. Catch up with the mint: at the first sync, then every
-        //    `CATCH_UP_EVERY`. Picks up ecash this phrase owns that this
-        //    device doesn't know about (a restore, or another linked device
-        //    receiving), and moves the counters past what others used.
-        let due = self.needs_restore.load(Ordering::SeqCst)
-            || self.catch_up_every.is_some_and(|every| {
-                self.last_catch_up
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .is_none_or(|t| t.elapsed() >= every)
-            });
-        if due {
-            // Routine: a few requests from where the last scan got to (a
-            // keyset never scanned gets a deep one).
-            match self.catch_up(false).await.map(|_| ()) {
-                Ok(()) => {
-                    self.needs_restore.store(false, Ordering::SeqCst);
-                    *self.last_catch_up.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(std::time::Instant::now());
-                }
+        // 0. A new database: look for ecash this phrase already owns (once).
+        //    Otherwise only fetch what the other linked devices have added,
+        //    which their shared counters say exactly (no requests when they
+        //    haven't added anything). Then keep this device in its own range.
+        if self.needs_restore.load(Ordering::SeqCst) {
+            match self.restore_scan().await {
+                Ok(_) => self.needs_restore.store(false, Ordering::SeqCst),
                 Err(e) => tracing::warn!(account = %self.id, "ecash: restore scan: {e}"),
             }
+        } else if let Err(e) = self.follow_peers().await {
+            tracing::warn!(account = %self.id, "ecash: ecash from linked devices: {e}");
+        }
+        if let Err(e) = self.ensure_slot().await {
+            tracing::warn!(account = %self.id, "ecash: counter range: {e}");
         }
 
         // 1. Finish or roll back anything interrupted (swap/send/receive/melt/mint).
@@ -478,8 +470,10 @@ impl sessions_core::Rail for EcashAccount {
 
         // 2. Mint every quote the mint now reports as paid. Attempts stuck
         //    after a collision with another device are released first.
-        if let Err(e) = self.release_failed_mints().await {
-            tracing::warn!(account = %self.id, "ecash: release stuck mints: {e}");
+        if self.due(|t| &mut t.release, repair::RELEASE_EVERY) {
+            if let Err(e) = self.release_failed_mints().await {
+                tracing::warn!(account = %self.id, "ecash: release stuck mints: {e}");
+            }
         }
         let minted = self.mint_paid_quotes().await?;
         if minted > 0 {
@@ -487,23 +481,30 @@ impl sessions_core::Rail for EcashAccount {
         }
 
         // 3. Settle Lightning payments that were left pending.
-        let finalized = self
-            .wallet
-            .finalize_pending_melts()
-            .await
-            .map_err(rail_err)?;
-        if !finalized.is_empty() {
-            tracing::info!(account = %self.id, count = finalized.len(), "ecash: finalized pending melts");
-        }
-
-        // 4. Mark tokens we handed out as complete once the recipient claims them.
-        for op in self.wallet.get_pending_sends().await.map_err(rail_err)? {
-            if let Err(e) = self.wallet.check_send_status(op).await {
-                tracing::warn!(account = %self.id, %op, "ecash: could not check token status: {e}");
+        if self.due(|t| &mut t.melts, repair::MELTS_EVERY) {
+            let finalized = self
+                .wallet
+                .finalize_pending_melts()
+                .await
+                .map_err(rail_err)?;
+            if !finalized.is_empty() {
+                tracing::info!(account = %self.id, count = finalized.len(), "ecash: finalized pending melts");
             }
         }
 
-        // 5. Drop ecash another device on this phrase has spent.
+        // 4. Mark tokens we handed out as complete once the recipient claims
+        //    them: when the websocket saw one spent, else now and then.
+        let seen = self.live.spent_seen.swap(false, Ordering::SeqCst);
+        if seen || self.due(|t| &mut t.sends, repair::SLOW_CHECK_EVERY) {
+            for op in self.wallet.get_pending_sends().await.map_err(rail_err)? {
+                if let Err(e) = self.wallet.check_send_status(op).await {
+                    tracing::warn!(account = %self.id, %op, "ecash: could not check token status: {e}");
+                }
+            }
+        }
+
+        // 5. Drop ecash another device on this phrase has spent (the
+        //    websocket does this as it happens; this is the slow fallback).
         if let Err(e) = self.drop_spent_elsewhere().await {
             tracing::warn!(account = %self.id, "ecash: checking for ecash spent elsewhere: {e}");
         }
@@ -513,22 +514,36 @@ impl sessions_core::Rail for EcashAccount {
     /// Has the mint quote `watch_id` been paid? Mints its ecash if so (and
     /// it wasn't already). True once the ecash is in this account.
     async fn check_incoming(&self, watch_id: &str) -> Result<bool> {
-        let q = self.wallet.check_mint_quote_status(watch_id).await.map_err(rail_err)?;
+        // The websocket says when it's paid; ask the mint only then, or now
+        // and then (the Receive screen and a private payment call this every
+        // couple of seconds).
+        self.watch_quote(watch_id);
+        if !self.quote_check_due(watch_id, repair::WAIT_RECHECK, repair::WAIT_RECHECK_LIVE) {
+            return Ok(false);
+        }
+        let q = self.wallet.check_mint_quote_status(watch_id).await.map_err(rail_err);
+        self.note_contact(&q);
+        let q = q?;
         if q.amount_issued > Amount::ZERO {
+            self.live.forget(watch_id);
             return Ok(true);
         }
         if q.amount_paid == Amount::ZERO && q.state != cdk::nuts::MintQuoteState::Paid {
             return Ok(false);
         }
-        match self.wallet.mint(watch_id, Default::default(), None).await {
-            Ok(_) => Ok(true),
+        match self.mint_quote(watch_id).await {
+            Ok(()) => {
+                self.live.forget(watch_id);
+                Ok(true)
+            }
             // Minted meanwhile (the regular sync got there first).
             Err(e) => {
                 let q = self.wallet.check_mint_quote_status(watch_id).await.map_err(rail_err)?;
                 if q.amount_issued > Amount::ZERO {
+                    self.live.forget(watch_id);
                     Ok(true)
                 } else {
-                    Err(rail_err(e))
+                    Err(e)
                 }
             }
         }
@@ -572,6 +587,8 @@ impl sessions_core::Rail for EcashAccount {
             }
             r => r.map_err(rail_err)?,
         };
+        // Hear about its payment over the websocket.
+        self.watch_quote(&quote.id);
 
         Ok(ReceiveTarget {
             method: Method::Bolt11,
@@ -790,7 +807,8 @@ impl sessions_core::Rail for EcashAccount {
 
 #[cfg(test)]
 mod fake_mint;
+mod live;
 mod repair;
-pub use repair::MintContact;
+pub use repair::{MintContact, MAX_SLOT, SLOT};
 #[cfg(test)]
 mod tests;
