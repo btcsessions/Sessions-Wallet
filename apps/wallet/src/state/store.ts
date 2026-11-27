@@ -1,4 +1,5 @@
 import { applyTheme, THEMES, type Appearance, type ThemeId } from "../theme";
+import { adoptAccounts } from "../modules/adopt";
 import { create } from "zustand";
 import { api } from "../api";
 import type { AccountInfo, InstalledModule, Layout, Payment, SpendStyle, WalletStatus } from "../api/types";
@@ -294,6 +295,12 @@ export const useWallet = create<State>((set, get) => {
         ]);
         const prices = Object.fromEntries(fiats.map((c, i) => [c, priceList[i]]));
         set({ accounts, activity, layout, prices, price: prices[get().currency] ?? null, unavailable, groupAccounts });
+        // Accounts added on a linked device get a card here too.
+        if (layout) {
+          const adopted = adoptAccounts(accounts, layout, loadPref<string[] | null>("knownAccounts", null));
+          savePref("knownAccounts", adopted.known);
+          if (adopted.layout) await persistLayout(adopted.layout);
+        }
       } catch (e) {
         get().fail(e);
       }
